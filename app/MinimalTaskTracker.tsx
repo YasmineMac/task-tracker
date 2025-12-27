@@ -139,7 +139,7 @@ function formatDateISO(d: string | null | undefined) {
   return d;
 }
 
-function priorityRank(p) {
+function priorityRank(p: string | null | undefined) {
   if (p === "high") return 0;
   if (p === "normal") return 1;
   return 2;
