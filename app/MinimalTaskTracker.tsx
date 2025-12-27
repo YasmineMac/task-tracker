@@ -125,7 +125,7 @@ function normalizeTask(t: any) {
 }
 
 // -------------------- localStorage: save --------------------
-function saveTasks(tasks) {
+function saveTasks(tasks: any[]) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
 }
 
