@@ -133,7 +133,7 @@ function saveTasks(tasks: any[]) {
 // HELPERS (formatting, sorting ranks, counts)
 // =======================================================
 
-function formatDateISO(d) {
+function formatDateISO(d: string | null | undefined) {
   if (!d) return "";
   // Keep ISO yyyy-mm-dd
   return d;
