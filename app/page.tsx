@@ -1,11 +1,6 @@
-"use client";
+import MinimalTaskTracker from "./MinimalTaskTracker";
 
-import dynamic from "next/dynamic";
-
-const MinimalTaskTracker = dynamic(() => import("./MinimalTaskTracker"), {
-  ssr: false,
-});
-
-export default function Home() {
+export default function Page() {
   return <MinimalTaskTracker />;
 }
+
