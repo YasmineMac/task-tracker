@@ -121,35 +121,50 @@ function timeLeftLabel(days: number) {
   return `${days}d left`;
 }
 
-function clamp(n: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, n));
+function clamp(n: number, a: number, b: number) {
+  return Math.max(a, Math.min(b, n));
 }
 
-function timeScoreFromDays(days: number | null) {
-  if (days === null) return 0;
-  if (days < 0) return 100;
-  if (days === 0) return 90;
-  if (days === 1) return 75;
-  if (days === 2) return 60;
-  if (days <= 7) return 40;
-  return 20;
+function daysUntil(dueISO?: string | null) {
+  if (!dueISO) return null;
+  const today = new Date();
+  const due = new Date(dueISO + "T00:00:00");
+  const ms = due.getTime() - new Date(today.toDateString()).getTime();
+  return Math.floor(ms / (1000 * 60 * 60 * 24));
 }
 
-function priorityScore(p?: Priority) {
-  if (p === "high") return 60;
-  if (p === "normal") return 35;
-  return 15;
+function urgencyScore(t: {
+  due?: string | null;
+  durationHrs?: number | null;
+  difficulty?: number | null; // 1-5
+  priority?: "low" | "normal" | "high" | string;
+}) {
+  const d = daysUntil(t.due);
+  const dur = t.durationHrs ?? 0;
+  const diff = t.difficulty ?? 3;
+
+  const priorityBoost =
+    t.priority === "high" ? 15 : t.priority === "low" ? -5 : 0;
+
+  // time pressure: 0..70
+  const timePressure =
+    d === null
+      ? 0
+      : d <= 0
+      ? 70
+      : d >= 14
+      ? 5
+      : clamp((14 - d) * 5, 5, 70);
+
+  // workload: 0..20 (cap at 6h)
+  const workload = clamp((dur / 6) * 20, 0, 20);
+
+  // difficulty: 0..10
+  const difficultyScore = clamp(((diff - 1) / 4) * 10, 0, 10);
+
+  return clamp(timePressure + workload + difficultyScore + priorityBoost, 0, 100);
 }
 
-function durationScore(durationHrs: number | null | undefined) {
-  const d = durationHrs == null ? 1 : durationHrs;
-  return clamp(Math.round((clamp(d, 0, 6) / 6) * 50), 0, 50);
-}
-
-function difficultyScore(diff: number | null | undefined) {
-  const x = diff == null ? 3 : diff;
-  return clamp(Math.round((clamp(x, 1, 5) / 5) * 40), 0, 40);
-}
 
 /* ----------------------------- UI bits ----------------------------- */
 
@@ -796,43 +811,15 @@ export default function MinimalTaskTracker() {
               </div>
 
               <div className="space-y-4 px-4 py-4">
-                {/* Weekly horizon */}
-                <div>
-                  <div className="flex items-center justify-between">
-                    <div className="text-sm font-semibold">Next 7 days</div>
-                    <div className="text-xs text-slate-500">Red if &gt; {WEEKLY_CAPACITY_HRS}h</div>
-                  </div>
-
-                  <div className="mt-2 space-y-2">
-                    {weeklyHorizon.days.map((d) => {
-                      const h = d.totalHrs;
-                      const pct = Math.round((h / weeklyHorizon.maxHrs) * 100);
-                      const over = h > WEEKLY_CAPACITY_HRS;
-
-                      return (
-                        <div key={d.iso} className="grid grid-cols-[72px_1fr_42px] items-center gap-2">
-                          <div className="text-[11px] text-slate-500 tabular-nums">{d.iso.slice(5)}</div>
-                          <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
-                            <div
-                              className={over ? "h-2 bg-red-500" : "h-2 bg-slate-400"}
-                              style={{ width: `${pct}%` }}
-                              title={`${h.toFixed(1)}h • ${d.tasksDueCount} tasks`}
-                            />
-                          </div>
-                          <div className={`text-[11px] tabular-nums text-right ${over ? "text-red-600" : "text-slate-500"}`}>
-                            {h ? h.toFixed(1) : "0.0"}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
+              
 
                 {/* Score list */}
                 <div className="max-h-[52vh] space-y-2 overflow-auto pr-1">
-                  {scoredTasks.map(({ task, total }) => {
-                    const width = Math.round((total / maxScore) * 100);
-                    const days = task.due ? daysLeftFromISO(task.due) : null;
+                  {scoredTasks.map(({ task }) => {
+                  const score = urgencyScore(task);
+                  const width = score; // already 0–100
+                  const days = task.due ? daysLeftFromISO(task.due) : null;
+
 
                     return (
                       <div
@@ -866,8 +853,7 @@ export default function MinimalTaskTracker() {
                             </div>
                           </div>
 
-                          <div className="shrink-0 text-xs font-semibold tabular-nums text-slate-700">{Math.round(total)}</div>
-                        </div>
+                          <div className="shrink-0 text-xs font-semibold tabular-nums text-slate-700">{Math.round(score)}</div>                        </div>
 
                         <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-100">
                           <div className="h-2 rounded-full bg-slate-400" style={{ width: `${width}%` }} />
