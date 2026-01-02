@@ -1,0 +1,442 @@
+[
+  {
+    "Student code":7109,
+    "Student Name":"Nikolaos Kalaitzidis",
+    "Nationality":"Greece",
+    "Studio":"Robotics for Ecological Buildings Studio",
+    "Seminar 1":"After Gaudí Seminar",
+    "Seminar 2":"Assembled Architecture Seminar",
+    "Workshop":"Advanced Robotics for Circular Construction Workshop",
+    "Gender":"Male"
+  },
+  {
+    "Student code":7110,
+    "Student Name":"Nicolaos Dakhlallah",
+    "Nationality":"Lebanon",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"After Gaudí Seminar",
+    "Seminar 2":"Assembled Architecture Seminar",
+    "Workshop":"Advanced Robotics for Circular Construction Workshop",
+    "Gender":"Male"
+  },
+  {
+    "Student code":8005,
+    "Student Name":"Brooklyn Edsall",
+    "Nationality":"USA",
+    "Studio":"Robotics for Ecological Buildings Studio",
+    "Seminar 1":"Back to the Future Seminar",
+    "Seminar 2":"Ecological Interactions Seminar",
+    "Workshop":"Serious Games Workshop",
+    "Gender":"Female"
+  },
+  {
+    "Student code":8018,
+    "Student Name":"Surya Vasudevan",
+    "Nationality":"India",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"Back to the Future Seminar",
+    "Seminar 2":"Ecological Interactions Seminar",
+    "Workshop":"Serious Games Workshop",
+    "Gender":"Male"
+  },
+  {
+    "Student code":8020,
+    "Student Name":"Haoying Ma",
+    "Nationality":"China",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"Back to the Future Seminar",
+    "Seminar 2":"From Afar Seminar",
+    "Workshop":"Introduction to Robotic Fabrication Workshop",
+    "Gender":"Female"
+  },
+  {
+    "Student code":8025,
+    "Student Name":"Hasan Ali Hirji",
+    "Nationality":"Canada",
+    "Studio":"Robotics for Ecological Buildings Studio",
+    "Seminar 1":"Back to the Future Seminar",
+    "Seminar 2":"From Afar Seminar",
+    "Workshop":"Introduction to Robotic Fabrication Workshop",
+    "Gender":"Male"
+  },
+  {
+    "Student code":8031,
+    "Student Name":"Koosha Abdolahifar",
+    "Nationality":"Iran",
+    "Studio":"Robotics for Ecological Buildings Studio",
+    "Seminar 1":"After Gaudí Seminar",
+    "Seminar 2":"Assembled Architecture Seminar",
+    "Workshop":"Advanced Robotics for Circular Construction Workshop",
+    "Gender":"Male"
+  },
+  {
+    "Student code":8032,
+    "Student Name":"Kshitij Shetty",
+    "Nationality":"India",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"After Gaudí Seminar",
+    "Seminar 2":"Ecological Interactions Seminar",
+    "Workshop":"Introduction to Robotic Fabrication Workshop",
+    "Gender":"Male"
+  },
+  {
+    "Student code":8033,
+    "Student Name":"Nisanth Anil Menon",
+    "Nationality":"India",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"After Gaudí Seminar",
+    "Seminar 2":"Assembled Architecture Seminar",
+    "Workshop":"Serious Games Workshop",
+    "Gender":"Male"
+  },
+  {
+    "Student code":8034,
+    "Student Name":"Souvik Ray Baruah",
+    "Nationality":"India",
+    "Studio":"Robotics for Ecological Buildings Studio",
+    "Seminar 1":"After Gaudí Seminar",
+    "Seminar 2":"Assembled Architecture Seminar",
+    "Workshop":"Advanced Robotics for Circular Construction Workshop",
+    "Gender":"Male"
+  },
+  {
+    "Student code":8039,
+    "Student Name":"Naitik Kanaiyalal Mevada",
+    "Nationality":"India",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"Back to the Future Seminar",
+    "Seminar 2":"Assembled Architecture Seminar",
+    "Workshop":"Introduction to Robotic Fabrication Workshop",
+    "Gender":"Male"
+  },
+  {
+    "Student code":8042,
+    "Student Name":"Anna Subbotkina",
+    "Nationality":"Kazakhstan",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"Back to the Future Seminar",
+    "Seminar 2":"Assembled Architecture Seminar",
+    "Workshop":"Introduction to Robotic Fabrication Workshop",
+    "Gender":"Female"
+  },
+  {
+    "Student code":8046,
+    "Student Name":"Ece Usubütün",
+    "Nationality":"Turkey",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"After Gaudí Seminar",
+    "Seminar 2":"Assembled Architecture Seminar",
+    "Workshop":"Introduction to Robotic Fabrication Workshop",
+    "Gender":"Female"
+  },
+  {
+    "Student code":8050,
+    "Student Name":"Himanshi Mittal",
+    "Nationality":"India",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"Back to the Future Seminar",
+    "Seminar 2":"Ecological Interactions Seminar",
+    "Workshop":"Introduction to Robotic Fabrication Workshop",
+    "Gender":"Female"
+  },
+  {
+    "Student code":8053,
+    "Student Name":"Revanth Munivenkatappa Satish",
+    "Nationality":"India",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"Back to the Future Seminar",
+    "Seminar 2":"Ecological Interactions Seminar",
+    "Workshop":"Introduction to Robotic Fabrication Workshop",
+    "Gender":"Male"
+  },
+  {
+    "Student code":8058,
+    "Student Name":"Thulasiram Sivakumar",
+    "Nationality":"India",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"Back to the Future Seminar",
+    "Seminar 2":"Ecological Interactions Seminar",
+    "Workshop":"Introduction to Robotic Fabrication Workshop",
+    "Gender":"Male"
+  },
+  {
+    "Student code":8060,
+    "Student Name":"Yasmine MacCallum Laraki",
+    "Nationality":"Spain",
+    "Studio":"Robotics for Ecological Buildings Studio",
+    "Seminar 1":"After Gaudí Seminar",
+    "Seminar 2":"Assembled Architecture Seminar",
+    "Workshop":"Advanced Robotics for Circular Construction Workshop",
+    "Gender":"Female"
+  },
+  {
+    "Student code":8069,
+    "Student Name":"Sejin Park",
+    "Nationality":"South Korea",
+    "Studio":"Robotics for Ecological Buildings Studio",
+    "Seminar 1":"After Gaudí Seminar",
+    "Seminar 2":"Assembled Architecture Seminar",
+    "Workshop":"Advanced Robotics for Circular Construction Workshop",
+    "Gender":"Male"
+  },
+  {
+    "Student code":8070,
+    "Student Name":"Aman Arora",
+    "Nationality":"India",
+    "Studio":"Robotics for Ecological Buildings Studio",
+    "Seminar 1":"After Gaudí Seminar",
+    "Seminar 2":"From Afar Seminar",
+    "Workshop":"Serious Games Workshop",
+    "Gender":"Male"
+  },
+  {
+    "Student code":8072,
+    "Student Name":"Amalia Anna Korgiala",
+    "Nationality":"Greece",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"After Gaudí Seminar",
+    "Seminar 2":"Ecological Interactions Seminar",
+    "Workshop":"Introduction to Robotic Fabrication Workshop",
+    "Gender":"Female"
+  },
+  {
+    "Student code":8073,
+    "Student Name":"Lucien Kohnen",
+    "Nationality":"Belgium",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"Back to the Future Seminar",
+    "Seminar 2":"Ecological Interactions Seminar",
+    "Workshop":"Introduction to Robotic Fabrication Workshop",
+    "Gender":"Male"
+  },
+  {
+    "Student code":8076,
+    "Student Name":"Leonard Alexander Rieck",
+    "Nationality":"Germany",
+    "Studio":"Data Driven Urban Design Studio",
+    "Seminar 1":"Back to the Future Seminar",
+    "Seminar 2":"Ecological Interactions Seminar",
+    "Workshop":"Serious Games Workshop",
+    "Gender":"Male"
+  },
+  {
+    "Student code":8082,
+    "Student Name":"Luiz Zilberknop",
+    "Nationality":"Brazil",
+    "Studio":"Robotics for Ecological Buildings Studio",
+    "Seminar 1":"After Gaudí Seminar",
+    "Seminar 2":"Assembled Architecture Seminar",
+    "Workshop":"Introduction to Robotic Fabrication Workshop",
+    "Gender":"Male"
+  },
+  {
+    "Student code":8083,
+    "Student Name":"Göksu Naz Aktaş",
+    "Nationality":"Turkey",
+    "Studio":"Robotics for Ecological Buildings Studio",
+    "Seminar 1":"After Gaudí Seminar",
+    "Seminar 2":"Assembled Architecture Seminar",
+    "Workshop":"Introduction to Robotic Fabrication Workshop",
+    "Gender":"Female"
+  },
+  {
+    "Student code":8089,
+    "Student Name":"Prathmesh Jadhav",
+    "Nationality":"India",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"Back to the Future Seminar",
+    "Seminar 2":"Ecological Interactions Seminar",
+    "Workshop":"Introduction to Robotic Fabrication Workshop",
+    "Gender":"Male"
+  },
+  {
+    "Student code":8090,
+    "Student Name":"Brendon Joseph Dlima",
+    "Nationality":"India",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"Back to the Future Seminar",
+    "Seminar 2":"Assembled Architecture Seminar",
+    "Workshop":"Advanced Robotics for Circular Construction Workshop",
+    "Gender":"Male"
+  },
+  {
+    "Student code":8097,
+    "Student Name":"Daniela Gomez Martinez",
+    "Nationality":"Spain",
+    "Studio":"Robotics for Ecological Buildings Studio",
+    "Seminar 1":"Back to the Future Seminar",
+    "Seminar 2":"From Afar Seminar",
+    "Workshop":"Serious Games Workshop",
+    "Gender":"Female"
+  },
+  {
+    "Student code":8101,
+    "Student Name":"Ayush Garg",
+    "Nationality":"India",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"After Gaudí Seminar",
+    "Seminar 2":"Assembled Architecture Seminar",
+    "Workshop":"Introduction to Robotic Fabrication Workshop",
+    "Gender":"Male"
+  },
+  {
+    "Student code":8111,
+    "Student Name":"Ezgi Hoca",
+    "Nationality":"Turkey",
+    "Studio":"Data Driven Urban Design Studio",
+    "Seminar 1":"Designing for More than Humans Seminar",
+    "Seminar 2":"Ecological Interactions Seminar",
+    "Workshop":"Introduction to Robotic Fabrication Workshop",
+    "Gender":"Female"
+  },
+  {
+    "Student code":8123,
+    "Student Name":"Flavia Felippe Cury Soares",
+    "Nationality":"Brazil",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"After Gaudí Seminar",
+    "Seminar 2":"Assembled Architecture Seminar",
+    "Workshop":"Introduction to Robotic Fabrication Workshop",
+    "Gender":"Female"
+  },
+  {
+    "Student code":8133,
+    "Student Name":"Camilo Hernán Contreras",
+    "Nationality":"Chile",
+    "Studio":"Robotics for Ecological Buildings Studio",
+    "Seminar 1":"Back to the Future Seminar",
+    "Seminar 2":"Assembled Architecture Seminar",
+    "Workshop":"Advanced Robotics for Circular Construction Workshop",
+    "Gender":"Male"
+  },
+  {
+    "Student code":8134,
+    "Student Name":"Elsa Karam",
+    "Nationality":"Lebanon",
+    "Studio":"Robotics for Ecological Buildings Studio",
+    "Seminar 1":"After Gaudí Seminar",
+    "Seminar 2":"Assembled Architecture Seminar",
+    "Workshop":"Serious Games Workshop",
+    "Gender":"Female"
+  },
+  {
+    "Student code":8135,
+    "Student Name":"Srishti Kathuria",
+    "Nationality":"India",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"After Gaudí Seminar",
+    "Seminar 2":"Assembled Architecture Seminar",
+    "Workshop":"Introduction to Robotic Fabrication Workshop",
+    "Gender":"Female"
+  },
+  {
+    "Student code":8140,
+    "Student Name":"Abhishek Narendrabhai Sondarva",
+    "Nationality":"India",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"After Gaudí Seminar",
+    "Seminar 2":"Assembled Architecture Seminar",
+    "Workshop":"Introduction to Robotic Fabrication Workshop",
+    "Gender":"Male"
+  },
+  {
+    "Student code":8148,
+    "Student Name":"Alexis López Vidal",
+    "Nationality":"Dominican Republic",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"After Gaudí Seminar",
+    "Seminar 2":"Assembled Architecture Seminar",
+    "Workshop":"Introduction to Robotic Fabrication Workshop",
+    "Gender":"Male"
+  },
+  {
+    "Student code":8151,
+    "Student Name":"Alyaa Gamal Mahdy Aboalhoda",
+    "Nationality":"Egypt",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"Back to the Future Seminar",
+    "Seminar 2":"Ecological Interactions Seminar",
+    "Workshop":"Introduction to Robotic Fabrication Workshop",
+    "Gender":"Female"
+  },
+  {
+    "Student code":8152,
+    "Student Name":"Rajkumar Dindor",
+    "Nationality":"India",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"Back to the Future Seminar",
+    "Seminar 2":"Ecological Interactions Seminar",
+    "Workshop":"Introduction to Robotic Fabrication Workshop",
+    "Gender":"Male"
+  },
+  {
+    "Student code":8158,
+    "Student Name":"Vijeeth Rao Mandala",
+    "Nationality":"India",
+    "Studio":"Data Driven Urban Design Studio",
+    "Seminar 1":"Back to the Future Seminar",
+    "Seminar 2":"Ecological Interactions Seminar",
+    "Workshop":"Serious Games Workshop",
+    "Gender":"Male"
+  },
+  {
+    "Student code":8166,
+    "Student Name":"Francisco Javier Pinel Avilés",
+    "Nationality":"El Salvador",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"After Gaudí Seminar",
+    "Seminar 2":"Assembled Architecture Seminar",
+    "Workshop":"Introduction to Robotic Fabrication Workshop",
+    "Gender":"Male"
+  },
+  {
+    "Student code":8167,
+    "Student Name":"Selen Or",
+    "Nationality":"Turkey",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"Back to the Future Seminar",
+    "Seminar 2":"Assembled Architecture Seminar",
+    "Workshop":"Introduction to Robotic Fabrication Workshop",
+    "Gender":"Female"
+  },
+  {
+    "Student code":8173,
+    "Student Name":"Nasrin Sadat Sharafeh",
+    "Nationality":"Iran",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"After Gaudí Seminar",
+    "Seminar 2":"Assembled Architecture Seminar",
+    "Workshop":"Introduction to Robotic Fabrication Workshop",
+    "Gender":"Female"
+  },
+  {
+    "Student code":8174,
+    "Student Name":"Ali Ehsani Farimani",
+    "Nationality":"Iran",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"After Gaudí Seminar",
+    "Seminar 2":"Assembled Architecture Seminar",
+    "Workshop":"Advanced Robotics for Circular Construction Workshop",
+    "Gender":"Male"
+  },
+  {
+    "Student code":8178,
+    "Student Name":"Daniela ivon Elizabeth Giron Samuy",
+    "Nationality":"Guatemala",
+    "Studio":"Digital Matter Studio",
+    "Seminar 1":"After Gaudí Seminar",
+    "Seminar 2":"Ecological Interactions Seminar",
+    "Workshop":"Introduction to Robotic Fabrication Workshop",
+    "Gender":"Female"
+  },
+  {
+    "Student code":8182,
+    "Student Name":"Caterina Ansalone",
+    "Nationality":"Italy",
+    "Studio":"Robotics for Ecological Buildings Studio",
+    "Seminar 1":"After Gaudí Seminar",
+    "Seminar 2":"Assembled Architecture Seminar",
+    "Workshop":"Advanced Robotics for Circular Construction Workshop",
+    "Gender":"Female"
+  }
+]

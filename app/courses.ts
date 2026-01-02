@@ -7,5 +7,6 @@ export const COURSES: Course[] = [
   { id: "adv_robotics_workshop", label: "Advanced Robotics Workshop" },
   { id: "computational_design", label: "Computational Design" },
   { id: "lecture_series", label: "Lecture Series" },
+  { id: "the_yas_project", label: "The Yas Project" },
 ];
 
