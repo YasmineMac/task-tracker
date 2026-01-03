@@ -450,16 +450,8 @@ export default function MinimalTaskTracker() {
     const baseList = scoreShowCompleted ? filtered : filtered.filter((t) => t.status !== "completed");
 
     const scored = baseList.map((t) => {
-      const days = t.due ? daysLeftFromISO(t.due) : null;
+      const total = urgencyScore(t);
 
-      const sTime = scoreUseTime ? timeScoreFromDays(days) : 0;
-      const sPri = scoreUsePriority ? priorityScore(t.priority) : 0;
-      const sDur = scoreUseDuration ? durationScore(t.durationHrs) : 0;
-      const sDiff = scoreUseDifficulty ? difficultyScore(t.difficulty) : 0;
-
-      const total = sTime + sPri + sDur + sDiff;
-
-      return { task: t, total, parts: { time: sTime, priority: sPri, duration: sDur, difficulty: sDiff } };
     });
 
     scored.sort((a, b) => {
