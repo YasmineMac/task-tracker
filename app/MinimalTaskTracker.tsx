@@ -141,8 +141,10 @@ function urgencyScore(t: {
 }) {
   const d = daysUntil(t.due);
   const dur = t.durationHrs ?? 0;
-  const diff = t.difficulty ?? 3;
+  const diff = t.difficulty ?? 1;
+  // adjust difficulty
 
+  // adjust priority
   const priorityBoost =
     t.priority === "high" ? 15 : t.priority === "low" ? -5 : 0;
 
@@ -150,11 +152,11 @@ function urgencyScore(t: {
   const timePressure =
     d === null
       ? 0
-      : d <= 0
-      ? 70
+      : d <= 3
+      ? 80
       : d >= 14
       ? 5
-      : clamp((14 - d) * 5, 5, 70);
+      : clamp((14 - d) * 7, 5, 80);
 
   // workload: 0..20 (cap at 6h)
   const workload = clamp((dur / 6) * 20, 0, 20);
@@ -450,9 +452,9 @@ export default function MinimalTaskTracker() {
     const baseList = scoreShowCompleted ? filtered : filtered.filter((t) => t.status !== "completed");
 
   const scored = baseList.map((task) => ({
-  task,
-  total: urgencyScore(task),
-}));
+    task,
+    total: urgencyScore(task),
+  }));
 
 
 
