@@ -449,10 +449,12 @@ export default function MinimalTaskTracker() {
   const scoredTasks = useMemo(() => {
     const baseList = scoreShowCompleted ? filtered : filtered.filter((t) => t.status !== "completed");
 
-    const scored = baseList.map((t) => {
-      const total = urgencyScore(t);
+  const scored = baseList.map((task) => ({
+  task,
+  total: urgencyScore(task),
+}));
 
-    });
+
 
     scored.sort((a, b) => {
       if (b.total !== a.total) return b.total - a.total;
