@@ -679,7 +679,11 @@ export default function MinimalTaskTracker() {
                     >
                       <td className="max-w-[420px] truncate px-3 py-2 font-medium">{t.title}</td>
                       <td className="px-3 py-2 text-slate-600">{courseLabel(t.courseId)}</td>
-                      <td className="px-3 py-2 text-slate-600">{statusLabel(t.status)}</td>
+                      <td className="px-3 py-2">
+                      <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${statusPill(t.status)}`}>
+                        {statusLabel(t.status)}
+                      </span>
+                    </td>
                       <td className="px-3 py-2 text-slate-600">{priorityLabel(t.priority)}</td>
                       <td className="px-3 py-2 tabular-nums text-slate-600">{t.due ?? "—"}</td>
                       <td className={`px-3 py-2 tabular-nums ${days !== null && days <= 2 ? "text-red-600" : "text-slate-600"}`}>
