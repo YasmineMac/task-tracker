@@ -861,14 +861,13 @@ export default function MinimalTaskTracker() {
 
                           <div className="shrink-0 text-xs font-semibold tabular-nums text-slate-700">{Math.round(score)}</div>                        </div>
 
-                        <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-100">
-                          const score = urgencyScore(task);
-                          const width = Math.round(score); // since score is already 0–100 
-                          <div
-                          className={`h-2 rounded-full ${urgencyColour(score)}`}
-                          style={{ width: `${width}%` }}
-                        />
-                       </div>
+                          <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-100">
+                            <div
+                              className={`h-2 rounded-full ${urgencyColour(score)}`}
+                              style={{ width: `${width}%` }}
+                            />
+                          </div>
+
                       </div>
                     );
                   })}
