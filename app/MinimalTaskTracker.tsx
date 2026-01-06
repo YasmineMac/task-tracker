@@ -168,14 +168,17 @@ function urgencyScore(t: {
 }
 
 function urgencyColour(score: number) {
-  if (score >= 85) return "bg-orange-400";   // calm strong green
-  if (score >= 70) return "bg-amber-400";      // fresh lime
-  if (score >= 55) return "bg-lime-400";    // warm amber
-  if (score >= 40) return "bg-emerald-500";   // soft coral-orange
-  return "bg-rose-400";                      // muted rose, not danger red
+  if (score >= 85) return "bg-rose-500";   // calm strong green
+  if (score >= 70) return "bg-orange-500";      // fresh lime
+  if (score >= 55) return "bg-amber-300";    // warm amber
+  if (score >= 40) return "bg-lime-300";   // soft coral-orange
+  return "bg-lime-100";                      // muted rose, not danger red
 }
 
-
+<div
+  className={`h-2 rounded-full transition-all duration-500 ${urgencyColour(score)}`}
+  style={{ width: `${score}%` }}
+/>
 
 
 
