@@ -170,7 +170,7 @@ function urgencyScore(t: {
 function urgencyColour(score: number) {
   if (score >= 85) return "bg-rose-500";   // calm strong green
   if (score >= 70) return "bg-orange-500";      // fresh lime
-  if (score >= 55) return "bg-amber-300";    // warm amber
+  if (score >= 55) return "bg-amber-400";    // warm amber
   if (score >= 40) return "bg-lime-300";   // soft coral-orange
   return "bg-lime-100";                      // muted rose, not danger red
 }
