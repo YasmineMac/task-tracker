@@ -175,11 +175,6 @@ function urgencyColour(score: number) {
   return "bg-lime-100";                      // muted rose, not danger red
 }
 
-<div
-  className={`h-2 rounded-full transition-all duration-500 ${urgencyColour(score)}`}
-  style={{ width: `${score}%` }}
-/>
-
 
 
 /* ----------------------------- UI bits ----------------------------- */
@@ -867,9 +862,9 @@ export default function MinimalTaskTracker() {
 
                           <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-100">
                             <div
-                              className={`h-2 rounded-full ${urgencyColour(score)}`}
-                              style={{ width: `${width}%` }}
-                            />
+                            className={`h-2 rounded-full transition-all duration-500 ${urgencyColour(score)}`}
+                            style={{ width: `${score}%` }}
+                          />
                           </div>
 
                       </div>
