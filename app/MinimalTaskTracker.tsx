@@ -168,11 +168,11 @@ function urgencyScore(t: {
 }
 
 function urgencyColour(score: number) {
-  if (score >= 80) return "bg-red-500";
-  if (score >= 60) return "bg-orange-400";
-  if (score >= 40) return "bg-yellow-400";
-  if (score >= 20) return "bg-blue-400";
-  return "bg-slate-400";
+  if (score >= 80) return "bg-rose-500";      // urgent but elegant
+  if (score >= 60) return "bg-amber-400";    // attention
+  if (score >= 40) return "bg-sky-400";      // active
+  if (score >= 20) return "bg-slate-300";    // low
+  return "bg-slate-200";                     // background
 }
 
 
