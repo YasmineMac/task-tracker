@@ -84,6 +84,25 @@ function priorityLabel(id: Priority) {
   return PRIORITIES.find((p) => p.id === id)?.label ?? id;
 }
 
+function statusPill(status?: string) {
+  switch (status) {
+    case "Urgent":
+      return "bg-red-100 text-red-700";
+    case "In progress":
+      return "bg-blue-100 text-blue-700";
+    case "To do":
+      return "bg-slate-100 text-slate-700";
+    case "Frozen":
+      return "bg-zinc-200 text-zinc-600";
+    case "Completed":
+      return "bg-green-100 text-green-700";
+    default:
+      return "bg-slate-100 text-slate-600";
+  }
+}
+
+
+
 function priorityRank(p: Priority | undefined) {
   if (p === "high") return 0;
   if (p === "normal") return 1;
