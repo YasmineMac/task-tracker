@@ -17,6 +17,7 @@ type Task = {
   durationHrs?: number | null;
   difficulty?: number | null; // 1..5
   createdAt: number;
+  mode?: "task" | "practice";
 };
 
 const STORAGE_KEY = "yasmine_tasks_v2_clean";
@@ -69,6 +70,7 @@ function normalizeTask(t: any): Task {
     durationHrs: t.durationHrs == null ? null : Number(t.durationHrs),
     difficulty: t.difficulty == null ? null : Number(t.difficulty),
     createdAt: typeof t.createdAt === "number" ? t.createdAt : Date.now(),
+    mode: courseId === "yas_project" ? "practice" : "task"
   };
 }
 
@@ -162,6 +164,15 @@ function urgencyScore(t: {
   const dur = t.durationHrs ?? 0;
   const diff = t.difficulty ?? 1;
   // adjust difficulty
+
+  if (t.mode === "practice") {
+  const last = t.lastPracticedAt
+    ? daysUntil(t.lastPracticedAt)
+    : 30;
+
+  return clamp(last * 3, 0, 60);
+}
+
 
   // adjust priority
   const priorityBoost =
