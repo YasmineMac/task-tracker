@@ -219,10 +219,12 @@ function daysUntil(dueISO?: string | null) {
 }
 
 function urgencyScore(t: {
-  due?: string | null;
+  due?: string;
   durationHrs?: number | null;
-  difficulty?: number | null; // 1-5
-  priority?: "low" | "normal" | "high" | string;
+  difficulty?: number | null;
+  priority?: Priority;
+  mode?: "practice" | "task";
+  lastPracticedAt?: number | string;
 }) {
   const d = daysUntil(t.due);
   const dur = t.durationHrs ?? 0;
