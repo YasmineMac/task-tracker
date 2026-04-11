@@ -231,10 +231,11 @@ function urgencyScore(t: {
   const diff = t.difficulty ?? 1;
   // adjust difficulty
 
-  if (t.mode === "practice") {
-  const last = t.lastPracticedAt
-    ? daysUntil(t.lastPracticedAt)
-    : 30;
+if (t.mode === "practice") {
+  const last =
+    typeof t.lastPracticedAt === "string"
+      ? daysUntil(t.lastPracticedAt)
+      : 30;
 
   return clamp(last * 3, 0, 60);
 }
