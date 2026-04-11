@@ -42,6 +42,11 @@ function uid() {
 }
 
 async function loadTasks(syncCode: string): Promise<Task[]> {
+  if (!supabase) {
+    console.error("Supabase env vars are missing");
+    return [];
+  }
+
   const { data, error } = await supabase
     .from("tasks")
     .select("*")
@@ -70,6 +75,11 @@ async function loadTasks(syncCode: string): Promise<Task[]> {
 }
 
 async function saveTasks(tasks: Task[]) {
+  if (!supabase) {
+    console.error("Supabase env vars are missing");
+    return;
+  }
+
   const SYNC_CODE = "YAS-TEST-001";
 
   const { error: deleteError } = await supabase
