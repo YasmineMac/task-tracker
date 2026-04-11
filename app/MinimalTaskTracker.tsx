@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { COURSES } from "./courses";
+import { supabase } from "@/lib/supabase";
 
 type Priority = "low" | "normal" | "high";
 type Status = "to_do" | "in_progress" | "urgent" | "frozen" | "completed";
@@ -40,37 +41,100 @@ function uid() {
   return Math.random().toString(16).slice(2) + Date.now().toString(16);
 }
 
-function loadTasks(): Task[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map((t: any) => normalizeTask(t))
-      .filter((t: any) => t && typeof t.id === "string" && typeof t.title === "string");
-  } catch {
+async function loadTasks(syncCode: string): Promise<Task[]> {
+  const { data, error } = await supabase
+    .from("tasks")
+    .select("*")
+    .eq("sync_code", syncCode)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    console.error("Error loading tasks:", error);
     return [];
+  }
+
+  return (data || []).map((t: any) =>
+    normalizeTask({
+      id: t.id,
+      title: t.title,
+      courseId: t.course_id,
+      status: t.status,
+      priority: t.priority,
+      due: t.due,
+      notes: t.notes,
+      durationHrs: t.duration_hrs,
+      difficulty: t.difficulty,
+      createdAt: t.created_at ? new Date(t.created_at).getTime() : Date.now(),
+    })
+  );
+}
+
+async function saveTasks(tasks: Task[]) {
+  const SYNC_CODE = "YAS-TEST-001";
+
+  const { error: deleteError } = await supabase
+    .from("tasks")
+    .delete()
+    .eq("sync_code", SYNC_CODE);
+
+  if (deleteError) {
+    console.error(
+      "Error deleting old tasks:",
+      deleteError.message,
+      deleteError.details,
+      deleteError.hint
+    );
+    return;
+  }
+
+  const tasksToInsert = tasks.map((t) => ({
+    sync_code: SYNC_CODE,
+    title: t.title,
+    course_id: t.courseId,
+    status: t.status,
+    priority: t.priority,
+    due: t.due ?? null,
+    notes: t.notes ?? null,
+    duration_hrs: t.durationHrs ?? null,
+    difficulty: t.difficulty ?? null,
+  }));
+
+  if (tasksToInsert.length === 0) return;
+
+  const { error: insertError } = await supabase
+    .from("tasks")
+    .insert(tasksToInsert);
+
+  if (insertError) {
+    console.error(
+      "Error saving tasks:",
+      insertError.message,
+      insertError.details,
+      insertError.hint
+    );
   }
 }
 
-function saveTasks(tasks: Task[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
-}
-
 function normalizeTask(t: any): Task {
+  const resolvedCourseId = String(t.courseId ?? t.course ?? "robotics_studio");
+
   return {
     id: String(t.id ?? uid()),
     title: String(t.title ?? "").trim(),
-    courseId: String(t.courseId ?? t.course ?? "robotics_studio"),
+    courseId: resolvedCourseId,
     status: (t.status ?? "to_do") as Status,
     priority: (t.priority ?? "normal") as Priority,
     due: typeof t.due === "string" ? t.due : undefined,
-    notes: typeof t.notes === "string" ? t.notes : (typeof t.comments === "string" ? t.comments : undefined),
+    notes:
+      typeof t.notes === "string"
+        ? t.notes
+        : typeof t.comments === "string"
+          ? t.comments
+          : undefined,
     durationHrs: t.durationHrs == null ? null : Number(t.durationHrs),
     difficulty: t.difficulty == null ? null : Number(t.difficulty),
     createdAt: typeof t.createdAt === "number" ? t.createdAt : Date.now(),
-    mode: courseId === "yas_project" ? "practice" : "task"
+    mode: resolvedCourseId === "yas_project" ? "practice" : "task",
   };
 }
 
@@ -288,6 +352,7 @@ export default function MinimalTaskTracker() {
   const WEEKLY_CAPACITY_HRS = 4;
 
   const [tasks, setTasks] = useState<Task[]>([]);
+  const hasLoadedFromSupabase = useRef(false);
   const [mode, setMode] = useState<"board" | "list">("board");
 
   const [query, setQuery] = useState("");
@@ -323,13 +388,22 @@ export default function MinimalTaskTracker() {
 
   const searchRef = useRef<HTMLInputElement | null>(null);
 
-  useEffect(() => {
-    setTasks(loadTasks());
-  }, []);
+const SYNC_CODE = "YAS-TEST-001";
 
-  useEffect(() => {
-    saveTasks(tasks);
-  }, [tasks]);
+useEffect(() => {
+  async function fetchTasks() {
+    const loaded = await loadTasks(SYNC_CODE);
+    setTasks(loaded);
+    hasLoadedFromSupabase.current = true;
+  }
+
+  fetchTasks();
+}, []);
+
+useEffect(() => {
+  if (!hasLoadedFromSupabase.current) return;
+  saveTasks(tasks);
+}, [tasks]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
