@@ -967,13 +967,13 @@ useEffect(() => {
 
               <button
               onClick={() => setShowWeights(!showWeights)}
-              className="mt-2 w-full rounded-xl border border-slate-300 px-2 py-1 text-xs"
-            >
-              Adjust Weights
-            </button>
+              className="mt-2 mx-4 w-[calc(100%-20px)] rounded-xl border border-slate-300 px-2 py-1 text-xs"
+            >Adjust Weights
+</button>
 
-            {showWeights && (
-  <div className="mt-3 space-y-3 text-xs">
+{showWeights && (
+  <div className="mt-3 space-y-4 rounded-2xl border border-white/40 bg-white/60 p-3 backdrop-blur-md shadow-sm text-xs">
+
     <div>
       <label>Time: {weights.time}</label>
       <input
@@ -984,7 +984,15 @@ useEffect(() => {
         onChange={(e) =>
           setWeights({ ...weights, time: Number(e.target.value) })
         }
-        className="w-full"
+        className="glass-slider w-full"
+        style={{
+          background: `linear-gradient(to right,
+            #84cc16 0%,
+            #f97316 ${weights.time * 0.55}%,
+            #fb7185 ${weights.time - 8}%,
+            #ffffff ${weights.time + 4}%,
+            #ffffff 100%)`,
+        }}
       />
     </div>
 
@@ -998,7 +1006,15 @@ useEffect(() => {
         onChange={(e) =>
           setWeights({ ...weights, priority: Number(e.target.value) })
         }
-        className="w-full"
+        className="glass-slider w-full"
+        style={{
+          background: `linear-gradient(to right,
+            #84cc16 0%,
+            #f97316 ${weights.priority * 0.55}%,
+            #fb7185 ${weights.priority - 8}%,
+            #ffffff ${weights.priority + 4}%,
+            #ffffff 100%)`,
+        }}
       />
     </div>
 
@@ -1012,7 +1028,15 @@ useEffect(() => {
         onChange={(e) =>
           setWeights({ ...weights, duration: Number(e.target.value) })
         }
-        className="w-full"
+        className="glass-slider w-full"
+        style={{
+          background: `linear-gradient(to right,
+            #84cc16 0%,
+            #f97316 ${weights.duration * 0.55}%,
+            #fb7185 ${weights.duration - 8}%,
+            #ffffff ${weights.duration + 4}%,
+            #ffffff 100%)`,
+        }}
       />
     </div>
 
@@ -1026,25 +1050,33 @@ useEffect(() => {
         onChange={(e) =>
           setWeights({ ...weights, difficulty: Number(e.target.value) })
         }
-        className="w-full"
+        className="glass-slider w-full"
+        style={{
+          background: `linear-gradient(to right,
+            #84cc16 0%,
+            #f97316 ${weights.difficulty * 0.55}%,
+            #fb7185 ${weights.difficulty - 8}%,
+            #ffffff ${weights.difficulty + 4}%,
+            #ffffff 100%)`,
+        }}
       />
     </div>
 
-<button
-  onClick={() =>
-    setWeights({
-      time: 50,
-      priority: 20,
-      duration: 15,
-      difficulty: 15,
-    })
-  }
-  className="w-full rounded-xl border border-slate-300 px-2 py-1 text-xs text-slate-600"
->
-  Reset to Default
-</button>
+    <button
+      onClick={() =>
+        setWeights({
+          time: 50,
+          priority: 20,
+          duration: 15,
+          difficulty: 15,
+        })
+      }
+      className="w-full rounded-xl border border-slate-300 px-2 py-1 text-xs text-slate-600"
+    >
+      Reset to Default
+    </button>
 
-</div>
+  </div>
 )}
 
               <div className="space-y-4 px-4 py-4">
