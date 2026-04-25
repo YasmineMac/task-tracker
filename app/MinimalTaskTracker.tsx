@@ -228,14 +228,22 @@ function daysUntil(dueISO?: string | null) {
   return Math.floor(ms / (1000 * 60 * 60 * 24));
 }
 
-function urgencyScore(t: {
+function urgencyScore(
+  t: {
   due?: string;
   durationHrs?: number | null;
   difficulty?: number | null;
   priority?: Priority;
   mode?: "practice" | "task";
   lastPracticedAt?: number | string;
-}) {
+  },
+  weights = {
+    time: 50,
+    priority: 20,
+    duration: 15,
+    difficulty: 15,
+  }
+) {
   const d = daysUntil(t.due);
   const dur = t.durationHrs ?? 0;
   const diff = t.difficulty ?? 1;
@@ -252,8 +260,8 @@ if (t.mode === "practice") {
 
 
   // adjust priority
-  const priorityBoost =
-    t.priority === "high" ? 15 : t.priority === "low" ? -5 : 0;
+  const priorityScore =
+  t.priority === "high" ? 100 : t.priority === "normal" ? 50 : 10;
 
   // time pressure: 0..70
   const timePressure =
@@ -271,7 +279,17 @@ if (t.mode === "practice") {
   // difficulty: 0..10
   const difficultyScore = clamp(((diff - 1) / 4) * 10, 0, 10);
 
-  return clamp(timePressure + workload + difficultyScore + priorityBoost, 0, 100);
+  const totalWeight =
+  weights.time + weights.priority + weights.duration + weights.difficulty || 1;
+
+const weightedScore =
+  (timePressure * weights.time +
+    priorityScore * weights.priority +
+    workload * weights.duration +
+    difficultyScore * weights.difficulty) /
+  totalWeight;
+
+return clamp(weightedScore, 0, 100);
 }
 
 function urgencyColour(score: number) {
@@ -367,6 +385,24 @@ export default function MinimalTaskTracker() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const hasLoadedFromSupabase = useRef(false);
   const [mode, setMode] = useState<"board" | "list">("board");
+
+  const [showWeights, setShowWeights] = useState(false);
+
+const [weights, setWeights] = useState(() => {
+  if (typeof window === "undefined") {
+    return { time: 50, priority: 20, duration: 15, difficulty: 15 };
+  }
+
+  const saved = localStorage.getItem("attentionWeights");
+
+  return saved
+    ? JSON.parse(saved)
+    : { time: 50, priority: 20, duration: 15, difficulty: 15 };
+});
+
+useEffect(() => {
+  localStorage.setItem("attentionWeights", JSON.stringify(weights));
+}, [weights]);
 
   const [query, setQuery] = useState("");
   const [courseFilter, setCourseFilter] = useState<string>("all");
@@ -579,7 +615,7 @@ useEffect(() => {
 
   const scored = baseList.map((task) => ({
     task,
-    total: urgencyScore(task),
+    total: urgencyScore(task, weights),
   }));
 
 
@@ -595,14 +631,7 @@ useEffect(() => {
     });
 
     return scored;
-  }, [
-    filtered,
-    scoreShowCompleted,
-    scoreUseTime,
-    scoreUsePriority,
-    scoreUseDuration,
-    scoreUseDifficulty,
-  ]);
+  }, [filtered, scoreShowCompleted, weights]);
 
   const maxScore = useMemo(() => Math.max(1, ...scoredTasks.map((x) => x.total)), [scoredTasks]);
 
@@ -936,13 +965,95 @@ useEffect(() => {
                 </div>
               </div>
 
+              <button
+              onClick={() => setShowWeights(!showWeights)}
+              className="mt-2 w-full rounded-xl border border-slate-300 px-2 py-1 text-xs"
+            >
+              Adjust Weights
+            </button>
+
+            {showWeights && (
+  <div className="mt-3 space-y-3 text-xs">
+    <div>
+      <label>Time: {weights.time}</label>
+      <input
+        type="range"
+        min="0"
+        max="100"
+        value={weights.time}
+        onChange={(e) =>
+          setWeights({ ...weights, time: Number(e.target.value) })
+        }
+        className="w-full"
+      />
+    </div>
+
+    <div>
+      <label>Priority: {weights.priority}</label>
+      <input
+        type="range"
+        min="0"
+        max="100"
+        value={weights.priority}
+        onChange={(e) =>
+          setWeights({ ...weights, priority: Number(e.target.value) })
+        }
+        className="w-full"
+      />
+    </div>
+
+    <div>
+      <label>Duration: {weights.duration}</label>
+      <input
+        type="range"
+        min="0"
+        max="100"
+        value={weights.duration}
+        onChange={(e) =>
+          setWeights({ ...weights, duration: Number(e.target.value) })
+        }
+        className="w-full"
+      />
+    </div>
+
+    <div>
+      <label>Difficulty: {weights.difficulty}</label>
+      <input
+        type="range"
+        min="0"
+        max="100"
+        value={weights.difficulty}
+        onChange={(e) =>
+          setWeights({ ...weights, difficulty: Number(e.target.value) })
+        }
+        className="w-full"
+      />
+    </div>
+
+<button
+  onClick={() =>
+    setWeights({
+      time: 50,
+      priority: 20,
+      duration: 15,
+      difficulty: 15,
+    })
+  }
+  className="w-full rounded-xl border border-slate-300 px-2 py-1 text-xs text-slate-600"
+>
+  Reset to Default
+</button>
+
+</div>
+)}
+
               <div className="space-y-4 px-4 py-4">
               
 
                 {/* Score list */}
                 <div className="max-h-[52vh] space-y-2 overflow-auto pr-1">
                   {scoredTasks.map(({ task }) => {
-                  const score = urgencyScore(task);
+                  const score = urgencyScore(task, weights);
                   const width = score; // already 0–100
                   const days = task.due ? daysLeftFromISO(task.due) : null;
 
