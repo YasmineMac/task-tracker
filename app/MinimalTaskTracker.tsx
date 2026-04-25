@@ -1066,7 +1066,7 @@ useEffect(() => {
       onClick={() =>
         setWeights({
           time: 50,
-          priority: 20,
+          priority: 100,
           duration: 15,
           difficulty: 15,
         })
