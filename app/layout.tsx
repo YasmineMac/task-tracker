@@ -13,8 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata = {
-  title: "Yasmine's Task Tracker",
+  title: "Yasmine's Tracker",
   icons: {
+    icon: "/apple-touch-icon.png",
     apple: "/apple-touch-icon.png",
   },
 };

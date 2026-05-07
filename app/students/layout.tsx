@@ -1,5 +1,5 @@
 export const metadata = {
-  title: "MAA01 Student Directory",
+  title: "Yasmine's Tracker",
 };
 
 export default function StudentsLayout({
@@ -9,4 +9,3 @@ export default function StudentsLayout({
 }) {
   return children;
 }
-

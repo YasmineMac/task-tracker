@@ -1,5 +1,5 @@
 export const metadata = {
-  title: "MAA01 Student Directory",
+  title: "Yasmine's Tracker",
 };
 
 
@@ -8,4 +8,3 @@ import MinimalTaskTracker from "./MinimalTaskTracker";
 export default function Page() {
   return <MinimalTaskTracker />;
 }
-

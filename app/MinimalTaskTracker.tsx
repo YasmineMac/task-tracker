@@ -1293,7 +1293,7 @@ useEffect(() => {
         {/* Header */}
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div className="space-y-1">
-            <div className="text-sm text-slate-500">Yasmine’s task tracker</div>
+            <div className="text-sm text-slate-500">Yasmine's Tracker</div>
             <h1 className="text-2xl font-semibold tracking-tight">Tasks</h1>
           </div>
 
