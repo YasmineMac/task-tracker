@@ -21,7 +21,30 @@ type Task = {
   mode?: "task" | "practice";
 };
 
-const STORAGE_KEY = "yasmine_tasks_v2_clean";
+type TimeLog = {
+  id: string;
+  taskId: string;
+  date: string;
+  hours: number;
+  note: string;
+};
+
+type BackupSnapshot = {
+  createdAt: string;
+  tasks: Task[];
+  timeLogs: TimeLog[];
+};
+
+type TaskLoadResult =
+  | { ok: true; tasks: Task[] }
+  | { ok: false; tasks: Task[] };
+
+const TIME_LOGS_STORAGE_KEY = "yasmine_time_logs_v1";
+const BACKUP_KEY_PREFIX = "yasmine_backup_";
+const ACTIVE_TAB_STORAGE_KEY = "yasmine_active_tab";
+const SYNC_CODE = "YAS-TEST-001";
+
+type ViewMode = "board" | "list" | "logger";
 
 const STATUSES: { id: Status; label: string }[] = [
   { id: "to_do", label: "To do" },
@@ -41,10 +64,28 @@ function uid() {
   return Math.random().toString(16).slice(2) + Date.now().toString(16);
 }
 
-async function loadTasks(syncCode: string): Promise<Task[]> {
+function taskFromSupabaseRow(t: Record<string, unknown>) {
+  return normalizeTask({
+    id: t.id,
+    title: t.title,
+    courseId: t.course_id,
+    status: t.status,
+    priority: t.priority,
+    due: t.due,
+    notes: t.notes,
+    durationHrs: t.duration_hrs,
+    difficulty: t.difficulty,
+    createdAt:
+      typeof t.created_at === "string" || typeof t.created_at === "number"
+        ? new Date(t.created_at).getTime()
+        : Date.now(),
+  });
+}
+
+async function loadTasks(syncCode: string): Promise<TaskLoadResult> {
   if (!supabase) {
-    console.error("Supabase env vars are missing");
-    return [];
+    console.warn("Failed to load tasks: Supabase env vars are missing");
+    return { ok: false, tasks: [] };
   }
 
   const { data, error } = await supabase
@@ -54,51 +95,103 @@ async function loadTasks(syncCode: string): Promise<Task[]> {
     .order("created_at", { ascending: false });
 
   if (error) {
-    console.error("Error loading tasks:", error);
-    return [];
+    console.warn("Failed to load tasks from Supabase:", error);
+    return { ok: false, tasks: [] };
   }
 
-  return (data || []).map((t: any) =>
-    normalizeTask({
-      id: t.id,
-      title: t.title,
-      courseId: t.course_id,
-      status: t.status,
-      priority: t.priority,
-      due: t.due,
-      notes: t.notes,
-      durationHrs: t.duration_hrs,
-      difficulty: t.difficulty,
-      createdAt: t.created_at ? new Date(t.created_at).getTime() : Date.now(),
-    })
-  );
+  const tasks = (data || []).map((t: Record<string, unknown>) => taskFromSupabaseRow(t));
+
+  if (tasks.length === 0) {
+    console.warn("Supabase load returned 0 tasks. Automatic destructive sync is disabled for this session.");
+  }
+
+  return { ok: true, tasks };
 }
 
-async function saveTasks(tasks: Task[]) {
+async function createSupabaseBackup(syncCode: string, snapshot: BackupSnapshot) {
   if (!supabase) {
-    console.error("Supabase env vars are missing");
-    return;
+    console.warn("Skipping Supabase backup: Supabase env vars are missing");
+    return false;
   }
 
-  const SYNC_CODE = "YAS-TEST-001";
+  const { error } = await supabase.from("task_backups").insert({
+    sync_code: syncCode,
+    backup_json: snapshot,
+  });
+
+  if (error) {
+    console.warn("Supabase backup insert failed. Destructive task write was cancelled:", error);
+    return false;
+  }
+
+  return true;
+}
+
+async function saveTasks(
+  tasks: Task[],
+  options: {
+    syncCode: string;
+    timeLogs: TimeLog[];
+    allowEmptyOverwrite?: boolean;
+    allowDeleteAll?: boolean;
+    onLocalBackup?: () => void;
+  }
+) {
+  if (!supabase) {
+    console.warn("Skipped task save: Supabase env vars are missing");
+    return false;
+  }
+
+  if (tasks.length === 0 && !options.allowEmptyOverwrite) {
+    console.warn("Skipped task save because tasks array is empty. Existing Supabase tasks were not touched.");
+    return false;
+  }
+
+  if (!options.allowDeleteAll) {
+    console.warn("Skipped delete-all task sync because the last Supabase load was empty or untrusted.");
+    return false;
+  }
+
+  const { data: existingData, error: backupReadError } = await supabase
+    .from("tasks")
+    .select("*")
+    .eq("sync_code", options.syncCode);
+
+  if (backupReadError) {
+    console.warn("Failed to read current Supabase tasks for backup. Destructive task write was cancelled:", backupReadError);
+    return false;
+  }
+
+  const remoteTasks = (existingData || []).map((row: Record<string, unknown>) => taskFromSupabaseRow(row));
+  createLocalBackup(remoteTasks.length ? remoteTasks : tasks, options.timeLogs);
+  options.onLocalBackup?.();
+
+  const snapshot: BackupSnapshot = {
+    createdAt: new Date().toISOString(),
+    tasks: remoteTasks.length ? remoteTasks : tasks,
+    timeLogs: options.timeLogs,
+  };
+
+  const backupOk = await createSupabaseBackup(options.syncCode, snapshot);
+  if (!backupOk) return false;
 
   const { error: deleteError } = await supabase
     .from("tasks")
     .delete()
-    .eq("sync_code", SYNC_CODE);
+    .eq("sync_code", options.syncCode);
 
   if (deleteError) {
-    console.error(
+    console.warn(
       "Error deleting old tasks:",
       deleteError.message,
       deleteError.details,
       deleteError.hint
     );
-    return;
+    return false;
   }
 
   const tasksToInsert = tasks.map((t) => ({
-    sync_code: SYNC_CODE,
+    sync_code: options.syncCode,
     title: t.title,
     course_id: t.courseId,
     status: t.status,
@@ -109,23 +202,29 @@ async function saveTasks(tasks: Task[]) {
     difficulty: t.difficulty ?? null,
   }));
 
-  if (tasksToInsert.length === 0) return;
+  if (tasksToInsert.length === 0) {
+    console.warn("Skipped insert because task list is empty after explicit delete-all operation.");
+    return true;
+  }
 
   const { error: insertError } = await supabase
     .from("tasks")
     .insert(tasksToInsert);
 
   if (insertError) {
-    console.error(
+    console.warn(
       "Error saving tasks:",
       insertError.message,
       insertError.details,
       insertError.hint
     );
+    return false;
   }
+
+  return true;
 }
 
-function normalizeTask(t: any): Task {
+function normalizeTask(t: Record<string, unknown>): Task {
   const resolvedCourseId = String(t.courseId ?? t.course ?? "robotics_studio");
 
   return {
@@ -162,18 +261,18 @@ function priorityLabel(id: Priority) {
 
 function statusPill(status?: string) {
   switch (status) {
-    case "Urgent":
-      return "bg-red-100 text-red-700";
-    case "In progress":
-      return "bg-blue-100 text-blue-700";
-    case "To do":
-      return "bg-slate-100 text-slate-700";
-    case "Frozen":
-      return "bg-zinc-200 text-zinc-600";
-    case "Completed":
-      return "bg-green-100 text-green-700";
+    case "urgent":
+      return "border border-red-100 bg-red-50 text-red-700";
+    case "in_progress":
+      return "border border-orange-100 bg-orange-50 text-orange-700";
+    case "to_do":
+      return "border border-slate-200 bg-slate-100 text-slate-700";
+    case "frozen":
+      return "border border-sky-100 bg-sky-50 text-sky-700";
+    case "completed":
+      return "border border-green-100 bg-green-50 text-green-700";
     default:
-      return "bg-slate-100 text-slate-600";
+      return "border border-slate-200 bg-slate-100 text-slate-600";
   }
 }
 
@@ -218,6 +317,209 @@ function timeLeftLabel(days: number) {
 
 function clamp(n: number, a: number, b: number) {
   return Math.max(a, Math.min(b, n));
+}
+
+function optionalFiniteNumber(raw: string) {
+  if (raw.trim() === "") return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+function todayISO() {
+  const now = new Date();
+  const d = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
+  return d.toISOString().slice(0, 10);
+}
+
+function addDaysISO(iso: string, offset: number) {
+  const d = new Date(iso + "T00:00:00");
+  d.setDate(d.getDate() + offset);
+  return d.toISOString().slice(0, 10);
+}
+
+function formatDateLabel(iso: string) {
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+  }).format(new Date(iso + "T00:00:00"));
+}
+
+function formatMonthLabel(iso: string) {
+  return new Intl.DateTimeFormat("en", { month: "short" })
+    .format(new Date(iso + "T00:00:00"))
+    .toUpperCase();
+}
+
+function dateNumber(iso: string) {
+  return new Date(iso + "T00:00:00").getDate();
+}
+
+function weekdayLetter(iso: string) {
+  return ["S", "M", "T", "W", "T", "F", "S"][new Date(iso + "T00:00:00").getDay()];
+}
+
+function heatmapCellClass(hours: number) {
+  if (hours <= 0) return "border border-slate-200/80 bg-white";
+  if (hours < 1) return "border border-transparent bg-violet-50";
+  if (hours < 2) return "border border-transparent bg-violet-100";
+  if (hours < 3) return "border border-transparent bg-violet-300";
+  return "border border-transparent bg-violet-500";
+}
+
+function weekStartISO(iso: string) {
+  const d = new Date(iso + "T00:00:00");
+  const day = d.getDay();
+  d.setDate(d.getDate() - day);
+  return d.toISOString().slice(0, 10);
+}
+
+function monthStartISO(iso: string) {
+  return `${iso.slice(0, 8)}01`;
+}
+
+function addMonthsISO(iso: string, offset: number) {
+  const d = new Date(iso + "T00:00:00");
+  d.setMonth(d.getMonth() + offset, 1);
+  return d.toISOString().slice(0, 10);
+}
+
+function percentChange(current: number, previous: number) {
+  if (previous === 0 && current === 0) return 0;
+  if (previous === 0) return 100;
+  return ((current - previous) / previous) * 100;
+}
+
+function movementPill(change: number) {
+  if (change > 0) return "border-green-100 bg-green-50 text-green-700";
+  if (change < 0) return "border-red-100 bg-red-50 text-red-700";
+  return "border-slate-200 bg-slate-50 text-slate-500";
+}
+
+function movementLabel(change: number) {
+  const arrow = change > 0 ? "↑" : change < 0 ? "↓" : "→";
+  return `${arrow} ${Math.abs(change).toFixed(0)}%`;
+}
+
+function totalHoursBetween(logs: TimeLog[], startISO: string, endISO: string) {
+  return logs.reduce((sum, log) => {
+    if (log.date < startISO || log.date > endISO) return sum;
+    return sum + log.hours;
+  }, 0);
+}
+
+function streakStats(logs: TimeLog[]) {
+  const activeDates = new Set(logs.filter((log) => log.hours > 0).map((log) => log.date));
+  const dates = Array.from(activeDates).sort();
+  let longest = 0;
+  let run = 0;
+  let previous: string | null = null;
+
+  for (const date of dates) {
+    run = previous && addDaysISO(previous, 1) === date ? run + 1 : 1;
+    longest = Math.max(longest, run);
+    previous = date;
+  }
+
+  let current = 0;
+  let cursor = todayISO();
+  while (activeDates.has(cursor)) {
+    current += 1;
+    cursor = addDaysISO(cursor, -1);
+  }
+
+  return { current, longest };
+}
+
+function normalizeTimeLogs(value: unknown): TimeLog[] {
+  if (!Array.isArray(value)) return [];
+
+  const byTaskDate = new Map<string, TimeLog>();
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const raw = item as Partial<TimeLog>;
+    const taskId = String(raw.taskId ?? "");
+    const date = typeof raw.date === "string" ? raw.date : "";
+    const hours = Number(raw.hours ?? 0);
+    if (!taskId || taskId.startsWith("logger-") || !date || !Number.isFinite(hours) || hours <= 0) {
+      continue;
+    }
+
+    const key = `${taskId}:${date}`;
+    const existing = byTaskDate.get(key);
+    if (existing) {
+      byTaskDate.set(key, {
+        ...existing,
+        hours: existing.hours + hours,
+        note: [existing.note, raw.note].filter(Boolean).join(" / "),
+      });
+    } else {
+      byTaskDate.set(key, {
+        id: String(raw.id ?? uid()),
+        taskId,
+        date,
+        hours,
+        note: typeof raw.note === "string" ? raw.note : "",
+      });
+    }
+  }
+
+  return Array.from(byTaskDate.values());
+}
+
+function backupStorageKey(date: Date) {
+  return `${BACKUP_KEY_PREFIX}${date.toISOString().replace(/:/g, "-").replace(/\.\d{3}Z$/, "")}`;
+}
+
+function getLocalBackupKeys() {
+  if (typeof window === "undefined") return [];
+  return Object.keys(localStorage)
+    .filter((key) => key.startsWith(BACKUP_KEY_PREFIX))
+    .sort()
+    .reverse();
+}
+
+function createLocalBackup(tasks: Task[], timeLogs: TimeLog[] = []) {
+  if (typeof window === "undefined") return null;
+
+  const createdAt = new Date().toISOString();
+  const snapshot: BackupSnapshot = { createdAt, tasks, timeLogs };
+  const key = backupStorageKey(new Date(createdAt));
+  localStorage.setItem(key, JSON.stringify(snapshot));
+
+  const keys = getLocalBackupKeys();
+  for (const oldKey of keys.slice(20)) {
+    localStorage.removeItem(oldKey);
+  }
+
+  return { key, snapshot };
+}
+
+function getLatestLocalBackupLabel() {
+  if (typeof window === "undefined") return { label: "Never", count: 0 };
+  const keys = getLocalBackupKeys();
+  if (!keys.length) return { label: "Never", count: 0 };
+
+  const raw = localStorage.getItem(keys[0]);
+  if (!raw) return { label: "Unknown", count: keys.length };
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<BackupSnapshot>;
+    return {
+      label: parsed.createdAt ? new Date(parsed.createdAt).toLocaleString() : "Unknown",
+      count: keys.length,
+    };
+  } catch {
+    return { label: "Unknown", count: keys.length };
+  }
+}
+
+function modeToStoredTab(mode: ViewMode) {
+  return mode === "board" ? "dashboard" : mode;
+}
+
+function storedTabToMode(value: string | null): ViewMode {
+  if (value === "list" || value === "logger") return value;
+  return "board";
 }
 
 function daysUntil(dueISO?: string | null) {
@@ -380,11 +682,20 @@ function SelectBox<T extends string>({
 /* ----------------------------- Main ----------------------------- */
 
 export default function MinimalTaskTracker() {
-  const WEEKLY_CAPACITY_HRS = 4;
-
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [timeLogs, setTimeLogs] = useState<TimeLog[]>([]);
+  const [hasMounted, setHasMounted] = useState(false);
+  const [timeLogsLoaded, setTimeLogsLoaded] = useState(false);
+  const [tasksLoaded, setTasksLoaded] = useState(false);
   const hasLoadedFromSupabase = useRef(false);
-  const [mode, setMode] = useState<"board" | "list">("board");
+  const remoteLoadTrustedForDeleteRef = useRef(false);
+  const allowNextEmptySaveRef = useRef(false);
+  const allowNextDestructiveSaveRef = useRef(false);
+  const skipNextTaskSaveRef = useRef(false);
+  const timeLogsRef = useRef(timeLogs);
+  const [mode, setMode] = useState<ViewMode>("board");
+  const [backupStatus, setBackupStatus] = useState({ label: "—", count: 0 });
+  const importInputRef = useRef<HTMLInputElement | null>(null);
 
   const [showWeights, setShowWeights] = useState(false);
 
@@ -418,6 +729,17 @@ useEffect(() => {
   const [newDifficulty, setNewDifficulty] = useState<string>("3");
   const [newNotes, setNewNotes] = useState<string>("");
 
+  // Time log modal state
+  const [logOpen, setLogOpen] = useState(false);
+  const [editingLogId, setEditingLogId] = useState<string | null>(null);
+  const [logTaskId, setLogTaskId] = useState<string>("");
+  const [logDate, setLogDate] = useState<string>("");
+  const [logHours, setLogHours] = useState<string>("");
+  const [logNote, setLogNote] = useState<string>("");
+  const [loggerTaskFilter, setLoggerTaskFilter] = useState<string>("all");
+  const [timelineEnd, setTimelineEnd] = useState<string>("");
+  const [clientToday, setClientToday] = useState<string>("");
+
   // Edit modal state
   const [editOpen, setEditOpen] = useState(false);
   const [draft, setDraft] = useState<Task | null>(null);
@@ -437,22 +759,89 @@ useEffect(() => {
 
   const searchRef = useRef<HTMLInputElement | null>(null);
 
-const SYNC_CODE = "YAS-TEST-001";
+useEffect(() => {
+  queueMicrotask(() => {
+    setHasMounted(true);
+
+    const today = todayISO();
+    setClientToday(today);
+    setTimelineEnd(today);
+    setLogDate(today);
+    setMode(storedTabToMode(localStorage.getItem(ACTIVE_TAB_STORAGE_KEY)));
+    setBackupStatus(getLatestLocalBackupLabel());
+
+    const savedLogs = localStorage.getItem(TIME_LOGS_STORAGE_KEY);
+    if (savedLogs) {
+      try {
+        const restoredLogs = normalizeTimeLogs(JSON.parse(savedLogs));
+        timeLogsRef.current = restoredLogs;
+        setTimeLogs(restoredLogs);
+      } catch (error) {
+        console.error("Error loading time logs:", error);
+      }
+    }
+    setTimeLogsLoaded(true);
+  });
+}, []);
+
+useEffect(() => {
+  if (!hasMounted) return;
+  localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, modeToStoredTab(mode));
+}, [hasMounted, mode]);
 
 useEffect(() => {
   async function fetchTasks() {
     const loaded = await loadTasks(SYNC_CODE);
-    setTasks(loaded);
+    if (!loaded.ok) {
+      console.warn("Task load failed. Supabase save is disabled until a successful load.");
+      setTasksLoaded(true);
+      return;
+    }
+
+    remoteLoadTrustedForDeleteRef.current = loaded.tasks.length > 0;
+    if (loaded.tasks.length === 0) {
+      console.warn("Remote task load returned empty. Delete-all sync remains disabled for this session.");
+    }
+
+    skipNextTaskSaveRef.current = true;
+    setTasks(loaded.tasks);
     hasLoadedFromSupabase.current = true;
+    setTasksLoaded(true);
   }
 
   fetchTasks();
 }, []);
 
+function refreshBackupStatus() {
+  setBackupStatus(getLatestLocalBackupLabel());
+}
+
 useEffect(() => {
   if (!hasLoadedFromSupabase.current) return;
-  saveTasks(tasks);
+  if (skipNextTaskSaveRef.current) {
+    skipNextTaskSaveRef.current = false;
+    return;
+  }
+
+  const allowEmptyOverwrite = allowNextEmptySaveRef.current;
+  const allowDestructiveSave = allowNextDestructiveSaveRef.current;
+  allowNextEmptySaveRef.current = false;
+  allowNextDestructiveSaveRef.current = false;
+
+  saveTasks(tasks, {
+    syncCode: SYNC_CODE,
+    timeLogs: timeLogsRef.current,
+    allowEmptyOverwrite,
+    allowDeleteAll: remoteLoadTrustedForDeleteRef.current || allowEmptyOverwrite || allowDestructiveSave,
+    onLocalBackup: refreshBackupStatus,
+  });
 }, [tasks]);
+
+useEffect(() => {
+  timeLogsRef.current = timeLogs;
+  if (!timeLogsLoaded) return;
+  localStorage.setItem(TIME_LOGS_STORAGE_KEY, JSON.stringify(timeLogs));
+}, [timeLogs, timeLogsLoaded]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -461,7 +850,7 @@ useEffect(() => {
         el &&
         (el.tagName === "INPUT" ||
           el.tagName === "TEXTAREA" ||
-          (el as any).isContentEditable);
+          el.isContentEditable);
 
       if (isTyping) return;
 
@@ -478,6 +867,8 @@ useEffect(() => {
       if (e.key === "Escape") {
         setNewOpen(false);
         setEditOpen(false);
+        setLogOpen(false);
+        setEditingLogId(null);
       }
     };
 
@@ -519,7 +910,7 @@ useEffect(() => {
     const rows = filtered.slice();
     const dir = listSortDir === "asc" ? 1 : -1;
 
-    function get(t: Task) {
+    function get(t: Task): string | number {
       switch (listSortKey) {
         case "title":
           return (t.title ?? "").toLowerCase();
@@ -545,8 +936,8 @@ useEffect(() => {
     }
 
     rows.sort((a, b) => {
-      const av = get(a) as any;
-      const bv = get(b) as any;
+      const av = get(a);
+      const bv = get(b);
 
       if (av < bv) return -1 * dir;
       if (av > bv) return 1 * dir;
@@ -558,7 +949,7 @@ useEffect(() => {
 
   const byCourse = useMemo(() => {
     const map: Record<string, Task[]> = Object.fromEntries(COURSES.map((c) => [c.id, []]));
-    for (const t of filtered) {
+    for (const t of filtered.filter((task) => task.status !== "completed")) {
       const key = t.courseId || COURSES[0].id;
       if (!map[key]) map[key] = [];
       map[key].push(t);
@@ -588,28 +979,6 @@ useEffect(() => {
     return map;
   }, [filtered]);
 
-  const weeklyHorizon = useMemo(() => {
-    const now = new Date();
-    const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-
-    const days = Array.from({ length: 7 }, (_, i) => {
-      const d = new Date(today);
-      d.setUTCDate(d.getUTCDate() + i);
-      const iso = d.toISOString().slice(0, 10);
-
-      const tasksDue = filtered.filter((t) => t.due === iso && t.status !== "completed");
-      const totalHrs = tasksDue.reduce((sum, t) => {
-        const hrs = t.durationHrs == null ? 1 : Number(t.durationHrs);
-        return sum + (Number.isFinite(hrs) ? hrs : 1);
-      }, 0);
-
-      return { iso, totalHrs, tasksDueCount: tasksDue.length };
-    });
-
-    const maxHrs = Math.max(1, ...days.map((x) => x.totalHrs));
-    return { days, maxHrs };
-  }, [filtered]);
-
   const scoredTasks = useMemo(() => {
     const baseList = scoreShowCompleted ? filtered : filtered.filter((t) => t.status !== "completed");
 
@@ -633,7 +1002,111 @@ useEffect(() => {
     return scored;
   }, [filtered, scoreShowCompleted, weights]);
 
-  const maxScore = useMemo(() => Math.max(1, ...scoredTasks.map((x) => x.total)), [scoredTasks]);
+  const loggerDays = useMemo(() => {
+    if (!timelineEnd) return [];
+    const center = timelineEnd;
+    return Array.from({ length: 42 }, (_, i) => addDaysISO(center, i - 21));
+  }, [timelineEnd]);
+
+  const loggerTasks = useMemo(() => {
+    return filtered
+      .filter((task) => loggerTaskFilter === "all" || task.id === loggerTaskFilter)
+      .slice()
+      .sort((a, b) => {
+        const aHours = timeLogs
+            .filter((log) => log.taskId === a.id)
+            .reduce((sum, log) => sum + log.hours, 0);
+        const bHours = timeLogs
+            .filter((log) => log.taskId === b.id)
+            .reduce((sum, log) => sum + log.hours, 0);
+
+        if (bHours !== aHours) return bHours - aHours;
+        return a.title.localeCompare(b.title);
+      });
+  }, [filtered, loggerTaskFilter, timeLogs]);
+
+  const taskNameById = useMemo(() => {
+    return Object.fromEntries(tasks.map((task) => [task.id, task.title]));
+  }, [tasks]);
+
+  const logTaskOptions = useMemo(() => {
+    return tasks.slice().sort((a, b) => a.title.localeCompare(b.title));
+  }, [tasks]);
+
+  function highestScorer(startISO: string, endISO: string) {
+    const totals = new Map<string, number>();
+    for (const log of timeLogs) {
+      if (log.date < startISO || log.date > endISO) continue;
+      totals.set(log.taskId, (totals.get(log.taskId) ?? 0) + log.hours);
+    }
+
+    let top: { taskId: string; hours: number } | null = null;
+    for (const [taskId, hours] of totals) {
+      if (!top || hours > top.hours) top = { taskId, hours };
+    }
+
+    if (!top || top.hours <= 0) return null;
+    return {
+      name: taskNameById[top.taskId] ?? (tasksLoaded ? "Archived task" : "Loading task…"),
+      hours: top.hours,
+    };
+  }
+
+  const logsByTaskDate = useMemo(() => {
+    const map: Record<string, TimeLog> = {};
+    for (const log of timeLogs) {
+      const key = `${log.taskId}:${log.date}`;
+      map[key] = log;
+    }
+    return map;
+  }, [timeLogs]);
+
+  const loggerSummary = useMemo(() => {
+    if (!clientToday) {
+      return {
+        week: 0,
+        month: 0,
+        weekChange: 0,
+        monthChange: 0,
+        highestWeek: null,
+        highestMonth: null,
+      };
+    }
+
+    const startOfWeek = weekStartISO(clientToday);
+    const endOfPreviousWeek = addDaysISO(startOfWeek, -1);
+    const startOfPreviousWeek = addDaysISO(startOfWeek, -7);
+    const startOfMonth = monthStartISO(clientToday);
+    const startOfPreviousMonth = addMonthsISO(startOfMonth, -1);
+    const endOfPreviousMonth = addDaysISO(startOfMonth, -1);
+    const week = totalHoursBetween(timeLogs, startOfWeek, clientToday);
+    const month = totalHoursBetween(timeLogs, startOfMonth, clientToday);
+    const previousWeek = totalHoursBetween(timeLogs, startOfPreviousWeek, endOfPreviousWeek);
+    const previousMonth = totalHoursBetween(timeLogs, startOfPreviousMonth, endOfPreviousMonth);
+
+    return {
+      week,
+      month,
+      weekChange: percentChange(week, previousWeek),
+      monthChange: percentChange(month, previousMonth),
+      highestWeek: highestScorer(startOfWeek, clientToday),
+      highestMonth: highestScorer(startOfMonth, clientToday),
+    };
+  }, [clientToday, taskNameById, tasksLoaded, timeLogs]);
+
+  const recentLogs = useMemo(() => {
+    return timeLogs
+      .slice()
+      .sort((a, b) => {
+        if (b.date !== a.date) return b.date.localeCompare(a.date);
+        return b.id.localeCompare(a.id);
+      })
+      .slice(0, 8);
+  }, [timeLogs]);
+
+  function logTaskTitle(taskId: string) {
+    return taskNameById[taskId] ?? (tasksLoaded ? "Archived task" : "Loading task…");
+  }
 
   function openNewTaskForCourse(courseId: string) {
     setNewCourseId(courseId);
@@ -644,8 +1117,8 @@ useEffect(() => {
     const title = newTitle.trim();
     if (!title) return;
 
-    const dur = newDurationHrs.trim() ? Number(newDurationHrs) : null;
-    const diff = newDifficulty.trim() ? Number(newDifficulty) : null;
+    const dur = optionalFiniteNumber(newDurationHrs);
+    const diff = optionalFiniteNumber(newDifficulty);
 
     const t: Task = {
       id: uid(),
@@ -655,8 +1128,8 @@ useEffect(() => {
       priority: newPriority,
       due: newDue || undefined,
       notes: newNotes.trim() || undefined,
-      durationHrs: Number.isFinite(dur as any) ? dur : null,
-      difficulty: Number.isFinite(diff as any) ? diff : null,
+      durationHrs: dur,
+      difficulty: diff,
       createdAt: Date.now(),
     };
 
@@ -676,7 +1149,12 @@ useEffect(() => {
   }
 
   function deleteTask(id: string) {
+    createLocalBackup(tasks, timeLogsRef.current);
+    refreshBackupStatus();
+    allowNextDestructiveSaveRef.current = true;
+    allowNextEmptySaveRef.current = true;
     setTasks((prev) => prev.filter((t) => t.id !== id));
+    setTimeLogs((prev) => prev.filter((log) => log.taskId !== id));
   }
 
   function openEdit(t: Task) {
@@ -688,6 +1166,125 @@ useEffect(() => {
     setTasks((prev) => prev.map((t) => (t.id === next.id ? next : t)));
     setEditOpen(false);
     setDraft(null);
+  }
+
+  function openLogTime(taskId?: string, date = clientToday || todayISO(), log?: TimeLog) {
+    const selectedTaskId = taskId ?? loggerTasks[0]?.id ?? logTaskOptions[0]?.id ?? "";
+    const existing =
+      log ??
+      timeLogs.find((entry) => entry.taskId === selectedTaskId && entry.date === date) ??
+      null;
+
+    setEditingLogId(existing?.id ?? null);
+    setLogTaskId(existing?.taskId ?? selectedTaskId);
+    setLogDate(existing?.date ?? date);
+    setLogHours(existing ? String(existing.hours) : "");
+    setLogNote(existing?.note ?? "");
+    setLogOpen(true);
+  }
+
+  function submitTimeLog() {
+    const hours = Number(logHours);
+    if (!logTaskId || !Number.isFinite(hours) || hours <= 0) return;
+
+    const date = logDate || clientToday || todayISO();
+    const existing = timeLogs.find(
+      (entry) =>
+        entry.id === editingLogId ||
+        (!editingLogId && entry.taskId === logTaskId && entry.date === date)
+    );
+
+    setTimeLogs((prev) => {
+      const withoutSameDate = prev.filter(
+        (entry) =>
+          entry.id !== existing?.id &&
+          !(entry.taskId === logTaskId && entry.date === date)
+      );
+      const next: TimeLog = {
+        id: existing?.id ?? uid(),
+        taskId: logTaskId,
+        date,
+        hours,
+        note: logNote.trim(),
+      };
+      return [next, ...withoutSameDate];
+    });
+
+    setEditingLogId(null);
+    setLogOpen(false);
+  }
+
+  function deleteTimeLog(id: string) {
+    setTimeLogs((prev) => prev.filter((log) => log.id !== id));
+    if (editingLogId === id) {
+      setEditingLogId(null);
+      setLogOpen(false);
+    }
+  }
+
+  function exportBackup() {
+    const createdAt = new Date().toISOString();
+    const backup = {
+      createdAt,
+      tasks,
+      timeLogs,
+      attentionWeights: weights,
+    };
+    const url = URL.createObjectURL(
+      new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" })
+    );
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `yasmine-task-backup-${createdAt.slice(0, 10)}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function importBackup(file: File) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await file.text());
+    } catch (error) {
+      console.warn("Import backup failed: invalid JSON", error);
+      window.alert("That backup file could not be read as JSON.");
+      return;
+    }
+
+    if (!parsed || typeof parsed !== "object" || !Array.isArray((parsed as { tasks?: unknown }).tasks)) {
+      console.warn("Import backup failed: backup does not contain a tasks array");
+      window.alert("That backup is missing a tasks array.");
+      return;
+    }
+
+    const incoming = parsed as {
+      tasks: Array<Record<string, unknown>>;
+      timeLogs?: unknown;
+      attentionWeights?: unknown;
+    };
+    const nextTasks = incoming.tasks.map((task) => normalizeTask(task));
+    const nextTimeLogs = normalizeTimeLogs(incoming.timeLogs);
+    const confirmed = window.confirm(
+      `Restore ${nextTasks.length} tasks from this backup? Current tasks and logs will be backed up first.`
+    );
+
+    if (!confirmed) return;
+
+    createLocalBackup(tasks, timeLogsRef.current);
+    refreshBackupStatus();
+
+    if (incoming.attentionWeights && typeof incoming.attentionWeights === "object") {
+      setWeights(incoming.attentionWeights as typeof weights);
+      localStorage.setItem("attentionWeights", JSON.stringify(incoming.attentionWeights));
+    }
+
+    timeLogsRef.current = nextTimeLogs;
+    setTimeLogs(nextTimeLogs);
+    localStorage.setItem(TIME_LOGS_STORAGE_KEY, JSON.stringify(nextTimeLogs));
+
+    allowNextEmptySaveRef.current = true;
+    allowNextDestructiveSaveRef.current = true;
+    remoteLoadTrustedForDeleteRef.current = true;
+    setTasks(nextTasks);
   }
 
   return (
@@ -752,6 +1349,14 @@ useEffect(() => {
             >
               List
             </button>
+            <button
+              className={`rounded-full px-4 py-2 text-sm ${
+                mode === "logger" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"
+              }`}
+              onClick={() => setMode("logger")}
+            >
+              Logger
+            </button>
           </div>
 
           <div className="text-sm text-slate-500">
@@ -765,7 +1370,7 @@ useEffect(() => {
             <table className="w-full text-sm">
               <thead className="bg-slate-50 text-xs text-slate-600">
                 <tr>
-                  {[
+                  {([
                     ["title", "Title"],
                     ["course", "Course"],
                     ["status", "Status"],
@@ -774,16 +1379,15 @@ useEffect(() => {
                     ["timeLeft", "Time left"],
                     ["duration", "Duration"],
                     ["difficulty", "Difficulty"],
-                  ].map(([key, label]) => (
+                  ] as Array<[typeof listSortKey, string]>).map(([key, label]) => (
                     <th key={key} className="px-3 py-2 text-left font-medium">
                       <button
                         type="button"
                         className="hover:underline"
                         onClick={() => {
-                          const k = key as any;
-                          if (listSortKey === k) setListSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                          if (listSortKey === key) setListSortDir((d) => (d === "asc" ? "desc" : "asc"));
                           else {
-                            setListSortKey(k);
+                            setListSortKey(key);
                             setListSortDir("asc");
                           }
                         }}
@@ -801,7 +1405,9 @@ useEffect(() => {
                   return (
                     <tr
                       key={t.id}
-                      className="cursor-pointer border-t border-slate-100 hover:bg-slate-50"
+                      className={`cursor-pointer border-t border-slate-100 hover:bg-slate-50 ${
+                        t.status === "completed" ? "opacity-60" : ""
+                      }`}
                       onClick={() => openEdit(t)}
                     >
                       <td className="max-w-[420px] truncate px-3 py-2 font-medium">{t.title}</td>
@@ -825,6 +1431,256 @@ useEffect(() => {
                 })}
               </tbody>
             </table>
+          </div>
+        ) : mode === "logger" ? (
+          <div className="mt-5 space-y-4">
+            <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+              <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div className="text-sm font-semibold">Logger</div>
+                  <div className="mt-1 text-xs text-slate-500">
+                    Daily focus density across tasks and projects
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <select
+                    value={loggerTaskFilter}
+                    onChange={(e) => setLoggerTaskFilter(e.target.value)}
+                    className="w-full rounded-full border border-slate-200 bg-white px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200 sm:w-[220px]"
+                  >
+                    <option value="all">All tasks</option>
+                    {filtered.map((task) => (
+                      <option key={task.id} value={task.id}>
+                        {task.title}
+                      </option>
+                    ))}
+                  </select>
+
+                  <div className="inline-flex rounded-full border border-slate-200 bg-white p-1">
+                    <button
+                      type="button"
+                      onClick={() => setTimelineEnd((date) => addDaysISO(date, -7))}
+                      className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                      aria-label="Previous week"
+                    >
+                      ←
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const today = todayISO();
+                        setClientToday(today);
+                        setTimelineEnd(today);
+                      }}
+                      className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                    >
+                      Today
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTimelineEnd((date) => addDaysISO(date, 7))}
+                      className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                      aria-label="Next week"
+                    >
+                      →
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => openLogTime()}
+                    className="rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
+                  >
+                    Log time
+                  </button>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto px-4 py-4">
+                <div className="min-w-[940px]">
+                  <div className="grid grid-cols-[190px_1fr] gap-3">
+                    <div className="pt-8 text-xs font-medium text-slate-500">Task / project</div>
+                    <div
+                      className="grid gap-1"
+                      style={{ gridTemplateColumns: `repeat(${loggerDays.length}, 16px)` }}
+                    >
+                      {loggerDays.map((day, index) => (
+                        <div key={day} className="h-11 text-center text-[10px] leading-tight text-slate-400">
+                          <div className="h-3 text-left font-semibold tracking-wide text-slate-300">
+                            {index === 0 || day.slice(5, 7) !== loggerDays[index - 1]?.slice(5, 7)
+                              ? formatMonthLabel(day)
+                              : ""}
+                          </div>
+                          <div className="mt-1 font-medium text-slate-300">{weekdayLetter(day)}</div>
+                          <div className="mt-0.5 tabular-nums">{dateNumber(day)}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {loggerTasks.map((task) => (
+                      <React.Fragment key={task.id}>
+                        <div className="flex min-h-5 items-center justify-between gap-3 rounded-xl px-2 text-sm">
+                          <button
+                            type="button"
+                            className="min-w-0 truncate text-left font-medium text-slate-700 hover:text-slate-950"
+                            onClick={() => openLogTime(task.id)}
+                          >
+                            {task.title}
+                          </button>
+                          <span className="shrink-0 text-xs tabular-nums text-slate-400">
+                            {timeLogs
+                              .filter((log) => log.taskId === task.id)
+                              .reduce((sum, log) => sum + log.hours, 0)
+                              .toFixed(1)}
+                            h
+                          </span>
+                        </div>
+
+                        <div
+                          className="grid items-center gap-1"
+                          style={{ gridTemplateColumns: `repeat(${loggerDays.length}, 16px)` }}
+                        >
+                          {loggerDays.map((day) => {
+                            const log = logsByTaskDate[`${task.id}:${day}`];
+                            const hours = log?.hours ?? 0;
+                            const tooltip = `${task.title} • ${day} • ${hours.toFixed(2)}h${
+                              log?.note ? ` • ${log.note}` : ""
+                            }`;
+                            return (
+                              <button
+                                type="button"
+                                key={`${task.id}-${day}`}
+                                title={tooltip}
+                                aria-label={tooltip}
+                                onClick={() => openLogTime(task.id, day, log)}
+                                className={`h-4 w-4 rounded-[4px] transition-colors duration-300 hover:ring-2 hover:ring-violet-200 hover:ring-offset-1 ${heatmapCellClass(hours)}`}
+                              />
+                            );
+                          })}
+                        </div>
+                      </React.Fragment>
+                    ))}
+
+                    {loggerTasks.length === 0 ? (
+                      <div className="col-span-2 rounded-xl border border-dashed border-slate-200 p-4 text-sm text-slate-400">
+                        No tasks match this logger view.
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 px-4 py-3 text-xs text-slate-500">
+                <span>Less</span>
+                {[0, 0.75, 2, 3.25, 4.5].map((hours) => (
+                  <span
+                    key={hours}
+                    className={`h-4 w-4 rounded-[4px] ${heatmapCellClass(hours)}`}
+                    aria-label={`${hours} hours`}
+                  />
+                ))}
+                <span>More</span>
+              </div>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              {[
+                {
+                  label: "This week hours",
+                  value: `${loggerSummary.week.toFixed(1)}h`,
+                  movement: loggerSummary.weekChange,
+                },
+                {
+                  label: "This month hours",
+                  value: `${loggerSummary.month.toFixed(1)}h`,
+                  movement: loggerSummary.monthChange,
+                },
+                {
+                  label: "Highest scorer this week",
+                  value: loggerSummary.highestWeek
+                    ? `${loggerSummary.highestWeek.name} · ${loggerSummary.highestWeek.hours.toFixed(1)}h`
+                    : "—",
+                },
+                {
+                  label: "Highest scorer this month",
+                  value: loggerSummary.highestMonth
+                    ? `${loggerSummary.highestMonth.name} · ${loggerSummary.highestMonth.hours.toFixed(1)}h`
+                    : "—",
+                },
+              ].map((card) => (
+                <div key={card.label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-xs text-slate-500">{card.label}</div>
+                    {typeof card.movement === "number" ? (
+                      <span className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${movementPill(card.movement)}`}>
+                        {movementLabel(card.movement)}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="mt-2 truncate text-2xl font-semibold tracking-tight text-slate-900">
+                    {card.value}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
+              <div className="border-b border-slate-100 px-4 py-3">
+                <div className="text-sm font-semibold">Recent log entries</div>
+              </div>
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-xs text-slate-600">
+                  <tr>
+                    <th className="px-3 py-2 text-left font-medium">Task</th>
+                    <th className="px-3 py-2 text-left font-medium">Date</th>
+                    <th className="px-3 py-2 text-left font-medium">Duration logged</th>
+                    <th className="px-3 py-2 text-left font-medium">Note</th>
+                    <th className="px-3 py-2 text-right font-medium">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recentLogs.length ? (
+                    recentLogs.map((log) => (
+                      <tr key={log.id} className="border-t border-slate-100">
+                        <td className="px-3 py-2 font-medium text-slate-800">
+                          {logTaskTitle(log.taskId)}
+                        </td>
+                        <td className="px-3 py-2 tabular-nums text-slate-600">{log.date}</td>
+                        <td className="px-3 py-2 tabular-nums text-slate-600">{log.hours}h</td>
+                        <td className="max-w-[420px] truncate px-3 py-2 text-slate-500">
+                          {log.note || "—"}
+                        </td>
+                        <td className="px-3 py-2">
+                          <div className="flex justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => openLogTime(log.taskId, log.date, log)}
+                              className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:bg-slate-50"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => deleteTimeLog(log.id)}
+                              className="rounded-full border border-slate-200 px-3 py-1 text-xs text-red-600 hover:bg-red-50"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr className="border-t border-slate-100">
+                      <td colSpan={5} className="px-3 py-6 text-center text-sm text-slate-400">
+                        No time logged yet.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         ) : (
           <div className="mt-5 grid gap-4 lg:grid-cols-[1fr_360px]">
@@ -1086,7 +1942,6 @@ useEffect(() => {
                 <div className="max-h-[52vh] space-y-2 overflow-auto pr-1">
                   {scoredTasks.map(({ task }) => {
                   const score = urgencyScore(task, weights);
-                  const width = score; // already 0–100
                   const days = task.due ? daysLeftFromISO(task.due) : null;
 
 
@@ -1142,10 +1997,46 @@ useEffect(() => {
 
         {/* Keyboard reminder */}
         <div className="mt-10 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-600">
-          <div className="font-medium text-slate-900">Keyboard</div>
-          <div className="mt-1">
-            Press <span className="rounded border px-1">/</span> to search,{" "}
-            <span className="rounded border px-1">n</span> to create a task.
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <div className="font-medium text-slate-900">Keyboard</div>
+              <div className="mt-1">
+                Press <span className="rounded border px-1">/</span> to search,{" "}
+                <span className="rounded border px-1">n</span> to create a task.
+              </div>
+              <div className="mt-2 text-xs text-slate-500">
+                Last local backup: {hasMounted ? backupStatus.label : "—"} · Backups kept:{" "}
+                {hasMounted ? backupStatus.count : "—"}
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={exportBackup}
+                className="rounded-full border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+              >
+                Export backup
+              </button>
+              <button
+                type="button"
+                onClick={() => importInputRef.current?.click()}
+                className="rounded-full border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+              >
+                Import backup
+              </button>
+              <input
+                ref={importInputRef}
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) importBackup(file);
+                  e.currentTarget.value = "";
+                }}
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -1270,6 +2161,101 @@ useEffect(() => {
         </div>
       </Modal>
 
+      {/* Log Time modal */}
+      <Modal
+        open={logOpen}
+        title={editingLogId ? "Edit time log" : "Log time"}
+        onClose={() => {
+          setEditingLogId(null);
+          setLogOpen(false);
+        }}
+      >
+        <div className="grid gap-3">
+          <Field label="Task / project">
+            <select
+              value={logTaskId}
+              onChange={(e) => setLogTaskId(e.target.value)}
+              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+            >
+              {!logTaskOptions.length ? <option value="">No tasks available</option> : null}
+              {logTaskOptions.map((task) => (
+                <option key={task.id} value={task.id}>
+                  {task.title}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Date">
+              <input
+                type="date"
+                value={logDate}
+                onChange={(e) => setLogDate(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+              />
+            </Field>
+
+            <Field label="Hours">
+              <input
+                inputMode="decimal"
+                placeholder="e.g. 1.5"
+                value={logHours}
+                onChange={(e) => setLogHours(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    submitTimeLog();
+                  }
+                }}
+              />
+            </Field>
+          </div>
+
+          <Field label="Note">
+            <textarea
+              value={logNote}
+              onChange={(e) => setLogNote(e.target.value)}
+              placeholder="What moved forward?"
+              className="min-h-[90px] w-full rounded-xl border border-slate-200 bg-white p-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+            />
+          </Field>
+
+          <div className="flex items-center justify-between gap-2 pt-1">
+            {editingLogId ? (
+              <button
+                className="rounded-full border border-slate-200 px-4 py-2 text-sm text-red-600 hover:bg-red-50"
+                onClick={() => deleteTimeLog(editingLogId)}
+              >
+                Delete
+              </button>
+            ) : (
+              <div />
+            )}
+
+            <div className="flex items-center gap-2">
+              <button
+                className="rounded-full border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                onClick={() => {
+                  setEditingLogId(null);
+                  setLogOpen(false);
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                className="rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                onClick={submitTimeLog}
+                disabled={!logTaskId}
+              >
+                {editingLogId ? "Save" : "Log time"}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Modal>
+
       {/* Edit modal */}
       <Modal
         open={editOpen}
@@ -1356,11 +2342,9 @@ useEffect(() => {
                 <input
                   inputMode="decimal"
                   value={draft.durationHrs == null ? "" : String(draft.durationHrs)}
-                  onChange={(e) => {
-                    const raw = e.target.value;
-                    const n = raw.trim() === "" ? null : Number(raw);
-                    setDraft({ ...draft, durationHrs: Number.isFinite(n as any) ? n : null });
-                  }}
+                  onChange={(e) =>
+                    setDraft({ ...draft, durationHrs: optionalFiniteNumber(e.target.value) })
+                  }
                   className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                 />
               </Field>
