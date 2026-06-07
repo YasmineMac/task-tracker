@@ -225,7 +225,9 @@ async function saveTasks(
 }
 
 function normalizeTask(t: Record<string, unknown>): Task {
-  const resolvedCourseId = String(t.courseId ?? t.course ?? "robotics_studio");
+  const rawCourseId = String(t.courseId ?? t.course ?? "robotics_studio");
+  const resolvedCourseId =
+    rawCourseId === "fab_ar" ? "computational_design" : rawCourseId;
 
   return {
     id: String(t.id ?? uid()),
@@ -1828,94 +1830,94 @@ useEffect(() => {
 </button>
 
 {showWeights && (
-  <div className="mt-3 space-y-4 rounded-2xl border border-white/40 bg-white/60 p-3 backdrop-blur-md shadow-sm text-xs">
+  <div className="mt-3 space-y-6 border-y border-slate-100 bg-slate-50/40 px-4 py-5 text-xs">
 
     <div>
-      <label>Time: {weights.time}</label>
-      <input
-        type="range"
-        min="0"
-        max="100"
-        value={weights.time}
-        onChange={(e) =>
-          setWeights({ ...weights, time: Number(e.target.value) })
-        }
-        className="glass-slider w-full"
-        style={{
-          background: `linear-gradient(to right,
-            #84cc16 0%,
-            #f97316 ${weights.time * 0.55}%,
-            #fb7185 ${weights.time - 8}%,
-            #ffffff ${weights.time + 4}%,
-            #ffffff 100%)`,
-        }}
-      />
+      <label className="flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500">
+        <span>Time</span>
+        <span className="tabular-nums text-slate-900">{weights.time}</span>
+      </label>
+      <div className="editorial-slider-wrap mt-3">
+        <span className="editorial-slider-marker left-1/4" />
+        <span className="editorial-slider-marker left-1/2" />
+        <span className="editorial-slider-marker left-3/4" />
+        <input
+          type="range"
+          min="0"
+          max="100"
+          value={weights.time}
+          onChange={(e) =>
+            setWeights({ ...weights, time: Number(e.target.value) })
+          }
+          className="editorial-slider"
+        />
+      </div>
     </div>
 
     <div>
-      <label>Priority: {weights.priority}</label>
-      <input
-        type="range"
-        min="0"
-        max="100"
-        value={weights.priority}
-        onChange={(e) =>
-          setWeights({ ...weights, priority: Number(e.target.value) })
-        }
-        className="glass-slider w-full"
-        style={{
-          background: `linear-gradient(to right,
-            #84cc16 0%,
-            #f97316 ${weights.priority * 0.55}%,
-            #fb7185 ${weights.priority - 8}%,
-            #ffffff ${weights.priority + 4}%,
-            #ffffff 100%)`,
-        }}
-      />
+      <label className="flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500">
+        <span>Priority</span>
+        <span className="tabular-nums text-slate-900">{weights.priority}</span>
+      </label>
+      <div className="editorial-slider-wrap mt-3">
+        <span className="editorial-slider-marker left-1/4" />
+        <span className="editorial-slider-marker left-1/2" />
+        <span className="editorial-slider-marker left-3/4" />
+        <input
+          type="range"
+          min="0"
+          max="100"
+          value={weights.priority}
+          onChange={(e) =>
+            setWeights({ ...weights, priority: Number(e.target.value) })
+          }
+          className="editorial-slider"
+        />
+      </div>
     </div>
 
     <div>
-      <label>Duration: {weights.duration}</label>
-      <input
-        type="range"
-        min="0"
-        max="100"
-        value={weights.duration}
-        onChange={(e) =>
-          setWeights({ ...weights, duration: Number(e.target.value) })
-        }
-        className="glass-slider w-full"
-        style={{
-          background: `linear-gradient(to right,
-            #84cc16 0%,
-            #f97316 ${weights.duration * 0.55}%,
-            #fb7185 ${weights.duration - 8}%,
-            #ffffff ${weights.duration + 4}%,
-            #ffffff 100%)`,
-        }}
-      />
+      <label className="flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500">
+        <span>Duration</span>
+        <span className="tabular-nums text-slate-900">{weights.duration}</span>
+      </label>
+      <div className="editorial-slider-wrap mt-3">
+        <span className="editorial-slider-marker left-1/4" />
+        <span className="editorial-slider-marker left-1/2" />
+        <span className="editorial-slider-marker left-3/4" />
+        <input
+          type="range"
+          min="0"
+          max="100"
+          value={weights.duration}
+          onChange={(e) =>
+            setWeights({ ...weights, duration: Number(e.target.value) })
+          }
+          className="editorial-slider"
+        />
+      </div>
     </div>
 
     <div>
-      <label>Difficulty: {weights.difficulty}</label>
-      <input
-        type="range"
-        min="0"
-        max="100"
-        value={weights.difficulty}
-        onChange={(e) =>
-          setWeights({ ...weights, difficulty: Number(e.target.value) })
-        }
-        className="glass-slider w-full"
-        style={{
-          background: `linear-gradient(to right,
-            #84cc16 0%,
-            #f97316 ${weights.difficulty * 0.55}%,
-            #fb7185 ${weights.difficulty - 8}%,
-            #ffffff ${weights.difficulty + 4}%,
-            #ffffff 100%)`,
-        }}
-      />
+      <label className="flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500">
+        <span>Difficulty</span>
+        <span className="tabular-nums text-slate-900">{weights.difficulty}</span>
+      </label>
+      <div className="editorial-slider-wrap mt-3">
+        <span className="editorial-slider-marker left-1/4" />
+        <span className="editorial-slider-marker left-1/2" />
+        <span className="editorial-slider-marker left-3/4" />
+        <input
+          type="range"
+          min="0"
+          max="100"
+          value={weights.difficulty}
+          onChange={(e) =>
+            setWeights({ ...weights, difficulty: Number(e.target.value) })
+          }
+          className="editorial-slider"
+        />
+      </div>
     </div>
 
     <button
