@@ -1,4 +1,3 @@
-import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -13,7 +12,10 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata = {
-  title: "Yasmine's Tracker",
+  title:
+    process.env.NEXT_PUBLIC_DEMO_MODE === "true"
+      ? "Task Tracker Playground"
+      : "Yasmine's Tracker",
   icons: {
     icon: "/apple-touch-icon.png",
     apple: "/apple-touch-icon.png",

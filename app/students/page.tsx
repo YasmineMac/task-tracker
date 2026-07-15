@@ -1,9 +1,21 @@
 "use client";
 
 
-import { useState, type CSSProperties } from "react";
-import students from "../data/students.json";
+import { useEffect, useState, type CSSProperties } from "react";
 
+const isDemoMode = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
+
+type Student = {
+  "Student code": number;
+  "Student Name": string;
+  Nationality?: string;
+  Studio?: string;
+  Gender?: string;
+  "Seminar 1"?: string;
+  "Seminar 2"?: string;
+  Workshop?: string;
+  [key: string]: string | number | undefined;
+};
 
 function Donut({
   value,
@@ -121,13 +133,24 @@ function GenderDonut({
 
 
 export default function StudentsPage() {
+  const [studentRows, setStudentRows] = useState<Student[]>([]);
+
+  useEffect(() => {
+    if (isDemoMode) return;
+
+    import("../data/students.json")
+      .then((module) => setStudentRows(module.default as Student[]))
+      .catch((error) => console.warn("Failed to load students data:", error));
+  }, []);
+
   // helper: build dropdown options from a field
   const getOptions = (key: string) =>
-    Array.from(new Set(students.map((s: any) => s[key])))
+    Array.from(new Set(studentRows.map((s) => s[key])))
       .filter(Boolean)
+      .map(String)
       .sort();
 
-const countBy = (rows: any[], key: string) => {
+const countBy = (rows: Student[], key: string) => {
   const map = new Map<string, number>();
   for (const r of rows) {
     const v = String(r[key] ?? "").trim();
@@ -137,10 +160,10 @@ const countBy = (rows: any[], key: string) => {
   return Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
 };
 
-const groupBy = (rows: any[], key: string) => {
-  const map = new Map<string, any[]>();
+const groupBy = (rows: Student[], key: string) => {
+  const map = new Map<string, Student[]>();
   for (const r of rows) {
-    const v = r[key];
+    const v = String(r[key] ?? "").trim();
     if (!v) continue;
     map.set(v, [...(map.get(v) ?? []), r]);
   }
@@ -166,6 +189,17 @@ const groupBy = (rows: any[], key: string) => {
 
   const [selectedStudentCode, setSelectedStudentCode] = useState<number | null>(null);
 
+  if (isDemoMode) {
+    return (
+      <div style={styles.page}>
+        <div style={styles.card}>
+          <div style={styles.title}>Students</div>
+          <div style={styles.subtitle}>Unavailable in the public playground.</div>
+        </div>
+      </div>
+    );
+  }
+
 //Reset button
 const resetFilters = () => {
   setSelectedNationality("All");
@@ -179,7 +213,7 @@ const resetFilters = () => {
 
   // filtered list
 
-  const filtered = students.filter((s: any) => {
+  const filtered = studentRows.filter((s) => {
 
     const matchNationality =
       selectedNationality === "All" || s.Nationality === selectedNationality;
@@ -228,7 +262,7 @@ const totalGender = maleCount + femaleCount;
 
 
     // alphabatise
-const sorted = [...filtered].sort((a: any, b: any) =>
+const sorted = [...filtered].sort((a, b) =>
   String(a["Student Name"] || "").localeCompare(String(b["Student Name"] || ""))
 );
 
@@ -240,7 +274,7 @@ const countsBySeminar1 = countBy(filtered, "Seminar 1");
 
   const selectedStudent =
     selectedStudentCode !== null
-      ? students.find((s: any) => s["Student code"] === selectedStudentCode)
+      ? studentRows.find((s) => s["Student code"] === selectedStudentCode)
       : null;
 
 
@@ -252,7 +286,7 @@ const countsBySeminar1 = countBy(filtered, "Seminar 1");
       <div>
         <div style={styles.title}>Students</div>
         <div style={styles.subtitle}>
-          {filtered.length} shown · {students.length} total
+          {filtered.length} shown · {studentRows.length} total
         </div>
       </div>
 
@@ -441,7 +475,7 @@ const countsBySeminar1 = countBy(filtered, "Seminar 1");
           <div style={styles.cardTitle}>Students</div>
 
           <div style={styles.list}>
-            {sorted.map((s: any) => {
+            {sorted.map((s) => {
               const isActive = selectedStudentCode === s["Student code"];
               return (
                 <button
@@ -555,6 +589,3 @@ const styles: Record<string, CSSProperties> = {
     cursor: "pointer",
   },
 };
-
-
-

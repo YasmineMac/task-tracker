@@ -1,5 +1,8 @@
 export const metadata = {
-  title: "Yasmine's Tracker",
+  title:
+    process.env.NEXT_PUBLIC_DEMO_MODE === "true"
+      ? "Task Tracker Playground"
+      : "Yasmine's Tracker",
 };
 
 

@@ -1,50 +1,18 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { COURSES } from "./courses";
-import { supabase } from "@/lib/supabase";
+import { getTaskStore, isDemoMode } from "./taskStore";
+import { normalizeTask, uid } from "./taskStore/taskNormalization";
+import type { BackupSnapshot, Priority, Status, Task, TaskStore, TimeLog } from "./taskStore/taskTypes";
 
-type Priority = "low" | "normal" | "high";
-type Status = "to_do" | "in_progress" | "urgent" | "frozen" | "completed";
-
-type Task = {
-  id: string;
-  title: string;
-  courseId: string;
-  status: Status;
-  priority: Priority;
-  due?: string; // yyyy-mm-dd
-  notes?: string;
-  durationHrs?: number | null;
-  difficulty?: number | null; // 1..5
-  createdAt: number;
-  mode?: "task" | "practice";
-};
-
-type TimeLog = {
-  id: string;
-  taskId: string;
-  date: string;
-  hours: number;
-  note: string;
-};
-
-type BackupSnapshot = {
-  createdAt: string;
-  tasks: Task[];
-  timeLogs: TimeLog[];
-};
-
-type TaskLoadResult =
-  | { ok: true; tasks: Task[] }
-  | { ok: false; tasks: Task[] };
-
-const TIME_LOGS_STORAGE_KEY = "yasmine_time_logs_v1";
-const BACKUP_KEY_PREFIX = "yasmine_backup_";
-const ACTIVE_TAB_STORAGE_KEY = "yasmine_active_tab";
-const SYNC_CODE = "YAS-TEST-001";
+const TIME_LOGS_STORAGE_KEY = isDemoMode ? "task_tracker_demo_time_logs_v1" : "yasmine_time_logs_v1";
+const BACKUP_KEY_PREFIX = isDemoMode ? "task_tracker_demo_backup_" : "yasmine_backup_";
+const ACTIVE_TAB_STORAGE_KEY = isDemoMode ? "task_tracker_demo_active_tab" : "yasmine_active_tab";
+const SYNC_CODE = isDemoMode ? "DEMO-TASKS" : "YAS-TEST-001";
 
 type ViewMode = "board" | "list" | "logger";
+type LoggerRangeView = "week" | "month";
 
 const STATUSES: { id: Status; label: string }[] = [
   { id: "to_do", label: "To do" },
@@ -59,195 +27,6 @@ const PRIORITIES: { id: Priority; label: string }[] = [
   { id: "normal", label: "Normal" },
   { id: "low", label: "Low" },
 ];
-
-function uid() {
-  return Math.random().toString(16).slice(2) + Date.now().toString(16);
-}
-
-function taskFromSupabaseRow(t: Record<string, unknown>) {
-  return normalizeTask({
-    id: t.id,
-    title: t.title,
-    courseId: t.course_id,
-    status: t.status,
-    priority: t.priority,
-    due: t.due,
-    notes: t.notes,
-    durationHrs: t.duration_hrs,
-    difficulty: t.difficulty,
-    createdAt:
-      typeof t.created_at === "string" || typeof t.created_at === "number"
-        ? new Date(t.created_at).getTime()
-        : Date.now(),
-  });
-}
-
-async function loadTasks(syncCode: string): Promise<TaskLoadResult> {
-  if (!supabase) {
-    console.warn("Failed to load tasks: Supabase env vars are missing");
-    return { ok: false, tasks: [] };
-  }
-
-  const { data, error } = await supabase
-    .from("tasks")
-    .select("*")
-    .eq("sync_code", syncCode)
-    .order("created_at", { ascending: false });
-
-  if (error) {
-    console.warn("Failed to load tasks from Supabase:", error);
-    return { ok: false, tasks: [] };
-  }
-
-  const tasks = (data || []).map((t: Record<string, unknown>) => taskFromSupabaseRow(t));
-
-  if (tasks.length === 0) {
-    console.warn("Supabase load returned 0 tasks. Automatic destructive sync is disabled for this session.");
-  }
-
-  return { ok: true, tasks };
-}
-
-async function createSupabaseBackup(syncCode: string, snapshot: BackupSnapshot) {
-  if (!supabase) {
-    console.warn("Skipping Supabase backup: Supabase env vars are missing");
-    return false;
-  }
-
-  const { error } = await supabase.from("task_backups").insert({
-    sync_code: syncCode,
-    backup_json: snapshot,
-  });
-
-  if (error) {
-    console.warn("Supabase backup insert failed. Destructive task write was cancelled:", error);
-    return false;
-  }
-
-  return true;
-}
-
-async function saveTasks(
-  tasks: Task[],
-  options: {
-    syncCode: string;
-    timeLogs: TimeLog[];
-    allowEmptyOverwrite?: boolean;
-    allowDeleteAll?: boolean;
-    onLocalBackup?: () => void;
-  }
-) {
-  if (!supabase) {
-    console.warn("Skipped task save: Supabase env vars are missing");
-    return false;
-  }
-
-  if (tasks.length === 0 && !options.allowEmptyOverwrite) {
-    console.warn("Skipped task save because tasks array is empty. Existing Supabase tasks were not touched.");
-    return false;
-  }
-
-  if (!options.allowDeleteAll) {
-    console.warn("Skipped delete-all task sync because the last Supabase load was empty or untrusted.");
-    return false;
-  }
-
-  const { data: existingData, error: backupReadError } = await supabase
-    .from("tasks")
-    .select("*")
-    .eq("sync_code", options.syncCode);
-
-  if (backupReadError) {
-    console.warn("Failed to read current Supabase tasks for backup. Destructive task write was cancelled:", backupReadError);
-    return false;
-  }
-
-  const remoteTasks = (existingData || []).map((row: Record<string, unknown>) => taskFromSupabaseRow(row));
-  createLocalBackup(remoteTasks.length ? remoteTasks : tasks, options.timeLogs);
-  options.onLocalBackup?.();
-
-  const snapshot: BackupSnapshot = {
-    createdAt: new Date().toISOString(),
-    tasks: remoteTasks.length ? remoteTasks : tasks,
-    timeLogs: options.timeLogs,
-  };
-
-  const backupOk = await createSupabaseBackup(options.syncCode, snapshot);
-  if (!backupOk) return false;
-
-  const { error: deleteError } = await supabase
-    .from("tasks")
-    .delete()
-    .eq("sync_code", options.syncCode);
-
-  if (deleteError) {
-    console.warn(
-      "Error deleting old tasks:",
-      deleteError.message,
-      deleteError.details,
-      deleteError.hint
-    );
-    return false;
-  }
-
-  const tasksToInsert = tasks.map((t) => ({
-    sync_code: options.syncCode,
-    title: t.title,
-    course_id: t.courseId,
-    status: t.status,
-    priority: t.priority,
-    due: t.due ?? null,
-    notes: t.notes ?? null,
-    duration_hrs: t.durationHrs ?? null,
-    difficulty: t.difficulty ?? null,
-  }));
-
-  if (tasksToInsert.length === 0) {
-    console.warn("Skipped insert because task list is empty after explicit delete-all operation.");
-    return true;
-  }
-
-  const { error: insertError } = await supabase
-    .from("tasks")
-    .insert(tasksToInsert);
-
-  if (insertError) {
-    console.warn(
-      "Error saving tasks:",
-      insertError.message,
-      insertError.details,
-      insertError.hint
-    );
-    return false;
-  }
-
-  return true;
-}
-
-function normalizeTask(t: Record<string, unknown>): Task {
-  const rawCourseId = String(t.courseId ?? t.course ?? "robotics_studio");
-  const resolvedCourseId =
-    rawCourseId === "fab_ar" ? "computational_design" : rawCourseId;
-
-  return {
-    id: String(t.id ?? uid()),
-    title: String(t.title ?? "").trim(),
-    courseId: resolvedCourseId,
-    status: (t.status ?? "to_do") as Status,
-    priority: (t.priority ?? "normal") as Priority,
-    due: typeof t.due === "string" ? t.due : undefined,
-    notes:
-      typeof t.notes === "string"
-        ? t.notes
-        : typeof t.comments === "string"
-          ? t.comments
-          : undefined,
-    durationHrs: t.durationHrs == null ? null : Number(t.durationHrs),
-    difficulty: t.difficulty == null ? null : Number(t.difficulty),
-    createdAt: typeof t.createdAt === "number" ? t.createdAt : Date.now(),
-    mode: resolvedCourseId === "yas_project" ? "practice" : "task",
-  };
-}
 
 function courseLabel(id: string) {
   return COURSES.find((c) => c.id === id)?.label ?? id;
@@ -333,6 +112,12 @@ function todayISO() {
   return d.toISOString().slice(0, 10);
 }
 
+function isValidISODate(iso: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return false;
+  const d = new Date(iso + "T00:00:00");
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === iso;
+}
+
 function addDaysISO(iso: string, offset: number) {
   const d = new Date(iso + "T00:00:00");
   d.setDate(d.getDate() + offset);
@@ -366,6 +151,38 @@ function heatmapCellClass(hours: number) {
   if (hours < 2) return "border border-transparent bg-violet-100";
   if (hours < 3) return "border border-transparent bg-violet-300";
   return "border border-transparent bg-violet-500";
+}
+
+function heatmapFillClass(hours: number) {
+  if (hours < 1) return "bg-violet-100 text-violet-700";
+  if (hours < 2) return "bg-violet-200 text-violet-800";
+  if (hours < 3) return "bg-violet-300 text-violet-900";
+  return "bg-violet-500 text-white";
+}
+
+function timeToMinutes(time: string) {
+  const match = /^(\d{2}):(\d{2})$/.exec(time);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
+  return hours * 60 + minutes;
+}
+
+function durationHoursFromTimes(startTime: string, endTime: string) {
+  const start = timeToMinutes(startTime);
+  const end = timeToMinutes(endTime);
+  if (start === null || end === null || end <= start) return null;
+  return (end - start) / 60;
+}
+
+function formatDuration(hours: number) {
+  const totalMinutes = Math.round(hours * 60);
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  if (h && m) return `${h}h ${m}m`;
+  if (h) return `${h}h`;
+  return `${m}m`;
 }
 
 function weekStartISO(iso: string) {
@@ -441,6 +258,8 @@ function normalizeTimeLogs(value: unknown): TimeLog[] {
     const raw = item as Partial<TimeLog>;
     const taskId = String(raw.taskId ?? "");
     const date = typeof raw.date === "string" ? raw.date : "";
+    const startTime = typeof raw.startTime === "string" ? raw.startTime : undefined;
+    const endTime = typeof raw.endTime === "string" ? raw.endTime : undefined;
     const hours = Number(raw.hours ?? 0);
     if (!taskId || taskId.startsWith("logger-") || !date || !Number.isFinite(hours) || hours <= 0) {
       continue;
@@ -453,12 +272,16 @@ function normalizeTimeLogs(value: unknown): TimeLog[] {
         ...existing,
         hours: existing.hours + hours,
         note: [existing.note, raw.note].filter(Boolean).join(" / "),
+        startTime: existing.startTime ?? startTime,
+        endTime: existing.endTime ?? endTime,
       });
     } else {
       byTaskDate.set(key, {
         id: String(raw.id ?? uid()),
         taskId,
         date,
+        startTime,
+        endTime,
         hours,
         note: typeof raw.note === "string" ? raw.note : "",
       });
@@ -689,7 +512,8 @@ export default function MinimalTaskTracker() {
   const [hasMounted, setHasMounted] = useState(false);
   const [timeLogsLoaded, setTimeLogsLoaded] = useState(false);
   const [tasksLoaded, setTasksLoaded] = useState(false);
-  const hasLoadedFromSupabase = useRef(false);
+  const taskStoreRef = useRef<TaskStore | null>(null);
+  const hasLoadedFromStore = useRef(false);
   const remoteLoadTrustedForDeleteRef = useRef(false);
   const allowNextEmptySaveRef = useRef(false);
   const allowNextDestructiveSaveRef = useRef(false);
@@ -736,9 +560,11 @@ useEffect(() => {
   const [editingLogId, setEditingLogId] = useState<string | null>(null);
   const [logTaskId, setLogTaskId] = useState<string>("");
   const [logDate, setLogDate] = useState<string>("");
-  const [logHours, setLogHours] = useState<string>("");
+  const [logStartTime, setLogStartTime] = useState<string>("");
+  const [logEndTime, setLogEndTime] = useState<string>("");
   const [logNote, setLogNote] = useState<string>("");
   const [loggerTaskFilter, setLoggerTaskFilter] = useState<string>("all");
+  const [loggerRangeView, setLoggerRangeView] = useState<LoggerRangeView>("month");
   const [timelineEnd, setTimelineEnd] = useState<string>("");
   const [clientToday, setClientToday] = useState<string>("");
 
@@ -792,26 +618,38 @@ useEffect(() => {
 }, [hasMounted, mode]);
 
 useEffect(() => {
+  let cancelled = false;
+
   async function fetchTasks() {
-    const loaded = await loadTasks(SYNC_CODE);
+    const store = await getTaskStore();
+    if (cancelled) return;
+
+    taskStoreRef.current = store;
+    const loaded = await store.loadTasks(SYNC_CODE);
+    if (cancelled) return;
+
     if (!loaded.ok) {
-      console.warn("Task load failed. Supabase save is disabled until a successful load.");
+      console.warn("Task load failed. Task save is disabled until a successful load.");
       setTasksLoaded(true);
       return;
     }
 
     remoteLoadTrustedForDeleteRef.current = loaded.tasks.length > 0;
-    if (loaded.tasks.length === 0) {
+    if (!isDemoMode && loaded.tasks.length === 0) {
       console.warn("Remote task load returned empty. Delete-all sync remains disabled for this session.");
     }
 
     skipNextTaskSaveRef.current = true;
     setTasks(loaded.tasks);
-    hasLoadedFromSupabase.current = true;
+    hasLoadedFromStore.current = true;
     setTasksLoaded(true);
   }
 
   fetchTasks();
+
+  return () => {
+    cancelled = true;
+  };
 }, []);
 
 function refreshBackupStatus() {
@@ -819,7 +657,7 @@ function refreshBackupStatus() {
 }
 
 useEffect(() => {
-  if (!hasLoadedFromSupabase.current) return;
+  if (!hasLoadedFromStore.current) return;
   if (skipNextTaskSaveRef.current) {
     skipNextTaskSaveRef.current = false;
     return;
@@ -830,13 +668,23 @@ useEffect(() => {
   allowNextEmptySaveRef.current = false;
   allowNextDestructiveSaveRef.current = false;
 
-  saveTasks(tasks, {
-    syncCode: SYNC_CODE,
-    timeLogs: timeLogsRef.current,
-    allowEmptyOverwrite,
-    allowDeleteAll: remoteLoadTrustedForDeleteRef.current || allowEmptyOverwrite || allowDestructiveSave,
-    onLocalBackup: refreshBackupStatus,
-  });
+  async function persistTasks() {
+    const store = taskStoreRef.current ?? (await getTaskStore());
+    taskStoreRef.current = store;
+
+    await store.saveTasks(tasks, {
+      syncCode: SYNC_CODE,
+      timeLogs: timeLogsRef.current,
+      allowEmptyOverwrite,
+      allowDeleteAll: remoteLoadTrustedForDeleteRef.current || allowEmptyOverwrite || allowDestructiveSave,
+      onLocalBackup: (backupTasks, backupTimeLogs) => {
+        createLocalBackup(backupTasks, backupTimeLogs);
+        refreshBackupStatus();
+      },
+    });
+  }
+
+  void persistTasks();
 }, [tasks]);
 
 useEffect(() => {
@@ -1005,14 +853,23 @@ useEffect(() => {
   }, [filtered, scoreShowCompleted, weights]);
 
   const loggerDays = useMemo(() => {
-    if (!timelineEnd) return [];
-    const center = timelineEnd;
-    return Array.from({ length: 42 }, (_, i) => addDaysISO(center, i - 21));
-  }, [timelineEnd]);
+    const center = isValidISODate(timelineEnd) ? timelineEnd : todayISO();
+    const dayCount = loggerRangeView === "week" ? 7 : 31;
+    const startOffset = -Math.floor(dayCount / 2);
+
+    return Array.from({ length: dayCount }, (_, i) => addDaysISO(center, startOffset + i));
+  }, [loggerRangeView, timelineEnd]);
+
+  const calculatedLogHours = useMemo(() => {
+    return durationHoursFromTimes(logStartTime, logEndTime);
+  }, [logEndTime, logStartTime]);
 
   const loggerTasks = useMemo(() => {
+    const taskIdsWithLogs = new Set(timeLogs.map((log) => log.taskId));
+
     return filtered
       .filter((task) => loggerTaskFilter === "all" || task.id === loggerTaskFilter)
+      .filter((task) => taskIdsWithLogs.has(task.id))
       .slice()
       .sort((a, b) => {
         const aHours = timeLogs
@@ -1035,7 +892,7 @@ useEffect(() => {
     return tasks.slice().sort((a, b) => a.title.localeCompare(b.title));
   }, [tasks]);
 
-  function highestScorer(startISO: string, endISO: string) {
+  const highestScorer = useCallback((startISO: string, endISO: string) => {
     const totals = new Map<string, number>();
     for (const log of timeLogs) {
       if (log.date < startISO || log.date > endISO) continue;
@@ -1052,7 +909,7 @@ useEffect(() => {
       name: taskNameById[top.taskId] ?? (tasksLoaded ? "Archived task" : "Loading task…"),
       hours: top.hours,
     };
-  }
+  }, [taskNameById, tasksLoaded, timeLogs]);
 
   const logsByTaskDate = useMemo(() => {
     const map: Record<string, TimeLog> = {};
@@ -1094,7 +951,7 @@ useEffect(() => {
       highestWeek: highestScorer(startOfWeek, clientToday),
       highestMonth: highestScorer(startOfMonth, clientToday),
     };
-  }, [clientToday, taskNameById, tasksLoaded, timeLogs]);
+  }, [clientToday, highestScorer, timeLogs]);
 
   const recentLogs = useMemo(() => {
     return timeLogs
@@ -1180,14 +1037,27 @@ useEffect(() => {
     setEditingLogId(existing?.id ?? null);
     setLogTaskId(existing?.taskId ?? selectedTaskId);
     setLogDate(existing?.date ?? date);
-    setLogHours(existing ? String(existing.hours) : "");
+    setLogStartTime(existing?.startTime ?? "");
+    setLogEndTime(existing?.endTime ?? "");
     setLogNote(existing?.note ?? "");
     setLogOpen(true);
   }
 
+  function moveLoggerRange(direction: -1 | 1) {
+    setTimelineEnd((date) => {
+      const anchor = isValidISODate(date)
+        ? date
+        : isValidISODate(clientToday)
+          ? clientToday
+          : todayISO();
+      const dayCount = loggerRangeView === "week" ? 7 : 31;
+      return addDaysISO(anchor, direction * dayCount);
+    });
+  }
+
   function submitTimeLog() {
-    const hours = Number(logHours);
-    if (!logTaskId || !Number.isFinite(hours) || hours <= 0) return;
+    const hours = calculatedLogHours;
+    if (!logTaskId || hours === null || hours <= 0) return;
 
     const date = logDate || clientToday || todayISO();
     const existing = timeLogs.find(
@@ -1206,6 +1076,8 @@ useEffect(() => {
         id: existing?.id ?? uid(),
         taskId: logTaskId,
         date,
+        startTime: logStartTime,
+        endTime: logEndTime,
         hours,
         note: logNote.trim(),
       };
@@ -1237,7 +1109,7 @@ useEffect(() => {
     );
     const link = document.createElement("a");
     link.href = url;
-    link.download = `yasmine-task-backup-${createdAt.slice(0, 10)}.json`;
+    link.download = `${isDemoMode ? "demo" : "yasmine"}-task-backup-${createdAt.slice(0, 10)}.json`;
     link.click();
     URL.revokeObjectURL(url);
   }
@@ -1295,7 +1167,9 @@ useEffect(() => {
         {/* Header */}
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div className="space-y-1">
-            <div className="text-sm text-slate-500">Yasmine's Tracker</div>
+            <div className="text-sm text-slate-500">
+              {isDemoMode ? "Task Tracker Playground" : "Yasmine's Tracker"}
+            </div>
             <h1 className="text-2xl font-semibold tracking-tight">Tasks</h1>
           </div>
 
@@ -1460,11 +1334,31 @@ useEffect(() => {
                   </select>
 
                   <div className="inline-flex rounded-full border border-slate-200 bg-white p-1">
+                    {[
+                      { id: "week", label: "Week" },
+                      { id: "month", label: "Month" },
+                    ].map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => setLoggerRangeView(option.id as LoggerRangeView)}
+                        className={`rounded-full px-3 py-1.5 text-sm ${
+                          loggerRangeView === option.id
+                            ? "bg-slate-900 text-white"
+                            : "text-slate-600 hover:bg-slate-50"
+                        }`}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="inline-flex rounded-full border border-slate-200 bg-white p-1">
                     <button
                       type="button"
-                      onClick={() => setTimelineEnd((date) => addDaysISO(date, -7))}
+                      onClick={() => moveLoggerRange(-1)}
                       className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
-                      aria-label="Previous week"
+                      aria-label="Previous range"
                     >
                       ←
                     </button>
@@ -1481,9 +1375,9 @@ useEffect(() => {
                     </button>
                     <button
                       type="button"
-                      onClick={() => setTimelineEnd((date) => addDaysISO(date, 7))}
+                      onClick={() => moveLoggerRange(1)}
                       className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
-                      aria-label="Next week"
+                      aria-label="Next range"
                     >
                       →
                     </button>
@@ -1499,23 +1393,32 @@ useEffect(() => {
                 </div>
               </div>
 
-              <div className="overflow-x-auto px-4 py-4">
-                <div className="min-w-[940px]">
+              <div className="overflow-x-auto scroll-smooth px-4 py-4 pb-5">
+                <div className="min-w-max">
                   <div className="grid grid-cols-[190px_1fr] gap-3">
                     <div className="pt-8 text-xs font-medium text-slate-500">Task / project</div>
                     <div
                       className="grid gap-1"
-                      style={{ gridTemplateColumns: `repeat(${loggerDays.length}, 16px)` }}
+                      style={{
+                        gridTemplateColumns: `repeat(${loggerDays.length}, ${
+                          loggerRangeView === "week" ? "112px" : "16px"
+                        })`,
+                      }}
                     >
                       {loggerDays.map((day, index) => (
-                        <div key={day} className="h-11 text-center text-[10px] leading-tight text-slate-400">
-                          <div className="h-3 text-left font-semibold tracking-wide text-slate-300">
+                        <div
+                          key={day}
+                          className={`rounded-lg text-center text-[10px] leading-tight text-slate-400 ${
+                            loggerRangeView === "week" ? "h-12 bg-slate-50/70 px-2 py-1" : "h-11"
+                          }`}
+                        >
+                          <div className="h-3 text-left font-semibold tracking-wide text-slate-400">
                             {index === 0 || day.slice(5, 7) !== loggerDays[index - 1]?.slice(5, 7)
                               ? formatMonthLabel(day)
                               : ""}
                           </div>
-                          <div className="mt-1 font-medium text-slate-300">{weekdayLetter(day)}</div>
-                          <div className="mt-0.5 tabular-nums">{dateNumber(day)}</div>
+                          <div className="mt-1 font-medium text-slate-400">{weekdayLetter(day)}</div>
+                          <div className="mt-0.5 tabular-nums text-slate-500">{dateNumber(day)}</div>
                         </div>
                       ))}
                     </div>
@@ -1541,7 +1444,11 @@ useEffect(() => {
 
                         <div
                           className="grid items-center gap-1"
-                          style={{ gridTemplateColumns: `repeat(${loggerDays.length}, 16px)` }}
+                          style={{
+                            gridTemplateColumns: `repeat(${loggerDays.length}, ${
+                              loggerRangeView === "week" ? "112px" : "16px"
+                            })`,
+                          }}
                         >
                           {loggerDays.map((day) => {
                             const log = logsByTaskDate[`${task.id}:${day}`];
@@ -1549,6 +1456,14 @@ useEffect(() => {
                             const tooltip = `${task.title} • ${day} • ${hours.toFixed(2)}h${
                               log?.note ? ` • ${log.note}` : ""
                             }`;
+                            const startMinutes = log?.startTime ? timeToMinutes(log.startTime) : null;
+                            const endMinutes = log?.endTime ? timeToMinutes(log.endTime) : null;
+                            const pillLeft =
+                              startMinutes !== null ? `${(startMinutes / 1440) * 100}%` : "0%";
+                            const pillWidth =
+                              startMinutes !== null && endMinutes !== null && endMinutes > startMinutes
+                                ? `${Math.max(18, ((endMinutes - startMinutes) / 1440) * 100)}%`
+                                : `${Math.min(100, Math.max(30, (hours / 4) * 100))}%`;
                             return (
                               <button
                                 type="button"
@@ -1556,8 +1471,21 @@ useEffect(() => {
                                 title={tooltip}
                                 aria-label={tooltip}
                                 onClick={() => openLogTime(task.id, day, log)}
-                                className={`h-4 w-4 rounded-[4px] transition-colors duration-300 hover:ring-2 hover:ring-violet-200 hover:ring-offset-1 ${heatmapCellClass(hours)}`}
-                              />
+                                className={
+                                  loggerRangeView === "week"
+                                    ? "flex h-12 w-28 items-center rounded-xl border border-slate-200/80 bg-white px-2 transition-colors duration-300 hover:border-violet-200 hover:bg-violet-50/40"
+                                    : `h-4 w-4 rounded-[4px] transition-colors duration-300 hover:ring-2 hover:ring-violet-200 hover:ring-offset-1 ${heatmapCellClass(hours)}`
+                                }
+                              >
+                                {loggerRangeView === "week" && hours > 0 ? (
+                                  <span
+                                    className={`flex h-6 items-center rounded-full px-2 text-[11px] font-medium tabular-nums ${heatmapFillClass(hours)}`}
+                                    style={{ marginLeft: pillLeft, width: pillWidth }}
+                                  >
+                                    {hours.toFixed(1)}h
+                                  </span>
+                                ) : null}
+                              </button>
                             );
                           })}
                         </div>
@@ -1636,7 +1564,9 @@ useEffect(() => {
                   <tr>
                     <th className="px-3 py-2 text-left font-medium">Task</th>
                     <th className="px-3 py-2 text-left font-medium">Date</th>
-                    <th className="px-3 py-2 text-left font-medium">Duration logged</th>
+                    <th className="px-3 py-2 text-left font-medium">Start</th>
+                    <th className="px-3 py-2 text-left font-medium">End</th>
+                    <th className="px-3 py-2 text-left font-medium">Duration</th>
                     <th className="px-3 py-2 text-left font-medium">Note</th>
                     <th className="px-3 py-2 text-right font-medium">Actions</th>
                   </tr>
@@ -1649,7 +1579,9 @@ useEffect(() => {
                           {logTaskTitle(log.taskId)}
                         </td>
                         <td className="px-3 py-2 tabular-nums text-slate-600">{log.date}</td>
-                        <td className="px-3 py-2 tabular-nums text-slate-600">{log.hours}h</td>
+                        <td className="px-3 py-2 tabular-nums text-slate-600">{log.startTime || "—"}</td>
+                        <td className="px-3 py-2 tabular-nums text-slate-600">{log.endTime || "—"}</td>
+                        <td className="px-3 py-2 tabular-nums text-slate-600">{formatDuration(log.hours)}</td>
                         <td className="max-w-[420px] truncate px-3 py-2 text-slate-500">
                           {log.note || "—"}
                         </td>
@@ -1675,7 +1607,7 @@ useEffect(() => {
                     ))
                   ) : (
                     <tr className="border-t border-slate-100">
-                      <td colSpan={5} className="px-3 py-6 text-center text-sm text-slate-400">
+                      <td colSpan={7} className="px-3 py-6 text-center text-sm text-slate-400">
                         No time logged yet.
                       </td>
                     </tr>
@@ -2198,12 +2130,11 @@ useEffect(() => {
               />
             </Field>
 
-            <Field label="Hours">
+            <Field label="Start time">
               <input
-                inputMode="decimal"
-                placeholder="e.g. 1.5"
-                value={logHours}
-                onChange={(e) => setLogHours(e.target.value)}
+                type="time"
+                value={logStartTime}
+                onChange={(e) => setLogStartTime(e.target.value)}
                 className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
@@ -2212,6 +2143,29 @@ useEffect(() => {
                   }
                 }}
               />
+            </Field>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="End time">
+              <input
+                type="time"
+                value={logEndTime}
+                onChange={(e) => setLogEndTime(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    submitTimeLog();
+                  }
+                }}
+              />
+            </Field>
+
+            <Field label="Calculated duration">
+              <div className="flex h-10 items-center rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm tabular-nums text-slate-600">
+                {calculatedLogHours ? formatDuration(calculatedLogHours) : "—"}
+              </div>
             </Field>
           </div>
 
@@ -2249,7 +2203,7 @@ useEffect(() => {
               <button
                 className="rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
                 onClick={submitTimeLog}
-                disabled={!logTaskId}
+                disabled={!logTaskId || !calculatedLogHours}
               >
                 {editingLogId ? "Save" : "Log time"}
               </button>
