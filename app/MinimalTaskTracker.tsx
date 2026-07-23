@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { COURSES } from "./courses";
 import { getTaskStore, isDemoMode } from "./taskStore";
 import { normalizeTask, uid } from "./taskStore/taskNormalization";
@@ -12,7 +12,8 @@ const ACTIVE_TAB_STORAGE_KEY = isDemoMode ? "task_tracker_demo_active_tab" : "ya
 const SYNC_CODE = isDemoMode ? "DEMO-TASKS" : "YAS-TEST-001";
 
 type ViewMode = "board" | "list" | "logger";
-type LoggerRangeView = "week" | "month";
+type LoggerValueMode = "hours" | "times";
+const LOGGER_DAY_COUNT = 14;
 
 const STATUSES: { id: Status; label: string }[] = [
   { id: "to_do", label: "To do" },
@@ -124,42 +125,6 @@ function addDaysISO(iso: string, offset: number) {
   return d.toISOString().slice(0, 10);
 }
 
-function formatDateLabel(iso: string) {
-  return new Intl.DateTimeFormat("en", {
-    month: "short",
-    day: "numeric",
-  }).format(new Date(iso + "T00:00:00"));
-}
-
-function formatMonthLabel(iso: string) {
-  return new Intl.DateTimeFormat("en", { month: "short" })
-    .format(new Date(iso + "T00:00:00"))
-    .toUpperCase();
-}
-
-function dateNumber(iso: string) {
-  return new Date(iso + "T00:00:00").getDate();
-}
-
-function weekdayLetter(iso: string) {
-  return ["S", "M", "T", "W", "T", "F", "S"][new Date(iso + "T00:00:00").getDay()];
-}
-
-function heatmapCellClass(hours: number) {
-  if (hours <= 0) return "border border-slate-200/80 bg-white";
-  if (hours < 1) return "border border-transparent bg-violet-50";
-  if (hours < 2) return "border border-transparent bg-violet-100";
-  if (hours < 3) return "border border-transparent bg-violet-300";
-  return "border border-transparent bg-violet-500";
-}
-
-function heatmapFillClass(hours: number) {
-  if (hours < 1) return "bg-violet-100 text-violet-700";
-  if (hours < 2) return "bg-violet-200 text-violet-800";
-  if (hours < 3) return "bg-violet-300 text-violet-900";
-  return "bg-violet-500 text-white";
-}
-
 function timeToMinutes(time: string) {
   const match = /^(\d{2}):(\d{2})$/.exec(time);
   if (!match) return null;
@@ -177,6 +142,7 @@ function durationHoursFromTimes(startTime: string, endTime: string) {
 }
 
 function formatDuration(hours: number) {
+  if (!Number.isFinite(hours) || hours <= 0) return "—";
   const totalMinutes = Math.round(hours * 60);
   const h = Math.floor(totalMinutes / 60);
   const m = totalMinutes % 60;
@@ -185,74 +151,66 @@ function formatDuration(hours: number) {
   return `${m}m`;
 }
 
-function weekStartISO(iso: string) {
-  const d = new Date(iso + "T00:00:00");
-  const day = d.getDay();
-  d.setDate(d.getDate() - day);
-  return d.toISOString().slice(0, 10);
+function formatLoggedTime(hours: number) {
+  if (!Number.isFinite(hours) || hours <= 0) return "0m";
+  return formatDuration(hours);
 }
 
-function monthStartISO(iso: string) {
-  return `${iso.slice(0, 8)}01`;
+function formatLoggerDate(iso: string) {
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+  }).format(new Date(iso + "T00:00:00"));
 }
 
-function addMonthsISO(iso: string, offset: number) {
-  const d = new Date(iso + "T00:00:00");
-  d.setMonth(d.getMonth() + offset, 1);
-  return d.toISOString().slice(0, 10);
+function formatLoggerWeekday(iso: string) {
+  return new Intl.DateTimeFormat("en", { weekday: "short" }).format(new Date(iso + "T00:00:00"));
 }
 
-function percentChange(current: number, previous: number) {
-  if (previous === 0 && current === 0) return 0;
-  if (previous === 0) return 100;
-  return ((current - previous) / previous) * 100;
+function loggerCellTone(hours: number) {
+  if (hours <= 0) return "bg-white text-slate-300";
+  if (hours < 1) return "bg-violet-50 text-violet-700";
+  if (hours < 2) return "bg-violet-100 text-violet-800";
+  if (hours < 4) return "bg-violet-200 text-violet-900";
+  return "bg-violet-300 text-violet-950";
 }
 
-function movementPill(change: number) {
-  if (change > 0) return "border-green-100 bg-green-50 text-green-700";
-  if (change < 0) return "border-red-100 bg-red-50 text-red-700";
-  return "border-slate-200 bg-slate-50 text-slate-500";
+function calendarCellTone(hours: number) {
+  if (hours <= 0) return "bg-slate-100";
+  if (hours < 1) return "bg-emerald-100";
+  if (hours < 2.5) return "bg-emerald-300";
+  if (hours < 5) return "bg-emerald-500";
+  return "bg-emerald-700";
 }
 
-function movementLabel(change: number) {
-  const arrow = change > 0 ? "↑" : change < 0 ? "↓" : "→";
-  return `${arrow} ${Math.abs(change).toFixed(0)}%`;
-}
-
-function totalHoursBetween(logs: TimeLog[], startISO: string, endISO: string) {
-  return logs.reduce((sum, log) => {
-    if (log.date < startISO || log.date > endISO) return sum;
-    return sum + log.hours;
-  }, 0);
-}
-
-function streakStats(logs: TimeLog[]) {
-  const activeDates = new Set(logs.filter((log) => log.hours > 0).map((log) => log.date));
-  const dates = Array.from(activeDates).sort();
-  let longest = 0;
-  let run = 0;
-  let previous: string | null = null;
-
-  for (const date of dates) {
-    run = previous && addDaysISO(previous, 1) === date ? run + 1 : 1;
-    longest = Math.max(longest, run);
-    previous = date;
+function courseBarClass(courseId?: string) {
+  switch (courseId) {
+    case "robotics_studio":
+    case "studio_work":
+      return "bg-emerald-500";
+    case "computational_design":
+    case "design_research":
+      return "bg-violet-500";
+    case "thesis":
+      return "bg-sky-500";
+    case "the_yas_project":
+    case "practice":
+      return "bg-cyan-500";
+    case "project_vernacular":
+    case "field_notes":
+      return "bg-lime-500";
+    case "project_bloomberg":
+    case "client_project":
+      return "bg-amber-500";
+    default:
+      return "bg-slate-400";
   }
-
-  let current = 0;
-  let cursor = todayISO();
-  while (activeDates.has(cursor)) {
-    current += 1;
-    cursor = addDaysISO(cursor, -1);
-  }
-
-  return { current, longest };
 }
 
 function normalizeTimeLogs(value: unknown): TimeLog[] {
   if (!Array.isArray(value)) return [];
 
-  const byTaskDate = new Map<string, TimeLog>();
+  const logs: TimeLog[] = [];
   for (const item of value) {
     if (!item || typeof item !== "object") continue;
     const raw = item as Partial<TimeLog>;
@@ -265,30 +223,18 @@ function normalizeTimeLogs(value: unknown): TimeLog[] {
       continue;
     }
 
-    const key = `${taskId}:${date}`;
-    const existing = byTaskDate.get(key);
-    if (existing) {
-      byTaskDate.set(key, {
-        ...existing,
-        hours: existing.hours + hours,
-        note: [existing.note, raw.note].filter(Boolean).join(" / "),
-        startTime: existing.startTime ?? startTime,
-        endTime: existing.endTime ?? endTime,
-      });
-    } else {
-      byTaskDate.set(key, {
-        id: String(raw.id ?? uid()),
-        taskId,
-        date,
-        startTime,
-        endTime,
-        hours,
-        note: typeof raw.note === "string" ? raw.note : "",
-      });
-    }
+    logs.push({
+      id: String(raw.id ?? uid()),
+      taskId,
+      date,
+      startTime,
+      endTime,
+      hours,
+      note: typeof raw.note === "string" ? raw.note : "",
+    });
   }
 
-  return Array.from(byTaskDate.values());
+  return logs;
 }
 
 function backupStorageKey(date: Date) {
@@ -518,6 +464,7 @@ export default function MinimalTaskTracker() {
   const allowNextEmptySaveRef = useRef(false);
   const allowNextDestructiveSaveRef = useRef(false);
   const skipNextTaskSaveRef = useRef(false);
+  const skipNextTimeLogSaveRef = useRef(false);
   const timeLogsRef = useRef(timeLogs);
   const [mode, setMode] = useState<ViewMode>("board");
   const [backupStatus, setBackupStatus] = useState({ label: "—", count: 0 });
@@ -564,7 +511,7 @@ useEffect(() => {
   const [logEndTime, setLogEndTime] = useState<string>("");
   const [logNote, setLogNote] = useState<string>("");
   const [loggerTaskFilter, setLoggerTaskFilter] = useState<string>("all");
-  const [loggerRangeView, setLoggerRangeView] = useState<LoggerRangeView>("month");
+  const [loggerValueMode, setLoggerValueMode] = useState<LoggerValueMode>("hours");
   const [timelineEnd, setTimelineEnd] = useState<string>("");
   const [clientToday, setClientToday] = useState<string>("");
 
@@ -603,6 +550,7 @@ useEffect(() => {
       try {
         const restoredLogs = normalizeTimeLogs(JSON.parse(savedLogs));
         timeLogsRef.current = restoredLogs;
+        skipNextTimeLogSaveRef.current = true;
         setTimeLogs(restoredLogs);
       } catch (error) {
         console.error("Error loading time logs:", error);
@@ -690,6 +638,10 @@ useEffect(() => {
 useEffect(() => {
   timeLogsRef.current = timeLogs;
   if (!timeLogsLoaded) return;
+  if (skipNextTimeLogSaveRef.current) {
+    skipNextTimeLogSaveRef.current = false;
+    return;
+  }
   localStorage.setItem(TIME_LOGS_STORAGE_KEY, JSON.stringify(timeLogs));
 }, [timeLogs, timeLogsLoaded]);
 
@@ -854,11 +806,10 @@ useEffect(() => {
 
   const loggerDays = useMemo(() => {
     const center = isValidISODate(timelineEnd) ? timelineEnd : todayISO();
-    const dayCount = loggerRangeView === "week" ? 7 : 31;
-    const startOffset = -Math.floor(dayCount / 2);
+    const startOffset = -Math.floor(LOGGER_DAY_COUNT / 2) + 1;
 
-    return Array.from({ length: dayCount }, (_, i) => addDaysISO(center, startOffset + i));
-  }, [loggerRangeView, timelineEnd]);
+    return Array.from({ length: LOGGER_DAY_COUNT }, (_, i) => addDaysISO(center, startOffset + i));
+  }, [timelineEnd]);
 
   const calculatedLogHours = useMemo(() => {
     return durationHoursFromTimes(logStartTime, logEndTime);
@@ -888,84 +839,89 @@ useEffect(() => {
     return Object.fromEntries(tasks.map((task) => [task.id, task.title]));
   }, [tasks]);
 
+  const taskById = useMemo(() => {
+    return Object.fromEntries(tasks.map((task) => [task.id, task]));
+  }, [tasks]);
+
   const logTaskOptions = useMemo(() => {
     return tasks.slice().sort((a, b) => a.title.localeCompare(b.title));
   }, [tasks]);
 
-  const highestScorer = useCallback((startISO: string, endISO: string) => {
-    const totals = new Map<string, number>();
-    for (const log of timeLogs) {
-      if (log.date < startISO || log.date > endISO) continue;
-      totals.set(log.taskId, (totals.get(log.taskId) ?? 0) + log.hours);
-    }
-
-    let top: { taskId: string; hours: number } | null = null;
-    for (const [taskId, hours] of totals) {
-      if (!top || hours > top.hours) top = { taskId, hours };
-    }
-
-    if (!top || top.hours <= 0) return null;
-    return {
-      name: taskNameById[top.taskId] ?? (tasksLoaded ? "Archived task" : "Loading task…"),
-      hours: top.hours,
-    };
-  }, [taskNameById, tasksLoaded, timeLogs]);
-
   const logsByTaskDate = useMemo(() => {
-    const map: Record<string, TimeLog> = {};
+    const map: Record<string, TimeLog[]> = {};
     for (const log of timeLogs) {
       const key = `${log.taskId}:${log.date}`;
-      map[key] = log;
+      map[key] = [...(map[key] ?? []), log];
     }
     return map;
   }, [timeLogs]);
 
-  const loggerSummary = useMemo(() => {
-    if (!clientToday) {
+  const loggerRows = useMemo(() => {
+    const visibleDates = new Set(loggerDays);
+    return loggerTasks.map((task) => {
+      const logs = timeLogs.filter((log) => log.taskId === task.id && visibleDates.has(log.date));
       return {
-        week: 0,
-        month: 0,
-        weekChange: 0,
-        monthChange: 0,
-        highestWeek: null,
-        highestMonth: null,
+        task,
+        total: logs.reduce((sum, log) => sum + log.hours, 0),
       };
+    });
+  }, [loggerDays, loggerTasks, timeLogs]);
+
+  const workCalendar = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const log of timeLogs) {
+      totals.set(log.date, (totals.get(log.date) ?? 0) + log.hours);
     }
 
-    const startOfWeek = weekStartISO(clientToday);
-    const endOfPreviousWeek = addDaysISO(startOfWeek, -1);
-    const startOfPreviousWeek = addDaysISO(startOfWeek, -7);
-    const startOfMonth = monthStartISO(clientToday);
-    const startOfPreviousMonth = addMonthsISO(startOfMonth, -1);
-    const endOfPreviousMonth = addDaysISO(startOfMonth, -1);
-    const week = totalHoursBetween(timeLogs, startOfWeek, clientToday);
-    const month = totalHoursBetween(timeLogs, startOfMonth, clientToday);
-    const previousWeek = totalHoursBetween(timeLogs, startOfPreviousWeek, endOfPreviousWeek);
-    const previousMonth = totalHoursBetween(timeLogs, startOfPreviousMonth, endOfPreviousMonth);
+    const end = isValidISODate(clientToday) ? clientToday : todayISO();
+    const rawStart = addDaysISO(end, -364);
+    const startDate = new Date(rawStart + "T00:00:00");
+    const start = addDaysISO(rawStart, -startDate.getDay());
+    const weeks: { weekStart: string; days: { date: string; hours: number }[] }[] = [];
+    let cursor = start;
+
+    for (let week = 0; week < 53; week += 1) {
+      const days = Array.from({ length: 7 }, (_, dayIndex) => {
+        const date = addDaysISO(cursor, dayIndex);
+        return {
+          date,
+          hours: date >= rawStart && date <= end ? totals.get(date) ?? 0 : 0,
+        };
+      });
+
+      weeks.push({ weekStart: cursor, days });
+      cursor = addDaysISO(cursor, 7);
+    }
+
+    return { rawStart, end, weeks };
+  }, [clientToday, timeLogs]);
+
+  const topWorkedTasks = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const log of timeLogs) {
+      totals.set(log.taskId, (totals.get(log.taskId) ?? 0) + log.hours);
+    }
+
+    const rows = Array.from(totals.entries())
+      .map(([taskId, hours]) => {
+        const task = taskById[taskId];
+        return {
+          taskId,
+          title: task?.title ?? "Archived task",
+          category: task ? courseLabel(task.courseId) : "Archived task",
+          courseId: task?.courseId,
+          hours,
+        };
+      })
+      .filter((row) => row.hours > 0)
+      .sort((a, b) => b.hours - a.hours)
+      .slice(0, 10);
 
     return {
-      week,
-      month,
-      weekChange: percentChange(week, previousWeek),
-      monthChange: percentChange(month, previousMonth),
-      highestWeek: highestScorer(startOfWeek, clientToday),
-      highestMonth: highestScorer(startOfMonth, clientToday),
+      rows,
+      maxHours: rows[0]?.hours ?? 0,
     };
-  }, [clientToday, highestScorer, timeLogs]);
-
-  const recentLogs = useMemo(() => {
-    return timeLogs
-      .slice()
-      .sort((a, b) => {
-        if (b.date !== a.date) return b.date.localeCompare(a.date);
-        return b.id.localeCompare(a.id);
-      })
-      .slice(0, 8);
-  }, [timeLogs]);
-
-  function logTaskTitle(taskId: string) {
-    return taskNameById[taskId] ?? (tasksLoaded ? "Archived task" : "Loading task…");
-  }
+  }, [taskById, timeLogs]);
 
   function openNewTaskForCourse(courseId: string) {
     setNewCourseId(courseId);
@@ -1029,10 +985,7 @@ useEffect(() => {
 
   function openLogTime(taskId?: string, date = clientToday || todayISO(), log?: TimeLog) {
     const selectedTaskId = taskId ?? loggerTasks[0]?.id ?? logTaskOptions[0]?.id ?? "";
-    const existing =
-      log ??
-      timeLogs.find((entry) => entry.taskId === selectedTaskId && entry.date === date) ??
-      null;
+    const existing = log ?? null;
 
     setEditingLogId(existing?.id ?? null);
     setLogTaskId(existing?.taskId ?? selectedTaskId);
@@ -1050,8 +1003,7 @@ useEffect(() => {
         : isValidISODate(clientToday)
           ? clientToday
           : todayISO();
-      const dayCount = loggerRangeView === "week" ? 7 : 31;
-      return addDaysISO(anchor, direction * dayCount);
+      return addDaysISO(anchor, direction * LOGGER_DAY_COUNT);
     });
   }
 
@@ -1060,18 +1012,11 @@ useEffect(() => {
     if (!logTaskId || hours === null || hours <= 0) return;
 
     const date = logDate || clientToday || todayISO();
-    const existing = timeLogs.find(
-      (entry) =>
-        entry.id === editingLogId ||
-        (!editingLogId && entry.taskId === logTaskId && entry.date === date)
-    );
+    const existing = editingLogId
+      ? timeLogs.find((entry) => entry.id === editingLogId)
+      : null;
 
     setTimeLogs((prev) => {
-      const withoutSameDate = prev.filter(
-        (entry) =>
-          entry.id !== existing?.id &&
-          !(entry.taskId === logTaskId && entry.date === date)
-      );
       const next: TimeLog = {
         id: existing?.id ?? uid(),
         taskId: logTaskId,
@@ -1081,7 +1026,8 @@ useEffect(() => {
         hours,
         note: logNote.trim(),
       };
-      return [next, ...withoutSameDate];
+      if (!existing) return [next, ...prev];
+      return prev.map((entry) => (entry.id === existing.id ? next : entry));
     });
 
     setEditingLogId(null);
@@ -1309,311 +1255,297 @@ useEffect(() => {
             </table>
           </div>
         ) : mode === "logger" ? (
-          <div className="mt-5 space-y-4">
-            <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-              <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <div className="text-sm font-semibold">Logger</div>
-                  <div className="mt-1 text-xs text-slate-500">
-                    Daily focus density across tasks and projects
-                  </div>
+          <div className="mt-5 rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div className="text-sm font-semibold">Logger</div>
+                <div className="mt-1 text-xs text-slate-500">
+                  {loggerDays[0]} to {loggerDays[loggerDays.length - 1]}
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <select
+                  value={loggerTaskFilter}
+                  onChange={(e) => setLoggerTaskFilter(e.target.value)}
+                  className="w-full rounded-full border border-slate-200 bg-white px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200 sm:w-[220px]"
+                >
+                  <option value="all">All tasks</option>
+                  {filtered.map((task) => (
+                    <option key={task.id} value={task.id}>
+                      {task.title}
+                    </option>
+                  ))}
+                </select>
+
+                <div className="inline-flex rounded-full border border-slate-200 bg-white p-1">
+                  {[
+                    { id: "hours", label: "Hours logged" },
+                    { id: "times", label: "Times logged" },
+                  ].map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => setLoggerValueMode(option.id as LoggerValueMode)}
+                      className={`rounded-full px-3 py-1.5 text-sm ${
+                        loggerValueMode === option.id
+                          ? "bg-slate-900 text-white"
+                          : "text-slate-600 hover:bg-slate-50"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
                 </div>
 
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                  <select
-                    value={loggerTaskFilter}
-                    onChange={(e) => setLoggerTaskFilter(e.target.value)}
-                    className="w-full rounded-full border border-slate-200 bg-white px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200 sm:w-[220px]"
-                  >
-                    <option value="all">All tasks</option>
-                    {filtered.map((task) => (
-                      <option key={task.id} value={task.id}>
-                        {task.title}
-                      </option>
-                    ))}
-                  </select>
-
-                  <div className="inline-flex rounded-full border border-slate-200 bg-white p-1">
-                    {[
-                      { id: "week", label: "Week" },
-                      { id: "month", label: "Month" },
-                    ].map((option) => (
-                      <button
-                        key={option.id}
-                        type="button"
-                        onClick={() => setLoggerRangeView(option.id as LoggerRangeView)}
-                        className={`rounded-full px-3 py-1.5 text-sm ${
-                          loggerRangeView === option.id
-                            ? "bg-slate-900 text-white"
-                            : "text-slate-600 hover:bg-slate-50"
-                        }`}
-                      >
-                        {option.label}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="inline-flex rounded-full border border-slate-200 bg-white p-1">
-                    <button
-                      type="button"
-                      onClick={() => moveLoggerRange(-1)}
-                      className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
-                      aria-label="Previous range"
-                    >
-                      ←
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const today = todayISO();
-                        setClientToday(today);
-                        setTimelineEnd(today);
-                      }}
-                      className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
-                    >
-                      Today
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => moveLoggerRange(1)}
-                      className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
-                      aria-label="Next range"
-                    >
-                      →
-                    </button>
-                  </div>
-
+                <div className="inline-flex rounded-full border border-slate-200 bg-white p-1">
                   <button
                     type="button"
-                    onClick={() => openLogTime()}
-                    className="rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
+                    onClick={() => moveLoggerRange(-1)}
+                    className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
                   >
-                    Log time
+                    Previous
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const today = todayISO();
+                      setClientToday(today);
+                      setTimelineEnd(today);
+                    }}
+                    className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                  >
+                    Today
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => moveLoggerRange(1)}
+                    className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                  >
+                    Next
                   </button>
                 </div>
-              </div>
 
-              <div className="overflow-x-auto scroll-smooth px-4 py-4 pb-5">
-                <div className="min-w-max">
-                  <div className="grid grid-cols-[190px_1fr] gap-3">
-                    <div className="pt-8 text-xs font-medium text-slate-500">Task / project</div>
-                    <div
-                      className="grid gap-1"
-                      style={{
-                        gridTemplateColumns: `repeat(${loggerDays.length}, ${
-                          loggerRangeView === "week" ? "112px" : "16px"
-                        })`,
-                      }}
-                    >
-                      {loggerDays.map((day, index) => (
-                        <div
-                          key={day}
-                          className={`rounded-lg text-center text-[10px] leading-tight text-slate-400 ${
-                            loggerRangeView === "week" ? "h-12 bg-slate-50/70 px-2 py-1" : "h-11"
-                          }`}
-                        >
-                          <div className="h-3 text-left font-semibold tracking-wide text-slate-400">
-                            {index === 0 || day.slice(5, 7) !== loggerDays[index - 1]?.slice(5, 7)
-                              ? formatMonthLabel(day)
-                              : ""}
-                          </div>
-                          <div className="mt-1 font-medium text-slate-400">{weekdayLetter(day)}</div>
-                          <div className="mt-0.5 tabular-nums text-slate-500">{dateNumber(day)}</div>
-                        </div>
-                      ))}
-                    </div>
-
-                    {loggerTasks.map((task) => (
-                      <React.Fragment key={task.id}>
-                        <div className="flex min-h-5 items-center justify-between gap-3 rounded-xl px-2 text-sm">
-                          <button
-                            type="button"
-                            className="min-w-0 truncate text-left font-medium text-slate-700 hover:text-slate-950"
-                            onClick={() => openLogTime(task.id)}
-                          >
-                            {task.title}
-                          </button>
-                          <span className="shrink-0 text-xs tabular-nums text-slate-400">
-                            {timeLogs
-                              .filter((log) => log.taskId === task.id)
-                              .reduce((sum, log) => sum + log.hours, 0)
-                              .toFixed(1)}
-                            h
-                          </span>
-                        </div>
-
-                        <div
-                          className="grid items-center gap-1"
-                          style={{
-                            gridTemplateColumns: `repeat(${loggerDays.length}, ${
-                              loggerRangeView === "week" ? "112px" : "16px"
-                            })`,
-                          }}
-                        >
-                          {loggerDays.map((day) => {
-                            const log = logsByTaskDate[`${task.id}:${day}`];
-                            const hours = log?.hours ?? 0;
-                            const tooltip = `${task.title} • ${day} • ${hours.toFixed(2)}h${
-                              log?.note ? ` • ${log.note}` : ""
-                            }`;
-                            const startMinutes = log?.startTime ? timeToMinutes(log.startTime) : null;
-                            const endMinutes = log?.endTime ? timeToMinutes(log.endTime) : null;
-                            const pillLeft =
-                              startMinutes !== null ? `${(startMinutes / 1440) * 100}%` : "0%";
-                            const pillWidth =
-                              startMinutes !== null && endMinutes !== null && endMinutes > startMinutes
-                                ? `${Math.max(18, ((endMinutes - startMinutes) / 1440) * 100)}%`
-                                : `${Math.min(100, Math.max(30, (hours / 4) * 100))}%`;
-                            return (
-                              <button
-                                type="button"
-                                key={`${task.id}-${day}`}
-                                title={tooltip}
-                                aria-label={tooltip}
-                                onClick={() => openLogTime(task.id, day, log)}
-                                className={
-                                  loggerRangeView === "week"
-                                    ? "flex h-12 w-28 items-center rounded-xl border border-slate-200/80 bg-white px-2 transition-colors duration-300 hover:border-violet-200 hover:bg-violet-50/40"
-                                    : `h-4 w-4 rounded-[4px] transition-colors duration-300 hover:ring-2 hover:ring-violet-200 hover:ring-offset-1 ${heatmapCellClass(hours)}`
-                                }
-                              >
-                                {loggerRangeView === "week" && hours > 0 ? (
-                                  <span
-                                    className={`flex h-6 items-center rounded-full px-2 text-[11px] font-medium tabular-nums ${heatmapFillClass(hours)}`}
-                                    style={{ marginLeft: pillLeft, width: pillWidth }}
-                                  >
-                                    {hours.toFixed(1)}h
-                                  </span>
-                                ) : null}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </React.Fragment>
-                    ))}
-
-                    {loggerTasks.length === 0 ? (
-                      <div className="col-span-2 rounded-xl border border-dashed border-slate-200 p-4 text-sm text-slate-400">
-                        No tasks match this logger view.
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 px-4 py-3 text-xs text-slate-500">
-                <span>Less</span>
-                {[0, 0.75, 2, 3.25, 4.5].map((hours) => (
-                  <span
-                    key={hours}
-                    className={`h-4 w-4 rounded-[4px] ${heatmapCellClass(hours)}`}
-                    aria-label={`${hours} hours`}
-                  />
-                ))}
-                <span>More</span>
+                <button
+                  type="button"
+                  onClick={() => openLogTime()}
+                  className="rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
+                >
+                  Log time
+                </button>
               </div>
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              {[
-                {
-                  label: "This week hours",
-                  value: `${loggerSummary.week.toFixed(1)}h`,
-                  movement: loggerSummary.weekChange,
-                },
-                {
-                  label: "This month hours",
-                  value: `${loggerSummary.month.toFixed(1)}h`,
-                  movement: loggerSummary.monthChange,
-                },
-                {
-                  label: "Highest scorer this week",
-                  value: loggerSummary.highestWeek
-                    ? `${loggerSummary.highestWeek.name} · ${loggerSummary.highestWeek.hours.toFixed(1)}h`
-                    : "—",
-                },
-                {
-                  label: "Highest scorer this month",
-                  value: loggerSummary.highestMonth
-                    ? `${loggerSummary.highestMonth.name} · ${loggerSummary.highestMonth.hours.toFixed(1)}h`
-                    : "—",
-                },
-              ].map((card) => (
-                <div key={card.label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-xs text-slate-500">{card.label}</div>
-                    {typeof card.movement === "number" ? (
-                      <span className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${movementPill(card.movement)}`}>
-                        {movementLabel(card.movement)}
-                      </span>
-                    ) : null}
-                  </div>
-                  <div className="mt-2 truncate text-2xl font-semibold tracking-tight text-slate-900">
-                    {card.value}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
-              <div className="border-b border-slate-100 px-4 py-3">
-                <div className="text-sm font-semibold">Recent log entries</div>
-              </div>
-              <table className="w-full text-sm">
-                <thead className="bg-slate-50 text-xs text-slate-600">
+            <div className="overflow-x-auto">
+              <table className="min-w-max border-separate border-spacing-0 text-sm">
+                <thead className="text-xs text-slate-600">
                   <tr>
-                    <th className="px-3 py-2 text-left font-medium">Task</th>
-                    <th className="px-3 py-2 text-left font-medium">Date</th>
-                    <th className="px-3 py-2 text-left font-medium">Start</th>
-                    <th className="px-3 py-2 text-left font-medium">End</th>
-                    <th className="px-3 py-2 text-left font-medium">Duration</th>
-                    <th className="px-3 py-2 text-left font-medium">Note</th>
-                    <th className="px-3 py-2 text-right font-medium">Actions</th>
+                    <th className="sticky left-0 z-30 w-40 border-b border-r border-slate-200 bg-slate-50 px-3 py-2 text-left font-medium">
+                      Category
+                    </th>
+                    <th className="sticky left-40 z-30 w-64 border-b border-r border-slate-200 bg-slate-50 px-3 py-2 text-left font-medium">
+                      Task
+                    </th>
+                    {loggerDays.map((day) => (
+                      <th
+                        key={day}
+                        className="w-28 border-b border-r border-slate-200 bg-slate-50 px-3 py-2 text-center font-medium"
+                      >
+                        <div>{formatLoggerWeekday(day)}</div>
+                        <div className="mt-0.5 tabular-nums text-slate-400">{formatLoggerDate(day)}</div>
+                      </th>
+                    ))}
+                    <th className="sticky right-0 z-30 w-28 border-b border-l border-slate-200 bg-slate-50 px-3 py-2 text-right font-medium">
+                      Total
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {recentLogs.length ? (
-                    recentLogs.map((log) => (
-                      <tr key={log.id} className="border-t border-slate-100">
-                        <td className="px-3 py-2 font-medium text-slate-800">
-                          {logTaskTitle(log.taskId)}
+                  {loggerRows.length ? (
+                    loggerRows.map(({ task, total }) => (
+                      <tr key={task.id}>
+                        <td className="sticky left-0 z-20 w-40 border-b border-r border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
+                          {courseLabel(task.courseId)}
                         </td>
-                        <td className="px-3 py-2 tabular-nums text-slate-600">{log.date}</td>
-                        <td className="px-3 py-2 tabular-nums text-slate-600">{log.startTime || "—"}</td>
-                        <td className="px-3 py-2 tabular-nums text-slate-600">{log.endTime || "—"}</td>
-                        <td className="px-3 py-2 tabular-nums text-slate-600">{formatDuration(log.hours)}</td>
-                        <td className="max-w-[420px] truncate px-3 py-2 text-slate-500">
-                          {log.note || "—"}
+                        <td className="sticky left-40 z-20 w-64 border-b border-r border-slate-200 bg-white px-3 py-2">
+                          <button
+                            type="button"
+                            onClick={() => openLogTime(task.id)}
+                            className="block max-w-56 truncate text-left font-medium text-slate-800 hover:text-slate-950"
+                          >
+                            {task.title}
+                          </button>
                         </td>
-                        <td className="px-3 py-2">
-                          <div className="flex justify-end gap-2">
-                            <button
-                              type="button"
-                              onClick={() => openLogTime(log.taskId, log.date, log)}
-                              className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:bg-slate-50"
+                        {loggerDays.map((day) => {
+                          const cellLogs = logsByTaskDate[`${task.id}:${day}`] ?? [];
+                          const hours = cellLogs.reduce((sum, log) => sum + log.hours, 0);
+                          const title = `${task.title} • ${day} • ${formatDuration(hours)}`;
+                          const timeLines = cellLogs.length
+                            ? cellLogs.map((log) =>
+                                log.startTime && log.endTime ? `${log.startTime}-${log.endTime}` : "—"
+                              )
+                            : ["—"];
+
+                          return (
+                            <td
+                              key={`${task.id}-${day}`}
+                              className={`h-16 w-28 border-b border-r border-slate-200 px-3 py-2 text-center text-xs font-medium tabular-nums ${loggerCellTone(hours)}`}
+                              title={title}
                             >
-                              Edit
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => deleteTimeLog(log.id)}
-                              className="rounded-full border border-slate-200 px-3 py-1 text-xs text-red-600 hover:bg-red-50"
-                            >
-                              Delete
-                            </button>
-                          </div>
+                              <button
+                                type="button"
+                                onClick={() => openLogTime(task.id, day, cellLogs[0])}
+                                className="h-full w-full"
+                                aria-label={title}
+                              >
+                                {loggerValueMode === "hours" ? (
+                                  formatDuration(hours)
+                                ) : (
+                                  <span className="flex flex-col gap-0.5 leading-tight">
+                                    {timeLines.map((line, index) => (
+                                      <span key={`${line}-${index}`}>{line}</span>
+                                    ))}
+                                  </span>
+                                )}
+                              </button>
+                            </td>
+                          );
+                        })}
+                        <td className="sticky right-0 z-20 w-28 border-b border-l border-slate-200 bg-white px-3 py-2 text-right text-xs font-semibold tabular-nums text-slate-800">
+                          {formatDuration(total)}
                         </td>
                       </tr>
                     ))
                   ) : (
-                    <tr className="border-t border-slate-100">
-                      <td colSpan={7} className="px-3 py-6 text-center text-sm text-slate-400">
-                        No time logged yet.
+                    <tr>
+                      <td
+                        colSpan={loggerDays.length + 3}
+                        className="border-b border-slate-200 px-4 py-8 text-center text-sm text-slate-400"
+                      >
+                        No tasks have time logs in this view.
                       </td>
                     </tr>
                   )}
                 </tbody>
               </table>
+            </div>
+
+            <div className="space-y-4 border-t border-slate-100 px-4 py-4">
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold">Daily work calendar</div>
+                    <div className="mt-1 text-xs text-slate-500">
+                      {workCalendar.rawStart} to {workCalendar.end}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 text-[11px] text-slate-500">
+                    <span>Less</span>
+                    {[0, 0.5, 1.5, 3, 5].map((hours) => (
+                      <span
+                        key={hours}
+                        className={`h-3 w-3 rounded-[3px] ${calendarCellTone(hours)}`}
+                        aria-label={`${formatLoggedTime(hours)} logged`}
+                      />
+                    ))}
+                    <span>More</span>
+                  </div>
+                </div>
+
+                <div className="mt-4 overflow-x-auto pb-1">
+                  <div className="min-w-max">
+                    <div className="grid grid-cols-[28px_1fr] gap-x-2">
+                      <div />
+                      <div
+                        className="grid h-4 text-[10px] text-slate-400"
+                        style={{ gridTemplateColumns: `repeat(${workCalendar.weeks.length}, 12px)` }}
+                      >
+                        {workCalendar.weeks.map((week, index) => {
+                          const month = new Date(week.weekStart + "T00:00:00").getMonth();
+                          const previousMonth =
+                            index > 0
+                              ? new Date(workCalendar.weeks[index - 1].weekStart + "T00:00:00").getMonth()
+                              : null;
+                          return (
+                            <div key={week.weekStart} className="relative">
+                              {index === 0 || month !== previousMonth ? (
+                                <span className="absolute left-0 whitespace-nowrap">
+                                  {new Intl.DateTimeFormat("en", { month: "short" }).format(
+                                    new Date(week.weekStart + "T00:00:00")
+                                  )}
+                                </span>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      <div className="grid grid-rows-7 gap-[3px] pt-[3px] text-[10px] leading-3 text-slate-400">
+                        {["", "Mon", "", "Wed", "", "Fri", ""].map((label, index) => (
+                          <div key={`${label}-${index}`} className="h-3">
+                            {label}
+                          </div>
+                        ))}
+                      </div>
+                      <div className="flex gap-[3px]">
+                        {workCalendar.weeks.map((week) => (
+                          <div key={week.weekStart} className="grid grid-rows-7 gap-[3px]">
+                            {week.days.map((day) => {
+                              const isInRange = day.date >= workCalendar.rawStart && day.date <= workCalendar.end;
+                              return (
+                                <span
+                                  key={day.date}
+                                  className={`h-3 w-3 rounded-[3px] ${
+                                    isInRange ? calendarCellTone(day.hours) : "bg-transparent"
+                                  }`}
+                                  title={`${day.date} • ${formatLoggedTime(day.hours)} logged`}
+                                  aria-label={`${day.date}: ${formatLoggedTime(day.hours)} logged`}
+                                />
+                              );
+                            })}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="text-sm font-semibold">Most worked tasks</div>
+                <div className="mt-3 space-y-3">
+                  {topWorkedTasks.rows.length ? (
+                    topWorkedTasks.rows.map((row, index) => {
+                      const percent = topWorkedTasks.maxHours
+                        ? Math.max(4, (row.hours / topWorkedTasks.maxHours) * 100)
+                        : 0;
+
+                      return (
+                        <div key={row.taskId} className="grid gap-1">
+                          <div className="grid grid-cols-[28px_1fr_auto] items-baseline gap-3 text-xs">
+                            <div className="tabular-nums text-slate-400">{index + 1}</div>
+                            <div className="min-w-0">
+                              <div className="truncate font-medium text-slate-800">{row.title}</div>
+                              <div className="truncate text-[11px] text-slate-500">{row.category}</div>
+                            </div>
+                            <div className="tabular-nums text-slate-600">{formatDuration(row.hours)}</div>
+                          </div>
+                          <div className="ml-10 h-2 rounded-full bg-slate-100">
+                            <div
+                              className={`h-2 rounded-full ${courseBarClass(row.courseId)}`}
+                              style={{ width: `${percent}%` }}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="rounded-xl border border-dashed border-slate-200 px-3 py-4 text-sm text-slate-400">
+                      No logged task activity yet.
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         ) : (
