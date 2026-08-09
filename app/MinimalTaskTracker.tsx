@@ -3,9 +3,11 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   categoryDisplayLabel,
+  createCategory,
   fallbackCategories,
   loadCategories,
   type Category,
+  updateCategory,
 } from "./categoryStore";
 import { getTaskStore, isDemoMode } from "./taskStore";
 import { normalizeTask, uid } from "./taskStore/taskNormalization";
@@ -39,6 +41,14 @@ const ACTIVITY_TYPES: { id: ActivityType; label: string }[] = [
   { id: "correspondence", label: "Correspondence" },
   { id: "activity", label: "Activity" },
   { id: "uni_work", label: "Uni work" },
+];
+const CATEGORY_COLOURS = [
+  { id: "slate", label: "Slate", swatch: "bg-slate-300" },
+  { id: "sky", label: "Sky", swatch: "bg-sky-300" },
+  { id: "violet", label: "Violet", swatch: "bg-violet-300" },
+  { id: "emerald", label: "Emerald", swatch: "bg-emerald-300" },
+  { id: "amber", label: "Amber", swatch: "bg-amber-300" },
+  { id: "rose", label: "Rose", swatch: "bg-rose-300" },
 ];
 
 const STATUSES: { id: Status; label: string }[] = [
@@ -640,6 +650,12 @@ useEffect(() => {
   const [query, setQuery] = useState("");
   const [courseFilter, setCourseFilter] = useState<string>("all");
   const [categories, setCategories] = useState<Category[]>(fallbackCategories);
+  const [categoryModalOpen, setCategoryModalOpen] = useState(false);
+  const [editingCategory, setEditingCategory] = useState<Category | null>(null);
+  const [categoryName, setCategoryName] = useState("");
+  const [categoryEmoji, setCategoryEmoji] = useState("");
+  const [categoryColour, setCategoryColour] = useState<string>("slate");
+  const [categorySaving, setCategorySaving] = useState(false);
 
   // New task modal state
   const [newOpen, setNewOpen] = useState(false);
@@ -865,7 +881,9 @@ useEffect(() => {
         setNewOpen(false);
         setEditOpen(false);
         setLogOpen(false);
+        setCategoryModalOpen(false);
         setEditingLogId(null);
+        resetCategoryDraft();
       }
     };
 
@@ -1135,6 +1153,92 @@ useEffect(() => {
   function openNewTaskForCourse(courseId: string) {
     setNewCourseId(courseId);
     setNewOpen(true);
+  }
+
+  function resetCategoryDraft() {
+    setEditingCategory(null);
+    setCategoryName("");
+    setCategoryEmoji("");
+    setCategoryColour("slate");
+    setCategorySaving(false);
+  }
+
+  function openAddCategory() {
+    resetCategoryDraft();
+    setCategoryModalOpen(true);
+  }
+
+  function openEditCategory(category: Category) {
+    setEditingCategory(category);
+    setCategoryName(category.label);
+    setCategoryEmoji(category.emoji);
+    setCategoryColour(category.colour ?? "slate");
+    setCategoryModalOpen(true);
+  }
+
+  function makeCategoryId(label: string) {
+    const slug =
+      label
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "") || "category";
+    return `${slug}_${uid().slice(0, 8)}`;
+  }
+
+  async function submitCategory() {
+    const label = categoryName.trim();
+    if (!label || categorySaving) return;
+
+    const emoji = categoryEmoji.trim();
+    const colour = CATEGORY_COLOURS.some((option) => option.id === categoryColour)
+      ? categoryColour
+      : "slate";
+
+    setCategorySaving(true);
+
+    if (editingCategory) {
+      const saved = await updateCategory(SYNC_CODE, editingCategory.id, {
+        label,
+        emoji,
+        colour,
+      });
+
+      if (!saved.ok || !saved.category) {
+        setCategorySaving(false);
+        window.alert("Category update failed. Existing categories were not changed.");
+        return;
+      }
+
+      setCategories((prev) =>
+        prev.map((category) => (category.id === editingCategory.id ? saved.category as Category : category))
+      );
+      setCategoryModalOpen(false);
+      resetCategoryDraft();
+      return;
+    }
+
+    const sortOrder =
+      categories.reduce((max, category) => Math.max(max, category.sortOrder), -1) + 1;
+    const saved = await createCategory(SYNC_CODE, {
+      id: makeCategoryId(label),
+      label,
+      emoji,
+      colour,
+      sortOrder,
+    });
+
+    if (!saved.ok || !saved.category) {
+      setCategorySaving(false);
+      window.alert("Category creation failed. Existing categories were not changed.");
+      return;
+    }
+
+    setCategories((prev) =>
+      [...prev, saved.category as Category].sort((a, b) => a.sortOrder - b.sortOrder)
+    );
+    setCategoryModalOpen(false);
+    resetCategoryDraft();
   }
 
   function submitNewTask() {
@@ -1775,9 +1879,18 @@ useEffect(() => {
                   <div className="border-b border-slate-100 px-4 py-3">
                     <div className="flex items-center justify-between gap-3">
                       <div className="text-sm font-semibold">{categoryDisplayLabel(c)}</div>
-                      <div className="text-xs text-slate-500">
-                        {byCourse[c.id]?.length ?? 0} total
-                        {byCourse[c.id]?.length ? <> • {openCount(byCourse[c.id])} open</> : null}
+                      <div className="flex items-center gap-2">
+                        <div className="text-xs text-slate-500">
+                          {byCourse[c.id]?.length ?? 0} total
+                          {byCourse[c.id]?.length ? <> • {openCount(byCourse[c.id])} open</> : null}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => openEditCategory(c)}
+                          className="rounded-full border border-slate-200 px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-50"
+                        >
+                          Edit
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -1843,6 +1956,17 @@ useEffect(() => {
                   </div>
                 </div>
               ))}
+
+              <button
+                type="button"
+                onClick={openAddCategory}
+                className="min-h-[160px] rounded-2xl border border-dashed border-slate-300 bg-white p-4 text-left shadow-sm hover:bg-slate-50"
+              >
+                <div className="text-sm font-semibold text-slate-700">+ Add category</div>
+                <div className="mt-1 text-xs text-slate-400">
+                  Create a new category card
+                </div>
+              </button>
             </div>
 
             {/* Right rail */}
@@ -2246,6 +2370,84 @@ useEffect(() => {
               onClick={submitNewTask}
             >
               Create
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Category modal */}
+      <Modal
+        open={categoryModalOpen}
+        title={editingCategory ? "Edit category" : "Add category"}
+        onClose={() => {
+          if (categorySaving) return;
+          setCategoryModalOpen(false);
+          resetCategoryDraft();
+        }}
+      >
+        <div className="grid gap-3">
+          <div className="grid grid-cols-[1fr_96px] gap-3">
+            <Field label="Category name">
+              <input
+                value={categoryName}
+                onChange={(e) => setCategoryName(e.target.value)}
+                placeholder="e.g. Bloomberg Lab"
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+              />
+            </Field>
+
+            <Field label="Emoji">
+              <input
+                value={categoryEmoji}
+                onChange={(e) => setCategoryEmoji(e.target.value)}
+                placeholder="📈"
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+              />
+            </Field>
+          </div>
+
+          <Field label="Colour">
+            <div className="flex flex-wrap gap-2">
+              {CATEGORY_COLOURS.map((option) => {
+                const selected = categoryColour === option.id;
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => setCategoryColour(option.id)}
+                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs transition-colors ${
+                      selected
+                        ? "border-slate-300 bg-slate-100 text-slate-800"
+                        : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
+                    }`}
+                  >
+                    <span className={`h-3 w-3 rounded-full ${option.swatch}`} />
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+          </Field>
+
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button
+              type="button"
+              className="rounded-full border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={categorySaving}
+              onClick={() => {
+                setCategoryModalOpen(false);
+                resetCategoryDraft();
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+              disabled={!categoryName.trim() || categorySaving}
+              onClick={submitCategory}
+            >
+              {editingCategory ? "Save" : "Add"}
             </button>
           </div>
         </div>
