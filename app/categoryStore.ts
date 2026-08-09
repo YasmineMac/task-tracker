@@ -123,3 +123,29 @@ export async function updateCategory(
 
   return { ok: true, category: categoryFromRow(data as Record<string, unknown>) };
 }
+
+export async function updateCategoryArchived(
+  syncCode: string,
+  id: string,
+  archived: boolean
+) {
+  if (!supabase) {
+    console.warn("Failed to update category archive state: Supabase env vars are missing");
+    return { ok: false, category: null as Category | null };
+  }
+
+  const { data, error } = await supabase
+    .from("categories")
+    .update({ archived })
+    .eq("sync_code", syncCode)
+    .eq("id", id)
+    .select("id,label,emoji,colour,sort_order,archived")
+    .single();
+
+  if (error) {
+    console.warn("Failed to update category archive state in Supabase:", error);
+    return { ok: false, category: null };
+  }
+
+  return { ok: true, category: categoryFromRow(data as Record<string, unknown>) };
+}

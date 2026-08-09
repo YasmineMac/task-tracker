@@ -8,6 +8,7 @@ import {
   loadCategories,
   type Category,
   updateCategory,
+  updateCategoryArchived,
 } from "./categoryStore";
 import { getTaskStore, isDemoMode } from "./taskStore";
 import { normalizeTask, uid } from "./taskStore/taskNormalization";
@@ -808,7 +809,7 @@ function refreshBackupStatus() {
 }
 
 useEffect(() => {
-  if (!hasLoadedFromStore.current) return;
+  if (!tasksLoaded) return;
   if (skipNextTaskSaveRef.current) {
     skipNextTaskSaveRef.current = false;
     return;
@@ -826,6 +827,21 @@ useEffect(() => {
     const store = taskStoreRef.current ?? (await getTaskStore());
     taskStoreRef.current = store;
 
+    console.info("persistTasks triggered", {
+      taskCount: tasks.length,
+      deletedTaskIds,
+      syncCode: SYNC_CODE,
+      sampleTask: tasks[0]
+        ? {
+            id: tasks[0].id,
+            title: tasks[0].title,
+            courseId: tasks[0].courseId,
+            status: tasks[0].status,
+            priority: tasks[0].priority,
+          }
+        : null,
+    });
+
     const saved = await store.saveTasks(tasks, {
       syncCode: SYNC_CODE,
       timeLogs: timeLogsRef.current,
@@ -838,13 +854,22 @@ useEffect(() => {
       },
     });
 
+    console.info("persistTasks saveTasks returned", { saved });
+
     if (saved && deletedTaskIds.length > 0) {
       deletedTaskIdsRef.current = deletedTaskIdsRef.current.filter((id) => !deletedTaskIds.includes(id));
+    }
+
+    if (!saved) {
+      console.warn("Task save failed. Local task cache was kept, but Supabase was not updated.", {
+        taskCount: tasks.length,
+        deletedTaskIds,
+      });
     }
   }
 
   void persistTasks();
-}, [tasks]);
+}, [tasks, tasksLoaded]);
 
 useEffect(() => {
   timeLogsRef.current = timeLogs;
@@ -893,7 +918,11 @@ useEffect(() => {
 
   const activeCategories = useMemo(() => {
     const active = categories.filter((category) => !category.archived);
-    return active.length > 0 ? active : fallbackCategories.filter((category) => !category.archived);
+    return categories.length > 0 ? active : fallbackCategories.filter((category) => !category.archived);
+  }, [categories]);
+
+  const archivedCategories = useMemo(() => {
+    return categories.filter((category) => category.archived);
   }, [categories]);
 
   const firstCategoryId = activeCategories[0]?.id ?? fallbackCategories[0]?.id ?? "";
@@ -1239,6 +1268,47 @@ useEffect(() => {
     );
     setCategoryModalOpen(false);
     resetCategoryDraft();
+  }
+
+  async function archiveCategory(category: Category) {
+    if (categorySaving) return;
+
+    const assignedCount = tasks.filter((task) => task.courseId === category.id).length;
+    if (assignedCount > 0) {
+      const confirmed = window.confirm(
+        `This category still has ${assignedCount} tasks. Archiving will hide it from normal use but will not remove those tasks.`
+      );
+      if (!confirmed) return;
+    }
+
+    setCategorySaving(true);
+    const saved = await updateCategoryArchived(SYNC_CODE, category.id, true);
+
+    if (!saved.ok || !saved.category) {
+      setCategorySaving(false);
+      window.alert("Category archive failed. Existing categories and tasks were not changed.");
+      return;
+    }
+
+    setCategories((prev) =>
+      prev.map((item) => (item.id === category.id ? saved.category as Category : item))
+    );
+    if (courseFilter === category.id) setCourseFilter("all");
+    setCategoryModalOpen(false);
+    resetCategoryDraft();
+  }
+
+  async function restoreCategory(category: Category) {
+    const saved = await updateCategoryArchived(SYNC_CODE, category.id, false);
+
+    if (!saved.ok || !saved.category) {
+      window.alert("Category restore failed. Existing categories and tasks were not changed.");
+      return;
+    }
+
+    setCategories((prev) =>
+      prev.map((item) => (item.id === category.id ? saved.category as Category : item))
+    );
   }
 
   function submitNewTask() {
@@ -1967,6 +2037,37 @@ useEffect(() => {
                   Create a new category card
                 </div>
               </button>
+
+              {archivedCategories.length ? (
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm md:col-span-2 lg:col-span-3">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <div className="text-sm font-semibold">Archived categories</div>
+                      <div className="mt-1 text-xs text-slate-400">
+                        Hidden from normal use, still safe for existing tasks
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {archivedCategories.map((category) => (
+                      <div
+                        key={category.id}
+                        className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-600"
+                      >
+                        <span>{categoryDisplayLabel(category)}</span>
+                        <button
+                          type="button"
+                          onClick={() => restoreCategory(category)}
+                          className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] text-slate-600 hover:bg-slate-100"
+                        >
+                          Restore
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </div>
 
             {/* Right rail */}
@@ -2429,26 +2530,41 @@ useEffect(() => {
             </div>
           </Field>
 
-          <div className="flex items-center justify-end gap-2 pt-1">
-            <button
-              type="button"
-              className="rounded-full border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={categorySaving}
-              onClick={() => {
-                setCategoryModalOpen(false);
-                resetCategoryDraft();
-              }}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              className="rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
-              disabled={!categoryName.trim() || categorySaving}
-              onClick={submitCategory}
-            >
-              {editingCategory ? "Save" : "Add"}
-            </button>
+          <div className="flex items-center justify-between gap-2 pt-1">
+            {editingCategory ? (
+              <button
+                type="button"
+                className="rounded-full border border-slate-200 px-4 py-2 text-sm text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={categorySaving}
+                onClick={() => archiveCategory(editingCategory)}
+              >
+                Archive
+              </button>
+            ) : (
+              <div />
+            )}
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="rounded-full border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={categorySaving}
+                onClick={() => {
+                  setCategoryModalOpen(false);
+                  resetCategoryDraft();
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                disabled={!categoryName.trim() || categorySaving}
+                onClick={submitCategory}
+              >
+                {editingCategory ? "Save" : "Add"}
+              </button>
+            </div>
           </div>
         </div>
       </Modal>

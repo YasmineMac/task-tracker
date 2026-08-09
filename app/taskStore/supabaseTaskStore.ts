@@ -121,10 +121,23 @@ export const supabaseTaskStore: TaskStore = {
 
     const deletedTaskIds = Array.from(new Set(options.deletedTaskIds ?? [])).filter(Boolean);
 
+    console.info("supabaseTaskStore.saveTasks payload", {
+      taskCount: tasksToUpsert.length,
+      deletedTaskIds,
+      syncCode: options.syncCode,
+      sample: tasksToUpsert[0] ?? null,
+    });
+
     if (tasksToUpsert.length > 0) {
-      const { error: upsertError } = await supabase
+      const { data: upsertData, error: upsertError } = await supabase
         .from("tasks")
-        .upsert(tasksToUpsert, { onConflict: "id" });
+        .upsert(tasksToUpsert, { onConflict: "id" })
+        .select("id,title,sync_code");
+
+      console.info("supabaseTaskStore.saveTasks upsert result", {
+        insertedOrUpdated: upsertData?.length ?? 0,
+        error: upsertError,
+      });
 
       if (upsertError) {
         console.warn(
