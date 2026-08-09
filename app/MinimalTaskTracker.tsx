@@ -1,7 +1,12 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { COURSES } from "./courses";
+import {
+  categoryDisplayLabel,
+  fallbackCategories,
+  loadCategories,
+  type Category,
+} from "./categoryStore";
 import { getTaskStore, isDemoMode } from "./taskStore";
 import { normalizeTask, uid } from "./taskStore/taskNormalization";
 import type {
@@ -49,10 +54,6 @@ const PRIORITIES: { id: Priority; label: string }[] = [
   { id: "normal", label: "Normal" },
   { id: "low", label: "Low" },
 ];
-
-function courseLabel(id: string) {
-  return COURSES.find((c) => c.id === id)?.label ?? id;
-}
 
 function statusLabel(id: Status) {
   return STATUSES.find((s) => s.id === id)?.label ?? id;
@@ -638,11 +639,12 @@ useEffect(() => {
 
   const [query, setQuery] = useState("");
   const [courseFilter, setCourseFilter] = useState<string>("all");
+  const [categories, setCategories] = useState<Category[]>(fallbackCategories);
 
   // New task modal state
   const [newOpen, setNewOpen] = useState(false);
   const [newTitle, setNewTitle] = useState("");
-  const [newCourseId, setNewCourseId] = useState<string>(COURSES[0].id);
+  const [newCourseId, setNewCourseId] = useState<string>(fallbackCategories[0]?.id ?? "");
   const [newStatus, setNewStatus] = useState<Status>("to_do");
   const [newPriority, setNewPriority] = useState<Priority>("normal");
   const [newDue, setNewDue] = useState<string>("");
@@ -715,6 +717,28 @@ useEffect(() => {
   if (!hasMounted) return;
   localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, modeToStoredTab(mode));
 }, [hasMounted, mode]);
+
+useEffect(() => {
+  let cancelled = false;
+
+  async function fetchCategories() {
+    const loaded = await loadCategories(SYNC_CODE);
+    if (cancelled) return;
+
+    if (!loaded.ok || loaded.categories.length === 0) {
+      console.warn("Using app/courses.ts category fallback.");
+      return;
+    }
+
+    setCategories(loaded.categories);
+  }
+
+  void fetchCategories();
+
+  return () => {
+    cancelled = true;
+  };
+}, []);
 
 useEffect(() => {
   let cancelled = false;
@@ -849,6 +873,20 @@ useEffect(() => {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  const activeCategories = useMemo(() => {
+    const active = categories.filter((category) => !category.archived);
+    return active.length > 0 ? active : fallbackCategories.filter((category) => !category.archived);
+  }, [categories]);
+
+  const firstCategoryId = activeCategories[0]?.id ?? fallbackCategories[0]?.id ?? "";
+
+  function courseLabel(id: string) {
+    const category =
+      categories.find((item) => item.id === id) ??
+      fallbackCategories.find((item) => item.id === id);
+    return category ? categoryDisplayLabel(category) : id;
+  }
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return tasks
@@ -921,9 +959,9 @@ useEffect(() => {
   }, [filtered, listSortKey, listSortDir]);
 
   const byCourse = useMemo(() => {
-    const map: Record<string, Task[]> = Object.fromEntries(COURSES.map((c) => [c.id, []]));
+    const map: Record<string, Task[]> = Object.fromEntries(activeCategories.map((c) => [c.id, []]));
     for (const t of filtered.filter((task) => task.status !== "completed")) {
-      const key = t.courseId || COURSES[0].id;
+      const key = t.courseId || firstCategoryId;
       if (!map[key]) map[key] = [];
       map[key].push(t);
     }
@@ -950,7 +988,7 @@ useEffect(() => {
     }
 
     return map;
-  }, [filtered]);
+  }, [activeCategories, filtered, firstCategoryId]);
 
   const scoredTasks = useMemo(() => {
     const baseList = scoreShowCompleted ? filtered : filtered.filter((t) => t.status !== "completed");
@@ -1091,8 +1129,8 @@ useEffect(() => {
     return {
       rows,
       maxHours: rows[0]?.hours ?? 0,
-    };
-  }, [taskById, timeLogs]);
+  };
+}, [taskById, timeLogs]);
 
   function openNewTaskForCourse(courseId: string) {
     setNewCourseId(courseId);
@@ -1110,7 +1148,7 @@ useEffect(() => {
     const t: Task = {
       id: uid(),
       title,
-      courseId: newCourseId || COURSES[0].id,
+      courseId: newCourseId || firstCategoryId,
       status: newStatus,
       priority: newPriority,
       due: deadlineMode === "date" ? newDue : deadlineMode === "vision" ? null : undefined,
@@ -1136,7 +1174,7 @@ useEffect(() => {
     setNewDurationHrs("");
     setNewDifficulty("3");
     setNewNotes("");
-    setNewCourseId(COURSES[0].id);
+    setNewCourseId(firstCategoryId);
 
     setNewOpen(false);
   }
@@ -1316,9 +1354,9 @@ useEffect(() => {
               className="w-full rounded-full border border-slate-200 bg-white px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200 sm:w-[220px]"
             >
               <option value="all">All courses</option>
-              {COURSES.map((c) => (
+              {activeCategories.map((c) => (
                 <option key={c.id} value={c.id}>
-                  {c.label}
+                  {categoryDisplayLabel(c)}
                 </option>
               ))}
             </select>
@@ -1732,11 +1770,11 @@ useEffect(() => {
           <div className="mt-5 grid gap-4 lg:grid-cols-[1fr_360px]">
             {/* Course columns */}
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {COURSES.map((c) => (
+              {activeCategories.map((c) => (
                 <div key={c.id} className="rounded-2xl border border-slate-200 bg-white shadow-sm">
                   <div className="border-b border-slate-100 px-4 py-3">
                     <div className="flex items-center justify-between gap-3">
-                      <div className="text-sm font-semibold">{c.label}</div>
+                      <div className="text-sm font-semibold">{categoryDisplayLabel(c)}</div>
                       <div className="text-xs text-slate-500">
                         {byCourse[c.id]?.length ?? 0} total
                         {byCourse[c.id]?.length ? <> • {openCount(byCourse[c.id])} open</> : null}
@@ -2124,9 +2162,9 @@ useEffect(() => {
                 onChange={(e) => setNewCourseId(e.target.value)}
                 className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
               >
-                {COURSES.map((c) => (
+                {activeCategories.map((c) => (
                   <option key={c.id} value={c.id}>
-                    {c.label}
+                    {categoryDisplayLabel(c)}
                   </option>
                 ))}
               </select>
@@ -2364,9 +2402,9 @@ useEffect(() => {
                   onChange={(e) => setDraft({ ...draft, courseId: e.target.value })}
                   className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                 >
-                  {COURSES.map((c) => (
+                  {activeCategories.map((c) => (
                     <option key={c.id} value={c.id}>
-                      {c.label}
+                      {categoryDisplayLabel(c)}
                     </option>
                   ))}
                 </select>

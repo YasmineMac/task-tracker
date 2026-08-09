@@ -1,4 +1,11 @@
-export type Course = { id: string; label: string };
+export type Course = {
+  id: string;
+  label: string;
+  emoji?: string;
+  colour?: string | null;
+  sortOrder?: number;
+  archived?: boolean;
+};
 
 const privateCourses: Course[] = [
   { id: "robotics_studio", label: "Robotics Studio 🌱" },
