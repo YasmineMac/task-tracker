@@ -4,9 +4,20 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { COURSES } from "./courses";
 import { getTaskStore, isDemoMode } from "./taskStore";
 import { normalizeTask, uid } from "./taskStore/taskNormalization";
-import type { BackupSnapshot, Priority, Status, Task, TaskStore, TimeLog } from "./taskStore/taskTypes";
+import type {
+  ActivityType,
+  BackupSnapshot,
+  DeadlineMode,
+  Priority,
+  Status,
+  Task,
+  TaskStore,
+  TimeLog,
+  VisionHorizon,
+} from "./taskStore/taskTypes";
 
 const TIME_LOGS_STORAGE_KEY = isDemoMode ? "task_tracker_demo_time_logs_v1" : "yasmine_time_logs_v1";
+const TASKS_LOCAL_CACHE_KEY = isDemoMode ? "task_tracker_demo_tasks_cache_v1" : "yasmine_tasks_local_cache_v1";
 const BACKUP_KEY_PREFIX = isDemoMode ? "task_tracker_demo_backup_" : "yasmine_backup_";
 const ACTIVE_TAB_STORAGE_KEY = isDemoMode ? "task_tracker_demo_active_tab" : "yasmine_active_tab";
 const SYNC_CODE = isDemoMode ? "DEMO-TASKS" : "YAS-TEST-001";
@@ -14,6 +25,16 @@ const SYNC_CODE = isDemoMode ? "DEMO-TASKS" : "YAS-TEST-001";
 type ViewMode = "board" | "list" | "logger";
 type LoggerValueMode = "hours" | "times";
 const LOGGER_DAY_COUNT = 14;
+const VISION_HORIZONS: { id: VisionHorizon; label: string }[] = [
+  { id: "short", label: "Short" },
+  { id: "mid", label: "Mid" },
+  { id: "long", label: "Long" },
+];
+const ACTIVITY_TYPES: { id: ActivityType; label: string }[] = [
+  { id: "correspondence", label: "Correspondence" },
+  { id: "activity", label: "Activity" },
+  { id: "uni_work", label: "Uni work" },
+];
 
 const STATUSES: { id: Status; label: string }[] = [
   { id: "to_do", label: "To do" },
@@ -114,14 +135,22 @@ function todayISO() {
 }
 
 function isValidISODate(iso: string) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return false;
-  const d = new Date(iso + "T00:00:00");
-  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === iso;
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const d = new Date(Date.UTC(year, month - 1, day));
+  return (
+    d.getUTCFullYear() === year &&
+    d.getUTCMonth() === month - 1 &&
+    d.getUTCDate() === day
+  );
 }
 
 function addDaysISO(iso: string, offset: number) {
-  const d = new Date(iso + "T00:00:00");
-  d.setDate(d.getDate() + offset);
+  const [year, month, day] = iso.split("-").map(Number);
+  const d = new Date(Date.UTC(year, month - 1, day + offset));
   return d.toISOString().slice(0, 10);
 }
 
@@ -265,6 +294,27 @@ function createLocalBackup(tasks: Task[], timeLogs: TimeLog[] = []) {
   return { key, snapshot };
 }
 
+function loadLocalTaskCache() {
+  if (typeof window === "undefined") return [];
+
+  const raw = localStorage.getItem(TASKS_LOCAL_CACHE_KEY);
+  if (!raw) return [];
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((task) => normalizeTask(task));
+  } catch (error) {
+    console.warn("Failed to load local task cache:", error);
+    return [];
+  }
+}
+
+function saveLocalTaskCache(tasks: Task[]) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(TASKS_LOCAL_CACHE_KEY, JSON.stringify(tasks));
+}
+
 function getLatestLocalBackupLabel() {
   if (typeof window === "undefined") return { label: "Never", count: 0 };
   const keys = getLocalBackupKeys();
@@ -303,7 +353,9 @@ function daysUntil(dueISO?: string | null) {
 
 function urgencyScore(
   t: {
-  due?: string;
+  due?: string | null;
+  deadlineMode?: DeadlineMode;
+  visionHorizon?: VisionHorizon | null;
   durationHrs?: number | null;
   difficulty?: number | null;
   priority?: Priority;
@@ -337,9 +389,19 @@ if (t.mode === "practice") {
   t.priority === "high" ? 100 : t.priority === "normal" ? 50 : 10;
 
   // time pressure: 0..70
+  const visionPressure =
+    t.deadlineMode === "vision"
+      ? t.visionHorizon === "short"
+        ? 30
+        : t.visionHorizon === "mid"
+          ? 15
+          : t.visionHorizon === "long"
+            ? 7
+            : 0
+      : 0;
   const timePressure =
     d === null
-      ? 0
+      ? visionPressure
       : d <= 3
       ? 80
       : d >= 14
@@ -426,6 +488,91 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+function DeadlineField({
+  due,
+  deadlineMode,
+  visionHorizon,
+  onDateChange,
+  onVisionChange,
+}: {
+  due?: string | null;
+  deadlineMode?: DeadlineMode;
+  visionHorizon?: VisionHorizon | null;
+  onDateChange: (due: string) => void;
+  onVisionChange: (horizon: VisionHorizon) => void;
+}) {
+  return (
+    <Field label="Deadline">
+      <div className="grid gap-2">
+        <input
+          type="date"
+          value={deadlineMode === "date" ? due ?? "" : ""}
+          onChange={(e) => onDateChange(e.target.value)}
+          className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+        />
+        <div className="flex flex-wrap gap-2">
+          {VISION_HORIZONS.map((option) => {
+            const selected = deadlineMode === "vision" && visionHorizon === option.id;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => onVisionChange(option.id)}
+                className={`rounded-full border px-3 py-1 text-xs transition-colors ${
+                  selected
+                    ? "border-slate-200 bg-slate-100 text-slate-800"
+                    : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
+                }`}
+              >
+                {option.label}
+              </button>
+            );
+          })}
+        </div>
+        <div className="text-[11px] text-slate-500">
+          {deadlineMode === "date" && due && daysLeftFromISO(due) !== null
+            ? `Time left: ${timeLeftLabel(daysLeftFromISO(due) as number)}`
+            : deadlineMode === "vision" && visionHorizon
+              ? `${VISION_HORIZONS.find((option) => option.id === visionHorizon)?.label} term vision`
+              : "No fixed date"}
+        </div>
+      </div>
+    </Field>
+  );
+}
+
+function ActivityTypeField({
+  value,
+  onChange,
+}: {
+  value?: ActivityType;
+  onChange: (value: ActivityType | undefined) => void;
+}) {
+  return (
+    <Field label="Activity type">
+      <div className="flex flex-wrap gap-2">
+        {ACTIVITY_TYPES.map((option) => {
+          const selected = value === option.id;
+          return (
+            <button
+              key={option.id}
+              type="button"
+              onClick={() => onChange(selected ? undefined : option.id)}
+              className={`rounded-full border px-3 py-1 text-xs transition-colors ${
+                selected
+                  ? "border-slate-200 bg-slate-100 text-slate-800"
+                  : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
+              }`}
+            >
+              {option.label}
+            </button>
+          );
+        })}
+      </div>
+    </Field>
+  );
+}
+
 function SelectBox<T extends string>({
   value,
   onChange,
@@ -463,6 +610,7 @@ export default function MinimalTaskTracker() {
   const remoteLoadTrustedForDeleteRef = useRef(false);
   const allowNextEmptySaveRef = useRef(false);
   const allowNextDestructiveSaveRef = useRef(false);
+  const deletedTaskIdsRef = useRef<string[]>([]);
   const skipNextTaskSaveRef = useRef(false);
   const skipNextTimeLogSaveRef = useRef(false);
   const timeLogsRef = useRef(timeLogs);
@@ -498,6 +646,9 @@ useEffect(() => {
   const [newStatus, setNewStatus] = useState<Status>("to_do");
   const [newPriority, setNewPriority] = useState<Priority>("normal");
   const [newDue, setNewDue] = useState<string>("");
+  const [newDeadlineMode, setNewDeadlineMode] = useState<DeadlineMode | undefined>(undefined);
+  const [newVisionHorizon, setNewVisionHorizon] = useState<VisionHorizon | null>(null);
+  const [newActivityType, setNewActivityType] = useState<ActivityType | undefined>(undefined);
   const [newDurationHrs, setNewDurationHrs] = useState<string>("");
   const [newDifficulty, setNewDifficulty] = useState<string>("3");
   const [newNotes, setNewNotes] = useState<string>("");
@@ -573,22 +724,34 @@ useEffect(() => {
     if (cancelled) return;
 
     taskStoreRef.current = store;
+    const cachedTasks = loadLocalTaskCache();
     const loaded = await store.loadTasks(SYNC_CODE);
     if (cancelled) return;
 
     if (!loaded.ok) {
-      console.warn("Task load failed. Task save is disabled until a successful load.");
+      console.warn("Task load failed. Keeping local task state/cache.");
+      if (cachedTasks.length > 0) {
+        setTasks(cachedTasks);
+        hasLoadedFromStore.current = true;
+      }
       setTasksLoaded(true);
       return;
     }
 
     remoteLoadTrustedForDeleteRef.current = loaded.tasks.length > 0;
     if (!isDemoMode && loaded.tasks.length === 0) {
-      console.warn("Remote task load returned empty. Delete-all sync remains disabled for this session.");
+      console.warn("Remote task load returned empty. Local cached tasks were not overwritten.");
+      if (cachedTasks.length > 0) {
+        setTasks(cachedTasks);
+        hasLoadedFromStore.current = true;
+        setTasksLoaded(true);
+        return;
+      }
     }
 
     skipNextTaskSaveRef.current = true;
     setTasks(loaded.tasks);
+    saveLocalTaskCache(loaded.tasks);
     hasLoadedFromStore.current = true;
     setTasksLoaded(true);
   }
@@ -617,19 +780,27 @@ useEffect(() => {
   allowNextDestructiveSaveRef.current = false;
 
   async function persistTasks() {
+    saveLocalTaskCache(tasks);
+    const deletedTaskIds = deletedTaskIdsRef.current;
+
     const store = taskStoreRef.current ?? (await getTaskStore());
     taskStoreRef.current = store;
 
-    await store.saveTasks(tasks, {
+    const saved = await store.saveTasks(tasks, {
       syncCode: SYNC_CODE,
       timeLogs: timeLogsRef.current,
       allowEmptyOverwrite,
       allowDeleteAll: remoteLoadTrustedForDeleteRef.current || allowEmptyOverwrite || allowDestructiveSave,
+      deletedTaskIds,
       onLocalBackup: (backupTasks, backupTimeLogs) => {
         createLocalBackup(backupTasks, backupTimeLogs);
         refreshBackupStatus();
       },
     });
+
+    if (saved && deletedTaskIds.length > 0) {
+      deletedTaskIdsRef.current = deletedTaskIdsRef.current.filter((id) => !deletedTaskIds.includes(id));
+    }
   }
 
   void persistTasks();
@@ -934,6 +1105,7 @@ useEffect(() => {
 
     const dur = optionalFiniteNumber(newDurationHrs);
     const diff = optionalFiniteNumber(newDifficulty);
+    const deadlineMode = newDue ? "date" : newVisionHorizon ? "vision" : undefined;
 
     const t: Task = {
       id: uid(),
@@ -941,7 +1113,10 @@ useEffect(() => {
       courseId: newCourseId || COURSES[0].id,
       status: newStatus,
       priority: newPriority,
-      due: newDue || undefined,
+      due: deadlineMode === "date" ? newDue : deadlineMode === "vision" ? null : undefined,
+      deadlineMode,
+      visionHorizon: deadlineMode === "vision" ? newVisionHorizon : null,
+      activityType: newActivityType,
       notes: newNotes.trim() || undefined,
       durationHrs: dur,
       difficulty: diff,
@@ -955,6 +1130,9 @@ useEffect(() => {
     setNewStatus("to_do");
     setNewPriority("normal");
     setNewDue("");
+    setNewDeadlineMode(undefined);
+    setNewVisionHorizon(null);
+    setNewActivityType(undefined);
     setNewDurationHrs("");
     setNewDifficulty("3");
     setNewNotes("");
@@ -966,6 +1144,7 @@ useEffect(() => {
   function deleteTask(id: string) {
     createLocalBackup(tasks, timeLogsRef.current);
     refreshBackupStatus();
+    deletedTaskIdsRef.current = Array.from(new Set([...deletedTaskIdsRef.current, id]));
     allowNextDestructiveSaveRef.current = true;
     allowNextEmptySaveRef.current = true;
     setTasks((prev) => prev.filter((t) => t.id !== id));
@@ -1104,6 +1283,7 @@ useEffect(() => {
     allowNextEmptySaveRef.current = true;
     allowNextDestructiveSaveRef.current = true;
     remoteLoadTrustedForDeleteRef.current = true;
+    saveLocalTaskCache(nextTasks);
     setTasks(nextTasks);
   }
 
@@ -1978,17 +2158,21 @@ useEffect(() => {
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Due date">
-              <input
-                type="date"
-                value={newDue}
-                onChange={(e) => setNewDue(e.target.value)}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-              />
-              <div className="text-[11px] text-slate-500">
-                {newDue && daysLeftFromISO(newDue) !== null ? `Time left: ${timeLeftLabel(daysLeftFromISO(newDue) as number)}` : ""}
-              </div>
-            </Field>
+            <DeadlineField
+              due={newDue}
+              deadlineMode={newDeadlineMode}
+              visionHorizon={newVisionHorizon}
+              onDateChange={(due) => {
+                setNewDue(due);
+                setNewDeadlineMode(due ? "date" : undefined);
+                setNewVisionHorizon(null);
+              }}
+              onVisionChange={(horizon) => {
+                setNewDue("");
+                setNewDeadlineMode("vision");
+                setNewVisionHorizon(horizon);
+              }}
+            />
 
             <Field label="Duration (hours)">
               <input
@@ -2000,6 +2184,8 @@ useEffect(() => {
               />
             </Field>
           </div>
+
+          <ActivityTypeField value={newActivityType} onChange={setNewActivityType} />
 
           <Field label="Notes">
             <textarea
@@ -2212,19 +2398,27 @@ useEffect(() => {
             </div>
 
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Due date">
-                <input
-                  type="date"
-                  value={draft.due ?? ""}
-                  onChange={(e) => setDraft({ ...draft, due: e.target.value || undefined })}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                />
-                <div className="text-[11px] text-slate-500">
-                  {draft.due && daysLeftFromISO(draft.due) !== null
-                    ? `Time left: ${timeLeftLabel(daysLeftFromISO(draft.due) as number)}`
-                    : "No due date"}
-                </div>
-              </Field>
+              <DeadlineField
+                due={draft.due}
+                deadlineMode={draft.deadlineMode ?? (draft.due ? "date" : undefined)}
+                visionHorizon={draft.visionHorizon ?? null}
+                onDateChange={(due) =>
+                  setDraft({
+                    ...draft,
+                    due: due || undefined,
+                    deadlineMode: due ? "date" : undefined,
+                    visionHorizon: null,
+                  })
+                }
+                onVisionChange={(horizon) =>
+                  setDraft({
+                    ...draft,
+                    due: null,
+                    deadlineMode: "vision",
+                    visionHorizon: horizon,
+                  })
+                }
+              />
 
               <Field label="Duration (hours)">
                 <input
@@ -2237,6 +2431,11 @@ useEffect(() => {
                 />
               </Field>
             </div>
+
+            <ActivityTypeField
+              value={draft.activityType}
+              onChange={(activityType) => setDraft({ ...draft, activityType })}
+            />
 
             <Field label="Notes">
               <textarea

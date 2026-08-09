@@ -10,6 +10,9 @@ function taskFromSupabaseRow(t: Record<string, unknown>) {
     status: t.status,
     priority: t.priority,
     due: t.due,
+    deadlineMode: t.deadline_mode,
+    visionHorizon: t.vision_horizon,
+    activityType: t.activity_type,
     notes: t.notes,
     durationHrs: t.duration_hrs,
     difficulty: t.difficulty,
@@ -77,11 +80,6 @@ export const supabaseTaskStore: TaskStore = {
       return false;
     }
 
-    if (!options.allowDeleteAll) {
-      console.warn("Skipped delete-all task sync because the last Supabase load was empty or untrusted.");
-      return false;
-    }
-
     const { data: existingData, error: backupReadError } = await supabase
       .from("tasks")
       .select("*")
@@ -105,50 +103,58 @@ export const supabaseTaskStore: TaskStore = {
     const backupOk = await createSupabaseBackup(options.syncCode, snapshot);
     if (!backupOk) return false;
 
-    const { error: deleteError } = await supabase
-      .from("tasks")
-      .delete()
-      .eq("sync_code", options.syncCode);
-
-    if (deleteError) {
-      console.warn(
-        "Error deleting old tasks:",
-        deleteError.message,
-        deleteError.details,
-        deleteError.hint
-      );
-      return false;
-    }
-
-    const tasksToInsert = tasks.map((t) => ({
+    const tasksToUpsert = tasks.map((t) => ({
+      id: t.id,
       sync_code: options.syncCode,
       title: t.title,
       course_id: t.courseId,
       status: t.status,
       priority: t.priority,
       due: t.due ?? null,
+      deadline_mode: t.deadlineMode ?? null,
+      vision_horizon: t.visionHorizon ?? null,
+      activity_type: t.activityType ?? null,
       notes: t.notes ?? null,
       duration_hrs: t.durationHrs ?? null,
       difficulty: t.difficulty ?? null,
     }));
 
-    if (tasksToInsert.length === 0) {
-      console.warn("Skipped insert because task list is empty after explicit delete-all operation.");
-      return true;
+    const deletedTaskIds = Array.from(new Set(options.deletedTaskIds ?? [])).filter(Boolean);
+
+    if (tasksToUpsert.length > 0) {
+      const { error: upsertError } = await supabase
+        .from("tasks")
+        .upsert(tasksToUpsert, { onConflict: "id" });
+
+      if (upsertError) {
+        console.warn(
+          "Error saving tasks:",
+          upsertError.message,
+          upsertError.details,
+          upsertError.hint
+        );
+        return false;
+      }
+    } else {
+      console.warn("Skipped task upsert because task list is empty. Existing Supabase tasks were not touched.");
     }
 
-    const { error: insertError } = await supabase
-      .from("tasks")
-      .insert(tasksToInsert);
+    if (deletedTaskIds.length > 0) {
+      const { error: deleteError } = await supabase
+        .from("tasks")
+        .delete()
+        .eq("sync_code", options.syncCode)
+        .in("id", deletedTaskIds);
 
-    if (insertError) {
-      console.warn(
-        "Error saving tasks:",
-        insertError.message,
-        insertError.details,
-        insertError.hint
-      );
-      return false;
+      if (deleteError) {
+        console.warn(
+          "Error deleting explicitly removed tasks:",
+          deleteError.message,
+          deleteError.details,
+          deleteError.hint
+        );
+        return false;
+      }
     }
 
     return true;

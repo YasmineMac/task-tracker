@@ -1,5 +1,8 @@
 export type Priority = "low" | "normal" | "high";
 export type Status = "to_do" | "in_progress" | "urgent" | "frozen" | "completed";
+export type DeadlineMode = "date" | "vision";
+export type VisionHorizon = "short" | "mid" | "long";
+export type ActivityType = "correspondence" | "activity" | "uni_work";
 
 export type Task = {
   id: string;
@@ -7,7 +10,10 @@ export type Task = {
   courseId: string;
   status: Status;
   priority: Priority;
-  due?: string;
+  due?: string | null;
+  deadlineMode?: DeadlineMode;
+  visionHorizon?: VisionHorizon | null;
+  activityType?: ActivityType;
   notes?: string;
   durationHrs?: number | null;
   difficulty?: number | null;
@@ -40,6 +46,7 @@ export type TaskSaveOptions = {
   timeLogs: TimeLog[];
   allowEmptyOverwrite?: boolean;
   allowDeleteAll?: boolean;
+  deletedTaskIds?: string[];
   onLocalBackup?: (tasks: Task[], timeLogs: TimeLog[]) => void;
 };
 

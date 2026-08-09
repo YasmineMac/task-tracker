@@ -1,4 +1,4 @@
-import type { Priority, Status, Task } from "./taskTypes";
+import type { ActivityType, DeadlineMode, Priority, Status, Task, VisionHorizon } from "./taskTypes";
 
 const isDemoMode = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
 const defaultCourseId = isDemoMode ? "studio_work" : "robotics_studio";
@@ -16,6 +16,19 @@ export function normalizeTask(t: Record<string, unknown>): Task {
       : !isDemoMode && rawCourseId === "yas_project"
         ? "the_yas_project"
         : rawCourseId;
+  const due = typeof t.due === "string" && t.due ? t.due : null;
+  const rawDeadlineMode = t.deadlineMode === "vision" || t.deadlineMode === "date"
+    ? (t.deadlineMode as DeadlineMode)
+    : undefined;
+  const rawVisionHorizon =
+    t.visionHorizon === "short" || t.visionHorizon === "mid" || t.visionHorizon === "long"
+      ? (t.visionHorizon as VisionHorizon)
+      : null;
+  const deadlineMode = due ? "date" : rawDeadlineMode === "vision" && rawVisionHorizon ? "vision" : undefined;
+  const activityType =
+    t.activityType === "correspondence" || t.activityType === "activity" || t.activityType === "uni_work"
+      ? (t.activityType as ActivityType)
+      : undefined;
 
   return {
     id: String(t.id ?? uid()),
@@ -23,7 +36,10 @@ export function normalizeTask(t: Record<string, unknown>): Task {
     courseId: resolvedCourseId,
     status: (t.status ?? "to_do") as Status,
     priority: (t.priority ?? "normal") as Priority,
-    due: typeof t.due === "string" ? t.due : undefined,
+    due: deadlineMode === "date" ? due : deadlineMode === "vision" ? null : undefined,
+    deadlineMode,
+    visionHorizon: deadlineMode === "vision" ? rawVisionHorizon : null,
+    activityType,
     notes:
       typeof t.notes === "string"
         ? t.notes
