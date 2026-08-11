@@ -13,6 +13,11 @@ import {
 } from "./categoryStore";
 import { getTaskStore, isDemoMode } from "./taskStore";
 import { normalizeTask, uid } from "./taskStore/taskNormalization";
+import {
+  deleteTimeLog as deleteSupabaseTimeLog,
+  loadTimeLogs,
+  saveTimeLog as saveSupabaseTimeLog,
+} from "./timeLogStore/supabaseTimeLogStore";
 import type {
   ActivityType,
   BackupSnapshot,
@@ -29,10 +34,14 @@ const TIME_LOGS_STORAGE_KEY = isDemoMode ? "task_tracker_demo_time_logs_v1" : "y
 const TASKS_LOCAL_CACHE_KEY = isDemoMode ? "task_tracker_demo_tasks_cache_v1" : "yasmine_tasks_local_cache_v1";
 const BACKUP_KEY_PREFIX = isDemoMode ? "task_tracker_demo_backup_" : "yasmine_backup_";
 const ACTIVE_TAB_STORAGE_KEY = isDemoMode ? "task_tracker_demo_active_tab" : "yasmine_active_tab";
+const ATTENTION_CATEGORY_SCOPE_KEY = isDemoMode
+  ? "task_tracker_demo_attention_category_scope_v1"
+  : "yasmine_attention_category_scope_v1";
 const SYNC_CODE = isDemoMode ? "DEMO-TASKS" : "YAS-TEST-001";
 
 type ViewMode = "board" | "list" | "logger";
 type LoggerValueMode = "hours" | "times";
+type ListFilterMenu = "status" | "priority" | "difficulty" | "timeLeft" | "duration";
 const LOGGER_DAY_COUNT = 14;
 const COMPLETED_RECOVERY_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -58,7 +67,6 @@ const CATEGORY_COLOURS = [
 const STATUSES: { id: Status; label: string }[] = [
   { id: "to_do", label: "To do" },
   { id: "in_progress", label: "In progress" },
-  { id: "urgent", label: "Urgent" },
   { id: "frozen", label: "Frozen" },
   { id: "completed", label: "Completed" },
 ];
@@ -76,6 +84,12 @@ const PRIORITIES: { id: Priority; label: string }[] = [
   { id: "low", label: "Low" },
 ];
 
+const DIFFICULTY_FILTERS = ["1", "2", "3", "4", "5"];
+const TIME_LEFT_MIN = 0;
+const TIME_LEFT_MAX = 365;
+const DURATION_MIN_HOURS = 5 / 60;
+const DURATION_MAX_HOURS = 10;
+
 function statusLabel(id: Status) {
   return STATUSES.find((s) => s.id === id)?.label ?? id;
 }
@@ -86,8 +100,6 @@ function priorityLabel(id: Priority) {
 
 function statusPill(status?: string) {
   switch (status) {
-    case "urgent":
-      return "border border-red-100 bg-red-50 text-red-700";
     case "in_progress":
       return "border border-orange-100 bg-orange-50 text-orange-700";
     case "to_do":
@@ -184,9 +196,53 @@ function optionalFiniteNumber(raw: string) {
   return Number.isFinite(n) ? n : null;
 }
 
+function toggleFilterValue<T extends string>(values: T[], value: T) {
+  return values.includes(value)
+    ? values.filter((item) => item !== value)
+    : [...values, value];
+}
+
+function taskMatchesTimeLeftFilter(task: Task, range: { min: number; max: number } | null) {
+  if (!range) return true;
+  if (!task.due) return false;
+
+  const days = daysLeftFromISO(task.due);
+  if (days === null) return false;
+
+  const filterDays = Math.max(0, days);
+  return filterDays >= range.min && filterDays <= range.max;
+}
+
+function taskMatchesDurationFilter(task: Task, range: { min: number; max: number } | null) {
+  if (!range) return true;
+  if (task.durationHrs == null || !Number.isFinite(task.durationHrs)) return false;
+  return task.durationHrs >= range.min && task.durationHrs <= range.max;
+}
+
+function formatDurationFilterLabel(hours: number) {
+  if (hours < 1) {
+    return `${Math.round(hours * 60)}m`;
+  }
+
+  return Number.isInteger(hours) ? `${hours}h` : `${Number(hours.toFixed(2))}h`;
+}
+
 function formatHourInput(hours: number) {
   if (!Number.isFinite(hours)) return "";
   return String(hours);
+}
+
+function createTimeLogId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+
+  return "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (char) =>
+    (
+      Number(char) ^
+      (Math.random() * 16) >> (Number(char) / 4)
+    ).toString(16)
+  );
 }
 
 function parseTimeLogHours(raw: string) {
@@ -751,6 +807,8 @@ export default function MinimalTaskTracker() {
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
   const [showWeights, setShowWeights] = useState(false);
+  const [attentionCategoryMenuOpen, setAttentionCategoryMenuOpen] = useState(false);
+  const [attentionCategoryExcludedIds, setAttentionCategoryExcludedIds] = useState<string[]>([]);
 
 const [weights, setWeights] = useState(() => {
   if (typeof window === "undefined") {
@@ -817,6 +875,12 @@ useEffect(() => {
   >("due");
   const [listSortDir, setListSortDir] = useState<"asc" | "desc">("asc");
   const [openStatusTaskId, setOpenStatusTaskId] = useState<string | null>(null);
+  const [openListFilter, setOpenListFilter] = useState<ListFilterMenu | null>(null);
+  const [statusFilters, setStatusFilters] = useState<Status[]>([]);
+  const [priorityFilters, setPriorityFilters] = useState<Priority[]>([]);
+  const [difficultyFilters, setDifficultyFilters] = useState<string[]>([]);
+  const [timeLeftFilter, setTimeLeftFilter] = useState<{ min: number; max: number } | null>(null);
+  const [durationFilter, setDurationFilter] = useState<{ min: number; max: number } | null>(null);
 
   // Attention score toggles
   const [scoreUseTime, setScoreUseTime] = useState(true);
@@ -838,18 +902,44 @@ useEffect(() => {
     setMode(storedTabToMode(localStorage.getItem(ACTIVE_TAB_STORAGE_KEY)));
     setBackupStatus(getLatestLocalBackupLabel());
 
-    const savedLogs = localStorage.getItem(TIME_LOGS_STORAGE_KEY);
-    if (savedLogs) {
+    const savedAttentionCategoryScope = localStorage.getItem(ATTENTION_CATEGORY_SCOPE_KEY);
+    if (savedAttentionCategoryScope) {
       try {
-        const restoredLogs = normalizeTimeLogs(JSON.parse(savedLogs));
-        timeLogsRef.current = restoredLogs;
-        skipNextTimeLogSaveRef.current = true;
-        setTimeLogs(restoredLogs);
+        const parsed = JSON.parse(savedAttentionCategoryScope);
+        if (Array.isArray(parsed)) {
+          setAttentionCategoryExcludedIds(parsed.filter((item): item is string => typeof item === "string"));
+        }
       } catch (error) {
-        console.error("Error loading time logs:", error);
+        console.warn("Could not load Attention Score category scope:", error);
       }
     }
-    setTimeLogsLoaded(true);
+
+    void (async () => {
+      const remoteLogs = await loadTimeLogs(SYNC_CODE);
+
+      if (remoteLogs.ok) {
+        timeLogsRef.current = remoteLogs.logs;
+        skipNextTimeLogSaveRef.current = true;
+        setTimeLogs(remoteLogs.logs);
+        localStorage.setItem(TIME_LOGS_STORAGE_KEY, JSON.stringify(remoteLogs.logs));
+        setTimeLogsLoaded(true);
+        return;
+      }
+
+      console.warn("Supabase time log load failed. Falling back to local Logger cache.");
+      const savedLogs = localStorage.getItem(TIME_LOGS_STORAGE_KEY);
+      if (savedLogs) {
+        try {
+          const restoredLogs = normalizeTimeLogs(JSON.parse(savedLogs));
+          timeLogsRef.current = restoredLogs;
+          skipNextTimeLogSaveRef.current = true;
+          setTimeLogs(restoredLogs);
+        } catch (error) {
+          console.error("Error loading local cached time logs:", error);
+        }
+      }
+      setTimeLogsLoaded(true);
+    })();
   });
 }, []);
 
@@ -857,6 +947,11 @@ useEffect(() => {
   if (!hasMounted) return;
   localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, modeToStoredTab(mode));
 }, [hasMounted, mode]);
+
+useEffect(() => {
+  if (!hasMounted) return;
+  localStorage.setItem(ATTENTION_CATEGORY_SCOPE_KEY, JSON.stringify(attentionCategoryExcludedIds));
+}, [attentionCategoryExcludedIds, hasMounted]);
 
 useEffect(() => {
   if (mode !== "list") setOpenStatusTaskId(null);
@@ -872,6 +967,32 @@ useEffect(() => {
   document.addEventListener("click", closeStatusDropdown);
   return () => document.removeEventListener("click", closeStatusDropdown);
 }, [openStatusTaskId]);
+
+useEffect(() => {
+  if (mode !== "list") setOpenListFilter(null);
+}, [mode]);
+
+useEffect(() => {
+  if (!openListFilter) return;
+
+  function closeListFilter() {
+    setOpenListFilter(null);
+  }
+
+  document.addEventListener("click", closeListFilter);
+  return () => document.removeEventListener("click", closeListFilter);
+}, [openListFilter]);
+
+useEffect(() => {
+  if (!attentionCategoryMenuOpen) return;
+
+  function closeAttentionCategoryMenu() {
+    setAttentionCategoryMenuOpen(false);
+  }
+
+  document.addEventListener("click", closeAttentionCategoryMenu);
+  return () => document.removeEventListener("click", closeAttentionCategoryMenu);
+}, [attentionCategoryMenuOpen]);
 
 useEffect(() => {
   let cancelled = false;
@@ -1065,6 +1186,16 @@ useEffect(() => {
 
   const firstCategoryId = activeCategories[0]?.id ?? fallbackCategories[0]?.id ?? "";
 
+  const attentionIncludedCategoryIds = useMemo(() => {
+    return activeCategories
+      .map((category) => category.id)
+      .filter((id) => !attentionCategoryExcludedIds.includes(id));
+  }, [activeCategories, attentionCategoryExcludedIds]);
+
+  const attentionIncludedCategoryIdSet = useMemo(() => {
+    return new Set(attentionIncludedCategoryIds);
+  }, [attentionIncludedCategoryIds]);
+
   function courseLabel(id: string) {
     const category =
       categories.find((item) => item.id === id) ??
@@ -1103,6 +1234,11 @@ useEffect(() => {
       .filter((t) => {
         if (!isRecoverableCompleted(t, clientNowMs)) return false;
         if (courseFilter !== "all" && t.courseId !== courseFilter) return false;
+        if (statusFilters.length > 0 && !statusFilters.includes("completed")) return false;
+        if (priorityFilters.length > 0 && !priorityFilters.includes(t.priority)) return false;
+        if (difficultyFilters.length > 0 && !difficultyFilters.includes(String(t.difficulty ?? ""))) return false;
+        if (!taskMatchesTimeLeftFilter(t, timeLeftFilter)) return false;
+        if (!taskMatchesDurationFilter(t, durationFilter)) return false;
         if (!q) return true;
         return (
           t.title.toLowerCase().includes(q) ||
@@ -1116,10 +1252,17 @@ useEffect(() => {
         if (ad !== bd) return bd.localeCompare(ad);
         return (b.createdAt ?? 0) - (a.createdAt ?? 0);
       });
-  }, [clientNowMs, courseFilter, query, tasks]);
+  }, [clientNowMs, courseFilter, difficultyFilters, durationFilter, priorityFilters, query, statusFilters, tasks, timeLeftFilter]);
 
   const listRows = useMemo(() => {
-    const rows = filtered.slice();
+    const rows = filtered.filter((task) => {
+      if (statusFilters.length > 0 && !statusFilters.includes(task.status)) return false;
+      if (priorityFilters.length > 0 && !priorityFilters.includes(task.priority)) return false;
+      if (difficultyFilters.length > 0 && !difficultyFilters.includes(String(task.difficulty ?? ""))) return false;
+      if (!taskMatchesTimeLeftFilter(task, timeLeftFilter)) return false;
+      if (!taskMatchesDurationFilter(task, durationFilter)) return false;
+      return true;
+    });
     const dir = listSortDir === "asc" ? 1 : -1;
 
     function get(t: Task): string | number {
@@ -1157,7 +1300,7 @@ useEffect(() => {
     });
 
     return rows;
-  }, [filtered, listSortKey, listSortDir]);
+  }, [difficultyFilters, durationFilter, filtered, listSortKey, listSortDir, priorityFilters, statusFilters, timeLeftFilter]);
 
   const byCourse = useMemo(() => {
     const map: Record<string, Task[]> = Object.fromEntries(activeCategories.map((c) => [c.id, []]));
@@ -1192,8 +1335,11 @@ useEffect(() => {
   }, [activeCategories, filtered, firstCategoryId]);
 
   const scoredTasks = useMemo(() => {
+    if (attentionIncludedCategoryIds.length === 0) return [];
+
     const scored = filtered
       .filter((task) => task.status !== "frozen")
+      .filter((task) => attentionIncludedCategoryIdSet.has(task.courseId))
       .map((task) => ({
         task,
         total: urgencyScore(task, weights),
@@ -1210,7 +1356,7 @@ useEffect(() => {
     });
 
     return scored;
-  }, [filtered, weights]);
+  }, [attentionIncludedCategoryIdSet, attentionIncludedCategoryIds.length, filtered, weights]);
 
   const loggerDays = useMemo(() => {
     const center = isValidISODate(timelineEnd) ? timelineEnd : todayISO();
@@ -1588,19 +1734,27 @@ useEffect(() => {
     const existing = editingLogId
       ? timeLogs.find((entry) => entry.id === editingLogId)
       : null;
+    const next: TimeLog = {
+      id: existing?.id ?? createTimeLogId(),
+      taskId: logTaskId,
+      date,
+      startTime: logStartTime || undefined,
+      endTime: logEndTime || undefined,
+      hours,
+      note: logNote.trim(),
+    };
 
     setTimeLogs((prev) => {
-      const next: TimeLog = {
-        id: existing?.id ?? uid(),
-        taskId: logTaskId,
-        date,
-        startTime: logStartTime,
-        endTime: logEndTime,
-        hours,
-        note: logNote.trim(),
-      };
       if (!existing) return [next, ...prev];
       return prev.map((entry) => (entry.id === existing.id ? next : entry));
+    });
+
+    void saveSupabaseTimeLog(SYNC_CODE, next).catch((error) => {
+      console.warn("Unexpected Supabase time log save failure:", {
+        operation: existing ? "edit" : "create",
+        id: next.id,
+        error,
+      });
     });
 
     setEditingLogId(null);
@@ -1609,6 +1763,13 @@ useEffect(() => {
 
   function deleteTimeLog(id: string) {
     setTimeLogs((prev) => prev.filter((log) => log.id !== id));
+    void deleteSupabaseTimeLog(SYNC_CODE, id).catch((error) => {
+      console.warn("Unexpected Supabase time log delete failure:", {
+        operation: "delete",
+        id,
+        error,
+      });
+    });
     if (editingLogId === id) {
       setEditingLogId(null);
       setLogOpen(false);
@@ -1681,6 +1842,271 @@ useEffect(() => {
     setTasks(nextTasks);
   }
 
+  function renderListFilterMenu<T extends string>({
+    id,
+    label,
+    count,
+    options,
+    selected,
+    onToggle,
+  }: {
+    id: ListFilterMenu;
+    label: string;
+    count: number;
+    options: { id: T; label: string }[];
+    selected: T[];
+    onToggle: (value: T) => void;
+  }) {
+    const isOpen = openListFilter === id;
+
+    return (
+      <div className="relative inline-flex" onClick={(e) => e.stopPropagation()}>
+        <button
+          type="button"
+          className={`rounded-full border px-3 py-2 text-sm ${
+            count
+              ? "border-slate-300 bg-slate-50 text-slate-800"
+              : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+          }`}
+          onClick={(e) => {
+            e.stopPropagation();
+            setOpenStatusTaskId(null);
+            setOpenListFilter((open) => (open === id ? null : id));
+          }}
+        >
+          {label}
+          {count ? <span className="text-slate-400"> · {count}</span> : null}
+        </button>
+        {isOpen ? (
+          <div className="absolute left-0 top-full z-[1000] mt-1 min-w-[148px] overflow-hidden rounded-xl border border-slate-200 bg-white py-1 text-xs shadow-xl ring-1 ring-slate-900/5">
+            {options.map((option) => {
+              const active = selected.includes(option.id);
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  className={`block w-full whitespace-nowrap bg-white px-3 py-2 text-left ${
+                    active ? "font-medium text-slate-900" : "text-slate-600"
+                  } hover:bg-slate-50`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggle(option.id);
+                  }}
+                >
+                  {active ? "✓ " : ""}
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  function renderRangeFilterMenu({
+    id,
+    buttonLabel,
+    title,
+    range,
+    defaultRange,
+    minValue,
+    maxValue,
+    formatValue,
+    setRange,
+    resetLabel,
+    step = 1,
+  }: {
+    id: Extract<ListFilterMenu, "timeLeft" | "duration">;
+    buttonLabel: string;
+    title: string;
+    range: { min: number; max: number } | null;
+    defaultRange: { min: number; max: number };
+    minValue: number;
+    maxValue: number;
+    formatValue: (value: number) => string;
+    setRange: React.Dispatch<React.SetStateAction<{ min: number; max: number } | null>>;
+    resetLabel: string;
+    step?: number;
+  }) {
+    const isOpen = openListFilter === id;
+    const currentRange = range ?? defaultRange;
+    const minPercent = ((currentRange.min - minValue) / (maxValue - minValue)) * 100;
+    const maxPercent = ((currentRange.max - minValue) / (maxValue - minValue)) * 100;
+
+    function snap(value: number) {
+      return Number((Math.round(value / step) * step).toFixed(4));
+    }
+
+    function setMin(value: number) {
+      const rawMin = snap(clamp(value, minValue, maxValue));
+      setRange((current) => {
+        const max = current?.max ?? maxValue;
+        return { min: Math.min(rawMin, max), max };
+      });
+    }
+
+    function setMax(value: number) {
+      const rawMax = snap(clamp(value, minValue, maxValue));
+      setRange((current) => {
+        const min = current?.min ?? minValue;
+        return { min, max: Math.max(rawMax, min) };
+      });
+    }
+
+    function valueFromPointer(clientX: number, track: HTMLDivElement) {
+      const rect = track.getBoundingClientRect();
+      const percent = clamp((clientX - rect.left) / rect.width, 0, 1);
+      return snap(minValue + percent * (maxValue - minValue));
+    }
+
+    function beginMinDrag(e: React.PointerEvent<HTMLDivElement>) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.currentTarget.setPointerCapture(e.pointerId);
+      const track = e.currentTarget.parentElement;
+      if (track instanceof HTMLDivElement) setMin(valueFromPointer(e.clientX, track));
+    }
+
+    function beginMaxDrag(e: React.PointerEvent<HTMLDivElement>) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.currentTarget.setPointerCapture(e.pointerId);
+      const track = e.currentTarget.parentElement;
+      if (track instanceof HTMLDivElement) setMax(valueFromPointer(e.clientX, track));
+    }
+
+    function dragMin(e: React.PointerEvent<HTMLDivElement>) {
+      if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+      const track = e.currentTarget.parentElement;
+      if (track instanceof HTMLDivElement) setMin(valueFromPointer(e.clientX, track));
+    }
+
+    function dragMax(e: React.PointerEvent<HTMLDivElement>) {
+      if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+      const track = e.currentTarget.parentElement;
+      if (track instanceof HTMLDivElement) setMax(valueFromPointer(e.clientX, track));
+    }
+
+    return (
+      <div className="relative inline-flex" onClick={(e) => e.stopPropagation()}>
+        <button
+          type="button"
+          className={`rounded-full border px-3 py-2 text-sm ${
+            range
+              ? "border-slate-300 bg-slate-50 text-slate-800"
+              : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+          }`}
+          onClick={(e) => {
+            e.stopPropagation();
+            setOpenStatusTaskId(null);
+            setOpenListFilter((open) => (open === id ? null : id));
+          }}
+        >
+          {buttonLabel}
+        </button>
+        {isOpen ? (
+          <div className="absolute left-0 top-full z-[1000] mt-1 w-[230px] rounded-xl border border-slate-200 bg-white p-3 text-xs shadow-xl ring-1 ring-slate-900/5">
+            <div className="font-medium text-slate-700">{title}</div>
+
+            <div className="mt-4">
+              <div className="mb-2 flex justify-between tabular-nums text-slate-500">
+                <span>{formatValue(currentRange.min)}</span>
+                <span>{formatValue(currentRange.max)}</span>
+              </div>
+              <div className="relative h-7">
+                <div className="absolute left-0 right-0 top-1/2 h-px -translate-y-1/2 bg-slate-200" />
+                <div
+                  className="absolute top-1/2 h-[2px] -translate-y-1/2 bg-slate-900"
+                  style={{ left: `${minPercent}%`, right: `${100 - maxPercent}%` }}
+                />
+                <div
+                  className="absolute top-1/2 z-30 h-3 w-3 -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none rounded-full border border-slate-900 bg-slate-900 shadow-sm active:cursor-grabbing"
+                  style={{ left: `${minPercent}%` }}
+                  onPointerDown={beginMinDrag}
+                  onPointerMove={dragMin}
+                />
+                <div
+                  className="absolute top-1/2 z-40 h-3 w-3 -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none rounded-full border border-slate-900 bg-slate-900 shadow-sm active:cursor-grabbing"
+                  style={{ left: `${maxPercent}%` }}
+                  onPointerDown={beginMaxDrag}
+                  onPointerMove={dragMax}
+                />
+                <input
+                  type="range"
+                  aria-label={`${title} minimum`}
+                  min={minValue}
+                  max={maxValue}
+                  step={step}
+                  value={currentRange.min}
+                  onChange={(e) => setMin(Number(e.target.value))}
+                  className="sr-only"
+                />
+                <input
+                  type="range"
+                  aria-label={`${title} maximum`}
+                  min={minValue}
+                  max={maxValue}
+                  step={step}
+                  value={currentRange.max}
+                  onChange={(e) => setMax(Number(e.target.value))}
+                  className="sr-only"
+                />
+              </div>
+            </div>
+
+            <button
+              type="button"
+              className="mt-2 rounded-full px-2 py-1 text-[11px] text-slate-400 hover:bg-slate-50 hover:text-slate-600"
+              onClick={(e) => {
+                e.stopPropagation();
+                setRange(null);
+              }}
+            >
+              {resetLabel}
+            </button>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  function renderTimeLeftFilterMenu() {
+    const range = timeLeftFilter ?? { min: TIME_LEFT_MIN, max: TIME_LEFT_MAX };
+    return renderRangeFilterMenu({
+      id: "timeLeft",
+      buttonLabel: timeLeftFilter ? `Time left · ${range.min}-${range.max}d` : "Time left",
+      title: "Time left",
+      range: timeLeftFilter,
+      defaultRange: { min: TIME_LEFT_MIN, max: TIME_LEFT_MAX },
+      minValue: TIME_LEFT_MIN,
+      maxValue: TIME_LEFT_MAX,
+      formatValue: (value) => `${value}d`,
+      setRange: setTimeLeftFilter,
+      resetLabel: "Reset time left",
+      step: 1,
+    });
+  }
+
+  function renderDurationFilterMenu() {
+    const range = durationFilter ?? { min: DURATION_MIN_HOURS, max: DURATION_MAX_HOURS };
+    return renderRangeFilterMenu({
+      id: "duration",
+      buttonLabel: durationFilter
+        ? `Duration · ${formatDurationFilterLabel(range.min)}-${formatDurationFilterLabel(range.max)}`
+        : "Duration",
+      title: "Duration",
+      range: durationFilter,
+      defaultRange: { min: DURATION_MIN_HOURS, max: DURATION_MAX_HOURS },
+      minValue: DURATION_MIN_HOURS,
+      maxValue: DURATION_MAX_HOURS,
+      formatValue: formatDurationFilterLabel,
+      setRange: setDurationFilter,
+      resetLabel: "Reset duration",
+      step: 1 / 12,
+    });
+  }
+
   return (
     <div className="min-h-screen w-full bg-slate-50 text-slate-900">
       <div className="mx-auto max-w-7xl px-4 py-8">
@@ -1693,29 +2119,63 @@ useEffect(() => {
             <h1 className="text-2xl font-semibold tracking-tight">Tasks</h1>
           </div>
 
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <div className="relative">
-              <input
-                ref={searchRef}
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search (press /)"
-                className="w-full rounded-full border border-slate-200 bg-white px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200 sm:w-[320px]"
-              />
-            </div>
-
+          <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
             <select
               value={courseFilter}
               onChange={(e) => setCourseFilter(e.target.value)}
-              className="w-full rounded-full border border-slate-200 bg-white px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200 sm:w-[220px]"
+              className="w-full rounded-full border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200 lg:w-[180px]"
             >
-              <option value="all">All courses</option>
+              <option value="all">Category</option>
               {activeCategories.map((c) => (
                 <option key={c.id} value={c.id}>
                   {categoryDisplayLabel(c)}
                 </option>
               ))}
             </select>
+
+            {mode === "list" ? (
+              <>
+                {renderListFilterMenu<Status>({
+                  id: "status",
+                  label: "Status",
+                  count: statusFilters.length,
+                  options: LIST_STATUS_OPTIONS,
+                  selected: statusFilters,
+                  onToggle: (value) => setStatusFilters((prev) => toggleFilterValue(prev, value)),
+                })}
+
+                {renderListFilterMenu<Priority>({
+                  id: "priority",
+                  label: "Priority",
+                  count: priorityFilters.length,
+                  options: PRIORITIES,
+                  selected: priorityFilters,
+                  onToggle: (value) => setPriorityFilters((prev) => toggleFilterValue(prev, value)),
+                })}
+
+                {renderListFilterMenu<string>({
+                  id: "difficulty",
+                  label: "Difficulty",
+                  count: difficultyFilters.length,
+                  options: DIFFICULTY_FILTERS.map((value) => ({ id: value, label: value })),
+                  selected: difficultyFilters,
+                  onToggle: (value) => setDifficultyFilters((prev) => toggleFilterValue(prev, value)),
+                })}
+
+                {renderTimeLeftFilterMenu()}
+                {renderDurationFilterMenu()}
+              </>
+            ) : null}
+
+            <div className="relative">
+              <input
+                ref={searchRef}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search (press /)"
+                className="w-full rounded-full border border-slate-200 bg-white px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200 lg:w-[260px]"
+              />
+            </div>
 
             <button
               onClick={() => setNewOpen(true)}
@@ -1820,6 +2280,7 @@ useEffect(() => {
                               className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${statusPill(t.status)}`}
                               onClick={(e) => {
                                 e.stopPropagation();
+                                setOpenListFilter(null);
                                 setOpenStatusTaskId((id) => (id === t.id ? null : t.id));
                               }}
                             >
@@ -2325,173 +2786,80 @@ useEffect(() => {
             <div className="rounded-2xl border border-slate-200 bg-white shadow-sm lg:sticky lg:top-6 h-fit">
               <div className="border-b border-slate-100 px-4 py-3">
                 <div className="flex items-center justify-between">
-                  <div className="text-sm font-semibold">Attention score</div>
-                  <div className="text-xs text-slate-500">{scoredTasks.length} tasks</div>
-                </div>
-
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  <button
-                    className={`rounded-xl border px-2 py-1 text-xs ${
-                      scoreUseTime ? "border-slate-300 bg-slate-50" : "border-slate-200 bg-white text-slate-400"
-                    }`}
-                    onClick={() => setScoreUseTime((v) => !v)}
-                    type="button"
-                  >
-                    Time
-                  </button>
-                  <button
-                    className={`rounded-xl border px-2 py-1 text-xs ${
-                      scoreUsePriority ? "border-slate-300 bg-slate-50" : "border-slate-200 bg-white text-slate-400"
-                    }`}
-                    onClick={() => setScoreUsePriority((v) => !v)}
-                    type="button"
-                  >
-                    Priority
-                  </button>
-                  <button
-                    className={`rounded-xl border px-2 py-1 text-xs ${
-                      scoreUseDuration ? "border-slate-300 bg-slate-50" : "border-slate-200 bg-white text-slate-400"
-                    }`}
-                    onClick={() => setScoreUseDuration((v) => !v)}
-                    type="button"
-                  >
-                    Duration
-                  </button>
-                  <button
-                    className={`rounded-xl border px-2 py-1 text-xs ${
-                      scoreUseDifficulty ? "border-slate-300 bg-slate-50" : "border-slate-200 bg-white text-slate-400"
-                    }`}
-                    onClick={() => setScoreUseDifficulty((v) => !v)}
-                    type="button"
-                  >
-                    Difficulty
-                  </button>
+                  <div>
+                    <div className="text-sm font-semibold">Attention score</div>
+                    <div className="text-xs text-slate-500">{scoredTasks.length} tasks</div>
+                  </div>
+                  <div className="relative" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      type="button"
+                      className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setAttentionCategoryMenuOpen((open) => !open);
+                      }}
+                    >
+                      Categories
+                      {attentionIncludedCategoryIds.length !== activeCategories.length ? (
+                        <span className="text-slate-400"> · {attentionIncludedCategoryIds.length}</span>
+                      ) : null}
+                    </button>
+                    {attentionCategoryMenuOpen ? (
+                      <div className="absolute right-0 top-full z-[1000] mt-2 w-56 rounded-xl border border-slate-200 bg-white p-2 text-xs shadow-xl ring-1 ring-slate-900/5">
+                        <div className="px-2 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">
+                          Categories
+                        </div>
+                        <div className="mt-1 max-h-56 overflow-auto">
+                          {activeCategories.map((category) => {
+                            const selected = !attentionCategoryExcludedIds.includes(category.id);
+                            return (
+                              <button
+                                key={category.id}
+                                type="button"
+                                className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-slate-600 hover:bg-slate-50"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setAttentionCategoryExcludedIds((ids) =>
+                                    selected
+                                      ? Array.from(new Set([...ids, category.id]))
+                                      : ids.filter((id) => id !== category.id)
+                                  );
+                                }}
+                              >
+                                <span className="flex h-4 w-4 items-center justify-center text-slate-700">
+                                  {selected ? <Check className="h-3 w-3" /> : null}
+                                </span>
+                                <span className="min-w-0 truncate">{categoryDisplayLabel(category)}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <button
+                          type="button"
+                          className="mt-1 w-full rounded-lg px-2 py-1.5 text-left text-[11px] text-slate-500 hover:bg-slate-50 hover:text-slate-700"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setAttentionCategoryExcludedIds([]);
+                          }}
+                        >
+                          Select all
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               </div>
 
-              <button
-              onClick={() => setShowWeights(!showWeights)}
-              className="mt-2 mx-4 w-[calc(100%-20px)] rounded-xl border border-slate-300 px-2 py-1 text-xs"
-            >Adjust Weights
-</button>
-
-{showWeights && (
-  <div className="mt-3 space-y-6 border-y border-slate-100 bg-slate-50/40 px-4 py-5 text-xs">
-
-    <div>
-      <label className="flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500">
-        <span>Time</span>
-        <span className="tabular-nums text-slate-900">{weights.time}</span>
-      </label>
-      <div className="editorial-slider-wrap mt-3">
-        <span className="editorial-slider-marker left-1/4" />
-        <span className="editorial-slider-marker left-1/2" />
-        <span className="editorial-slider-marker left-3/4" />
-        <input
-          type="range"
-          min="0"
-          max="100"
-          value={weights.time}
-          onChange={(e) =>
-            setWeights({ ...weights, time: Number(e.target.value) })
-          }
-          className="editorial-slider"
-        />
-      </div>
-    </div>
-
-    <div>
-      <label className="flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500">
-        <span>Priority</span>
-        <span className="tabular-nums text-slate-900">{weights.priority}</span>
-      </label>
-      <div className="editorial-slider-wrap mt-3">
-        <span className="editorial-slider-marker left-1/4" />
-        <span className="editorial-slider-marker left-1/2" />
-        <span className="editorial-slider-marker left-3/4" />
-        <input
-          type="range"
-          min="0"
-          max="100"
-          value={weights.priority}
-          onChange={(e) =>
-            setWeights({ ...weights, priority: Number(e.target.value) })
-          }
-          className="editorial-slider"
-        />
-      </div>
-    </div>
-
-    <div>
-      <label className="flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500">
-        <span>Duration</span>
-        <span className="tabular-nums text-slate-900">{weights.duration}</span>
-      </label>
-      <div className="editorial-slider-wrap mt-3">
-        <span className="editorial-slider-marker left-1/4" />
-        <span className="editorial-slider-marker left-1/2" />
-        <span className="editorial-slider-marker left-3/4" />
-        <input
-          type="range"
-          min="0"
-          max="100"
-          value={weights.duration}
-          onChange={(e) =>
-            setWeights({ ...weights, duration: Number(e.target.value) })
-          }
-          className="editorial-slider"
-        />
-      </div>
-    </div>
-
-    <div>
-      <label className="flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500">
-        <span>Difficulty</span>
-        <span className="tabular-nums text-slate-900">{weights.difficulty}</span>
-      </label>
-      <div className="editorial-slider-wrap mt-3">
-        <span className="editorial-slider-marker left-1/4" />
-        <span className="editorial-slider-marker left-1/2" />
-        <span className="editorial-slider-marker left-3/4" />
-        <input
-          type="range"
-          min="0"
-          max="100"
-          value={weights.difficulty}
-          onChange={(e) =>
-            setWeights({ ...weights, difficulty: Number(e.target.value) })
-          }
-          className="editorial-slider"
-        />
-      </div>
-    </div>
-
-    <button
-      onClick={() =>
-        setWeights({
-          time: 50,
-          priority: 100,
-          duration: 15,
-          difficulty: 15,
-        })
-      }
-      className="w-full rounded-xl border border-slate-300 px-2 py-1 text-xs text-slate-600"
-    >
-      Reset to Default
-    </button>
-
-  </div>
-)}
-
               <div className="space-y-4 px-4 py-4">
-              
-
                 {/* Score list */}
                 <div className="max-h-[52vh] space-y-2 overflow-auto pr-1">
-                  {scoredTasks.map(({ task }) => {
-                  const score = urgencyScore(task, weights);
-                  const days = task.due ? daysLeftFromISO(task.due) : null;
-
+                  {attentionIncludedCategoryIds.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-slate-200 px-3 py-6 text-center text-sm text-slate-400">
+                      No categories selected
+                    </div>
+                  ) : null}
+                  {attentionIncludedCategoryIds.length > 0 ? scoredTasks.map(({ task }) => {
+                    const score = urgencyScore(task, weights);
 
                     return (
                       <div
@@ -2507,37 +2875,130 @@ useEffect(() => {
                         <div className="flex items-start justify-between gap-2">
                           <div className="min-w-0">
                             <div className="line-clamp-2 text-sm font-medium leading-snug">{task.title}</div>
-                            <div className="mt-1 flex flex-wrap gap-2">
-                              {task.due ? (
-                                <span className={`text-[11px] ${days !== null && days <= 2 ? "text-red-600" : "text-slate-500"}`}>
-                                  {days === null ? "—" : timeLeftLabel(days)}
-                                </span>
-                              ) : (
-                                <span className="text-[11px] text-slate-500">No due</span>
-                              )}
-                              <span className="text-[11px] text-slate-500">{priorityLabel(task.priority)}</span>
-                              {task.durationHrs != null ? (
-                                <span className="text-[11px] text-slate-500">{task.durationHrs}h</span>
-                              ) : null}
-                              {task.difficulty != null ? (
-                                <span className="text-[11px] text-slate-500">D{task.difficulty}</span>
-                              ) : null}
-                            </div>
+                            <div className="mt-1 text-[11px] text-slate-500">{courseLabel(task.courseId)}</div>
                           </div>
 
-                          <div className="shrink-0 text-xs font-semibold tabular-nums text-slate-700">{Math.round(score)}</div>                        </div>
+                          <div className="shrink-0 text-xs font-semibold tabular-nums text-slate-700">{Math.round(score)}</div>
+                        </div>
 
-                          <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-100">
-                            <div
+                        <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-100">
+                          <div
                             className={`h-2 rounded-full transition-all duration-500 ${urgencyColour(score)}`}
                             style={{ width: `${score}%` }}
                           />
-                          </div>
-
+                        </div>
                       </div>
                     );
-                  })}
+                  }) : null}
                 </div>
+              </div>
+
+              {showWeights ? (
+                <div className="space-y-6 border-y border-slate-100 bg-slate-50/40 px-4 py-5 text-xs">
+                  <div>
+                    <label className="flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500">
+                      <span>Time</span>
+                      <span className="tabular-nums text-slate-900">{weights.time}</span>
+                    </label>
+                    <div className="editorial-slider-wrap mt-3">
+                      <span className="editorial-slider-marker left-1/4" />
+                      <span className="editorial-slider-marker left-1/2" />
+                      <span className="editorial-slider-marker left-3/4" />
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        value={weights.time}
+                        onChange={(e) => setWeights({ ...weights, time: Number(e.target.value) })}
+                        className="editorial-slider"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500">
+                      <span>Priority</span>
+                      <span className="tabular-nums text-slate-900">{weights.priority}</span>
+                    </label>
+                    <div className="editorial-slider-wrap mt-3">
+                      <span className="editorial-slider-marker left-1/4" />
+                      <span className="editorial-slider-marker left-1/2" />
+                      <span className="editorial-slider-marker left-3/4" />
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        value={weights.priority}
+                        onChange={(e) => setWeights({ ...weights, priority: Number(e.target.value) })}
+                        className="editorial-slider"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500">
+                      <span>Duration</span>
+                      <span className="tabular-nums text-slate-900">{weights.duration}</span>
+                    </label>
+                    <div className="editorial-slider-wrap mt-3">
+                      <span className="editorial-slider-marker left-1/4" />
+                      <span className="editorial-slider-marker left-1/2" />
+                      <span className="editorial-slider-marker left-3/4" />
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        value={weights.duration}
+                        onChange={(e) => setWeights({ ...weights, duration: Number(e.target.value) })}
+                        className="editorial-slider"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500">
+                      <span>Difficulty</span>
+                      <span className="tabular-nums text-slate-900">{weights.difficulty}</span>
+                    </label>
+                    <div className="editorial-slider-wrap mt-3">
+                      <span className="editorial-slider-marker left-1/4" />
+                      <span className="editorial-slider-marker left-1/2" />
+                      <span className="editorial-slider-marker left-3/4" />
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        value={weights.difficulty}
+                        onChange={(e) => setWeights({ ...weights, difficulty: Number(e.target.value) })}
+                        className="editorial-slider"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() =>
+                      setWeights({
+                        time: 50,
+                        priority: 100,
+                        duration: 15,
+                        difficulty: 15,
+                      })
+                    }
+                    className="w-full rounded-xl border border-slate-300 px-2 py-1 text-xs text-slate-600"
+                  >
+                    Reset to Default
+                  </button>
+                </div>
+              ) : null}
+
+              <div className="px-4 py-3">
+                <button
+                  onClick={() => setShowWeights(!showWeights)}
+                  className="w-full rounded-xl border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
+                  type="button"
+                >
+                  Adjust Weights
+                </button>
               </div>
             </div>
           </div>

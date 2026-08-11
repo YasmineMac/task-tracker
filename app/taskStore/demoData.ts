@@ -34,7 +34,7 @@ export const demoTasks: Task[] = [
     id: "demo-task-prototype",
     title: "Prototype dashboard interaction",
     courseId: "client_project",
-    status: "urgent",
+    status: "in_progress",
     priority: "high",
     due: "2026-07-16",
     notes: "Keep the first pass small and testable.",

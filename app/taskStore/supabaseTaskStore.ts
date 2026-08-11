@@ -91,6 +91,8 @@ export const supabaseTaskStore: TaskStore = {
       return false;
     }
 
+    const deletedTaskIds = Array.from(new Set(options.deletedTaskIds ?? [])).filter(Boolean);
+    const requiresBackupBeforeWrite = deletedTaskIds.length > 0 || tasks.length === 0;
     const remoteTasks = (existingData || []).map((row: Record<string, unknown>) => taskFromSupabaseRow(row));
     const backupTasks = remoteTasks.length ? remoteTasks : tasks;
     options.onLocalBackup?.(backupTasks, options.timeLogs);
@@ -102,7 +104,10 @@ export const supabaseTaskStore: TaskStore = {
     };
 
     const backupOk = await createSupabaseBackup(options.syncCode, snapshot);
-    if (!backupOk) return false;
+    if (!backupOk) {
+      if (requiresBackupBeforeWrite) return false;
+      console.warn("Supabase backup failed before a non-destructive task upsert. Continuing with task save.");
+    }
 
     const tasksToUpsert = tasks.map((t) => ({
       id: t.id,
@@ -121,8 +126,6 @@ export const supabaseTaskStore: TaskStore = {
       completed_at: t.completedAt ?? null,
     }));
 
-    const deletedTaskIds = Array.from(new Set(options.deletedTaskIds ?? [])).filter(Boolean);
-
     console.info("supabaseTaskStore.saveTasks payload", {
       taskCount: tasksToUpsert.length,
       deletedTaskIds,
@@ -131,10 +134,25 @@ export const supabaseTaskStore: TaskStore = {
     });
 
     if (tasksToUpsert.length > 0) {
-      const { data: upsertData, error: upsertError } = await supabase
+      let { data: upsertData, error: upsertError } = await supabase
         .from("tasks")
         .upsert(tasksToUpsert, { onConflict: "id" })
         .select("id,title,sync_code");
+
+      if (
+        upsertError &&
+        upsertError.code === "PGRST204" &&
+        upsertError.message.includes("completed_at")
+      ) {
+        console.warn("Retrying task save without completed_at because the Supabase tasks schema does not expose that column yet.");
+        const tasksWithoutCompletedAt = tasksToUpsert.map(({ completed_at, ...task }) => task);
+        const retry = await supabase
+          .from("tasks")
+          .upsert(tasksWithoutCompletedAt, { onConflict: "id" })
+          .select("id,title,sync_code");
+        upsertData = retry.data;
+        upsertError = retry.error;
+      }
 
       console.info("supabaseTaskStore.saveTasks upsert result", {
         insertedOrUpdated: upsertData?.length ?? 0,

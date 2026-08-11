@@ -9,7 +9,12 @@ export function uid() {
     return crypto.randomUUID();
   }
 
-  return Math.random().toString(16).slice(2) + Date.now().toString(16);
+  return "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (char) =>
+    (
+      Number(char) ^
+      (Math.random() * 16) >> (Number(char) / 4)
+    ).toString(16)
+  );
 }
 
 export function normalizeTask(t: Record<string, unknown>): Task {

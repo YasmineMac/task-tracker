@@ -1,5 +1,5 @@
 export type Priority = "low" | "normal" | "high";
-export type Status = "to_do" | "in_progress" | "urgent" | "frozen" | "completed";
+export type Status = "to_do" | "in_progress" | "frozen" | "completed";
 export type DeadlineMode = "date" | "vision";
 export type VisionHorizon = "short" | "mid" | "long";
 export type ActivityType = "correspondence" | "activity" | "uni_work";
