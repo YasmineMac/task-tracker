@@ -41,8 +41,16 @@ const SYNC_CODE = isDemoMode ? "DEMO-TASKS" : "YAS-TEST-001";
 
 type ViewMode = "board" | "list" | "logger";
 type LoggerValueMode = "hours" | "times";
+type LoggerRangeMode = "week" | "month" | "year" | "custom";
 type ListFilterMenu = "status" | "priority" | "difficulty" | "timeLeft" | "duration";
-const LOGGER_DAY_COUNT = 14;
+type AttentionWeights = {
+  time: number;
+  duration: number;
+  difficulty: number;
+};
+
+const DEFAULT_ATTENTION_WEIGHTS: AttentionWeights = { time: 50, duration: 15, difficulty: 15 };
+const FIXED_PRIORITY_WEIGHT = 20;
 const COMPLETED_RECOVERY_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const VISION_HORIZONS: { id: VisionHorizon; label: string }[] = [
@@ -196,6 +204,16 @@ function optionalFiniteNumber(raw: string) {
   return Number.isFinite(n) ? n : null;
 }
 
+function normalizeAttentionWeights(raw: unknown): AttentionWeights {
+  if (!raw || typeof raw !== "object") return DEFAULT_ATTENTION_WEIGHTS;
+  const candidate = raw as Partial<Record<keyof AttentionWeights, unknown>>;
+  return {
+    time: Number.isFinite(Number(candidate.time)) ? Number(candidate.time) : DEFAULT_ATTENTION_WEIGHTS.time,
+    duration: Number.isFinite(Number(candidate.duration)) ? Number(candidate.duration) : DEFAULT_ATTENTION_WEIGHTS.duration,
+    difficulty: Number.isFinite(Number(candidate.difficulty)) ? Number(candidate.difficulty) : DEFAULT_ATTENTION_WEIGHTS.difficulty,
+  };
+}
+
 function toggleFilterValue<T extends string>(values: T[], value: T) {
   return values.includes(value)
     ? values.filter((item) => item !== value)
@@ -251,7 +269,7 @@ function parseTimeLogHours(raw: string) {
 }
 
 function resolveTimeLogHours(raw: string, calculatedHours: number | null) {
-  return raw.trim() ? parseTimeLogHours(raw) : calculatedHours;
+  return calculatedHours !== null ? calculatedHours : parseTimeLogHours(raw);
 }
 
 function todayISO() {
@@ -278,6 +296,130 @@ function addDaysISO(iso: string, offset: number) {
   const [year, month, day] = iso.split("-").map(Number);
   const d = new Date(Date.UTC(year, month - 1, day + offset));
   return d.toISOString().slice(0, 10);
+}
+
+function isoParts(iso: string) {
+  const [year, month, day] = iso.split("-").map(Number);
+  return { year, month, day };
+}
+
+function addMonthsISO(iso: string, offset: number) {
+  const { year, month, day } = isoParts(iso);
+  const endOfTargetMonth = new Date(Date.UTC(year, month - 1 + offset + 1, 0)).getUTCDate();
+  const d = new Date(Date.UTC(year, month - 1 + offset, Math.min(day, endOfTargetMonth)));
+  return d.toISOString().slice(0, 10);
+}
+
+function addYearsISO(iso: string, offset: number) {
+  const { year, month, day } = isoParts(iso);
+  const endOfTargetMonth = new Date(Date.UTC(year + offset, month, 0)).getUTCDate();
+  const d = new Date(Date.UTC(year + offset, month - 1, Math.min(day, endOfTargetMonth)));
+  return d.toISOString().slice(0, 10);
+}
+
+function startOfLoggerWeek(iso: string) {
+  const date = new Date(iso + "T00:00:00");
+  const mondayOffset = (date.getDay() + 6) % 7;
+  return addDaysISO(iso, -mondayOffset);
+}
+
+function startOfLoggerMonth(iso: string) {
+  const { year, month } = isoParts(iso);
+  return `${year}-${String(month).padStart(2, "0")}-01`;
+}
+
+function endOfLoggerMonth(iso: string) {
+  const { year, month } = isoParts(iso);
+  const d = new Date(Date.UTC(year, month, 0));
+  return d.toISOString().slice(0, 10);
+}
+
+function startOfLoggerYear(iso: string) {
+  return `${iso.slice(0, 4)}-01-01`;
+}
+
+function endOfLoggerYear(iso: string) {
+  return `${iso.slice(0, 4)}-12-31`;
+}
+
+function loggerDateRangeForMode(
+  mode: LoggerRangeMode,
+  anchorDate: string,
+  customStartDate: string,
+  customEndDate: string
+) {
+  const anchor = isValidISODate(anchorDate) ? anchorDate : todayISO();
+
+  if (mode === "week") {
+    const start = startOfLoggerWeek(anchor);
+    return { start, end: addDaysISO(start, 6) };
+  }
+
+  if (mode === "month") {
+    return { start: startOfLoggerMonth(anchor), end: endOfLoggerMonth(anchor) };
+  }
+
+  if (mode === "year") {
+    return { start: startOfLoggerYear(anchor), end: endOfLoggerYear(anchor) };
+  }
+
+  const start = isValidISODate(customStartDate) ? customStartDate : anchor;
+  const end = isValidISODate(customEndDate) ? customEndDate : start;
+  return start <= end ? { start, end } : { start: end, end: start };
+}
+
+function loggerDaysForRange(range: { start: string; end: string }) {
+  if (!isValidISODate(range.start) || !isValidISODate(range.end) || range.start > range.end) {
+    return [];
+  }
+
+  const days: string[] = [];
+  let cursor = range.start;
+
+  while (cursor <= range.end) {
+    days.push(cursor);
+    cursor = addDaysISO(cursor, 1);
+  }
+
+  return days;
+}
+
+function formatLoggerPeriod(
+  mode: LoggerRangeMode,
+  range: { start: string; end: string },
+  anchorDate: string
+) {
+  const dateFormatter = new Intl.DateTimeFormat("en", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+  const monthFormatter = new Intl.DateTimeFormat("en", { month: "long", year: "numeric" });
+
+  if (mode === "week") {
+    const start = new Date(range.start + "T00:00:00");
+    const end = new Date(range.end + "T00:00:00");
+    const sameMonth = start.getMonth() === end.getMonth() && start.getFullYear() === end.getFullYear();
+    if (sameMonth) {
+      return `${start.getDate()}-${end.getDate()} ${new Intl.DateTimeFormat("en", {
+        month: "short",
+        year: "numeric",
+      }).format(end)}`;
+    }
+    return `${dateFormatter.format(start)} - ${dateFormatter.format(end)}`;
+  }
+
+  if (mode === "month") {
+    return monthFormatter.format(new Date(range.start + "T00:00:00"));
+  }
+
+  if (mode === "year") {
+    return anchorDate.slice(0, 4);
+  }
+
+  return `${dateFormatter.format(new Date(range.start + "T00:00:00"))} - ${dateFormatter.format(
+    new Date(range.end + "T00:00:00")
+  )}`;
 }
 
 function timeToMinutes(time: string) {
@@ -323,19 +465,33 @@ function formatLoggerWeekday(iso: string) {
 }
 
 function loggerCellTone(hours: number) {
-  if (hours <= 0) return "bg-white text-slate-300";
+  if (hours <= 0) return "border border-slate-100 bg-white text-transparent";
   if (hours < 1) return "bg-violet-50 text-violet-700";
   if (hours < 2) return "bg-violet-100 text-violet-800";
   if (hours < 4) return "bg-violet-200 text-violet-900";
   return "bg-violet-300 text-violet-950";
 }
 
+function loggerCountCellTone(count: number) {
+  if (count <= 0) return "border border-slate-100 bg-white text-transparent";
+  if (count === 1) return "bg-violet-50 text-violet-700";
+  if (count === 2) return "bg-violet-100 text-violet-800";
+  if (count <= 4) return "bg-violet-200 text-violet-900";
+  return "bg-violet-300 text-violet-950";
+}
+
+function formatGridHours(hours: number) {
+  if (!Number.isFinite(hours) || hours <= 0) return "";
+  return Number.isInteger(hours) ? String(hours) : String(Number(hours.toFixed(2)));
+}
+
 function calendarCellTone(hours: number) {
-  if (hours <= 0) return "bg-slate-100";
-  if (hours < 1) return "bg-emerald-100";
-  if (hours < 2.5) return "bg-emerald-300";
-  if (hours < 5) return "bg-emerald-500";
-  return "bg-emerald-700";
+  if (hours <= 0) return "border border-slate-100 bg-white";
+  if (hours < 1) return "bg-violet-50";
+  if (hours < 2) return "bg-violet-100";
+  if (hours < 4) return "bg-violet-200";
+  if (hours < 6) return "bg-violet-300";
+  return "bg-violet-400";
 }
 
 function courseBarClass(courseId?: string) {
@@ -488,12 +644,7 @@ function urgencyScore(
   mode?: "practice" | "task";
   lastPracticedAt?: number | string;
   },
-  weights = {
-    time: 50,
-    priority: 20,
-    duration: 15,
-    difficulty: 15,
-  }
+  weights: AttentionWeights = DEFAULT_ATTENTION_WEIGHTS
 ) {
   const d = daysUntil(t.due);
   const dur = t.durationHrs ?? 0;
@@ -541,16 +692,183 @@ if (t.mode === "practice") {
   const difficultyScore = clamp(((diff - 1) / 4) * 10, 0, 10);
 
   const totalWeight =
-  weights.time + weights.priority + weights.duration + weights.difficulty || 1;
+  weights.time + FIXED_PRIORITY_WEIGHT + weights.duration + weights.difficulty || 1;
 
 const weightedScore =
   (timePressure * weights.time +
-    priorityScore * weights.priority +
+    priorityScore * FIXED_PRIORITY_WEIGHT +
     workload * weights.duration +
     difficultyScore * weights.difficulty) /
   totalWeight;
 
 return clamp(weightedScore, 0, 100);
+}
+
+function daysBetweenISODates(startISO: string, endISO: string) {
+  if (!isValidISODate(startISO) || !isValidISODate(endISO)) return null;
+  const start = new Date(startISO + "T00:00:00").getTime();
+  const end = new Date(endISO + "T00:00:00").getTime();
+  return Math.max(0, Math.floor((end - start) / DAY_MS));
+}
+
+function cadenceStatsForTask(task: Task, timeLogs: TimeLog[]) {
+  const today = todayISO();
+  const taskLogs = timeLogs.filter((log) => log.taskId === task.id && isValidISODate(log.date));
+  const lastWorkedDate = taskLogs.reduce<string | null>(
+    (latest, log) => (!latest || log.date > latest ? log.date : latest),
+    null
+  );
+  const daysSinceLastWorked = lastWorkedDate ? daysBetweenISODates(lastWorkedDate, today) : null;
+
+  function hoursSince(days: number) {
+    const start = addDaysISO(today, -(days - 1));
+    return taskLogs
+      .filter((log) => log.date >= start && log.date <= today)
+      .reduce((sum, log) => sum + log.hours, 0);
+  }
+
+  const hoursLast7Days = hoursSince(7);
+  const hoursLast14Days = hoursSince(14);
+  const hoursLast30Days = hoursSince(30);
+  const hasFixedDeadline = Boolean(task.due);
+  const horizonCadenceDays =
+    task.deadlineMode === "vision"
+      ? task.visionHorizon === "short"
+        ? 5
+        : task.visionHorizon === "mid"
+          ? 10
+          : task.visionHorizon === "long"
+            ? 18
+            : 21
+      : hasFixedDeadline
+        ? 21
+        : 21;
+  const priorityCadenceMultiplier =
+    task.priority === "high" ? 0.65 : task.priority === "low" ? 1.45 : 1;
+  const expectedCadenceDays = horizonCadenceDays * priorityCadenceMultiplier;
+  const expectedHours14 =
+    (task.priority === "high" ? 6 : task.priority === "low" ? 1.5 : 3) +
+    (task.deadlineMode === "vision"
+      ? task.visionHorizon === "short"
+        ? 2
+        : task.visionHorizon === "mid"
+          ? 1
+          : task.visionHorizon === "long"
+            ? 0.5
+            : 0
+      : 0);
+  const recentCoverage = clamp(hoursLast14Days / expectedHours14, 0, 1);
+  const recentHoursMultiplier = 1 - recentCoverage * 0.65;
+  const neverWorkedBasePressure =
+    (task.priority === "high" ? 28 : task.priority === "normal" ? 14 : 5) +
+    (task.deadlineMode === "vision"
+      ? task.visionHorizon === "short"
+        ? 8
+        : task.visionHorizon === "mid"
+          ? 4
+          : task.visionHorizon === "long"
+            ? 1
+            : 0
+      : 0);
+  const neglectPressure = lastWorkedDate
+    ? 100 * (1 - Math.exp(-(daysSinceLastWorked ?? 0) / (expectedCadenceDays * 1.4)))
+    : clamp(neverWorkedBasePressure, 0, 35);
+  const fixedDeadlineDamping = hasFixedDeadline ? 0.45 : 1;
+  const priorityCap = task.priority === "low" ? 45 : task.priority === "normal" ? 75 : 90;
+  const cadencePressureBeforeActivity = clamp(
+    neglectPressure * recentHoursMultiplier * fixedDeadlineDamping,
+    0,
+    priorityCap
+  );
+  const activityCadenceMultiplier =
+    task.activityType === "correspondence"
+      ? task.priority === "high" || task.visionHorizon === "short"
+        ? 0.65
+        : 0.35
+      : task.activityType === "activity"
+        ? 1
+        : task.activityType === "uni_work"
+          ? 0.9
+          : 1;
+  const cadencePressure = clamp(
+    cadencePressureBeforeActivity * activityCadenceMultiplier,
+    0,
+    priorityCap
+  );
+
+  return {
+    lastWorkedDate,
+    daysSinceLastWorked,
+    hoursLast7Days,
+    hoursLast14Days,
+    hoursLast30Days,
+    hasEverBeenWorked: taskLogs.length > 0,
+    neverWorkedBasePressure: lastWorkedDate ? 0 : clamp(neverWorkedBasePressure, 0, 35),
+    activityCadenceMultiplier,
+    cadencePressureBeforeActivity,
+    cadencePressure,
+  };
+}
+
+function attentionScoreV2(task: Task, timeLogs: TimeLog[] = []) {
+  const days = daysUntil(task.due);
+  const hasFixedDeadline = days !== null;
+  const effectiveDays = days === null ? null : Math.max(0, days);
+  const deadlinePressure = hasFixedDeadline
+    ? effectiveDays === 0
+      ? 100
+      : 100 / (1 + Math.pow(effectiveDays / 24, 1.65))
+    : 0;
+  const deadlineContribution = deadlinePressure * 0.5;
+  const intrinsicImportance =
+    task.priority === "high" ? 28 : task.priority === "normal" ? 16 : 6;
+  const difficultyFactor = clamp(1 + ((task.difficulty ?? 3) - 3) * 0.2, 0.6, 1.4);
+  const effortHours = Math.max(0, task.durationHrs ?? 0) * difficultyFactor;
+  const effortDays = effortHours / 2;
+  const startPressure =
+    hasFixedDeadline && effortDays > 0
+      ? clamp((effortDays / (Math.max(effectiveDays ?? 0, 0.5) + effortDays)) * 100, 0, 100)
+      : 0;
+  const startContribution = startPressure * 0.3;
+  const horizonPressure = hasFixedDeadline
+    ? 0
+    : task.deadlineMode === "vision"
+      ? task.visionHorizon === "short"
+        ? 12
+        : task.visionHorizon === "mid"
+          ? 7
+          : task.visionHorizon === "long"
+            ? 3
+            : 0
+      : 0;
+  const contextModifier = 0;
+  const cadence = cadenceStatsForTask(task, timeLogs);
+  const cadenceContribution = cadence.cadencePressure * 0.22;
+  const rawScore = clamp(
+    deadlineContribution +
+      intrinsicImportance +
+      startContribution +
+      horizonPressure +
+      contextModifier +
+      cadenceContribution,
+    0,
+    100
+  );
+
+  return {
+    currentDaysUntilDeadline: days,
+    deadlinePressure,
+    deadlineContribution,
+    intrinsicImportance,
+    startPressure,
+    startContribution,
+    horizonPressure,
+    contextModifier,
+    ...cadence,
+    cadenceContribution,
+    rawScore,
+    displayedScore: Math.round(rawScore),
+  };
 }
 
 function urgencyColour(score: number) {
@@ -812,14 +1130,14 @@ export default function MinimalTaskTracker() {
 
 const [weights, setWeights] = useState(() => {
   if (typeof window === "undefined") {
-    return { time: 50, priority: 20, duration: 15, difficulty: 15 };
+    return DEFAULT_ATTENTION_WEIGHTS;
   }
 
   const saved = localStorage.getItem("attentionWeights");
 
   return saved
-    ? JSON.parse(saved)
-    : { time: 50, priority: 20, duration: 15, difficulty: 15 };
+    ? normalizeAttentionWeights(JSON.parse(saved))
+    : DEFAULT_ATTENTION_WEIGHTS;
 });
 
 useEffect(() => {
@@ -861,9 +1179,13 @@ useEffect(() => {
   const [logNote, setLogNote] = useState<string>("");
   const [loggerTaskFilter, setLoggerTaskFilter] = useState<string>("all");
   const [loggerValueMode, setLoggerValueMode] = useState<LoggerValueMode>("hours");
-  const [timelineEnd, setTimelineEnd] = useState<string>("");
+  const [loggerRangeMode, setLoggerRangeMode] = useState<LoggerRangeMode>("month");
+  const [loggerAnchorDate, setLoggerAnchorDate] = useState<string>("");
+  const [customStartDate, setCustomStartDate] = useState<string>("");
+  const [customEndDate, setCustomEndDate] = useState<string>("");
   const [clientToday, setClientToday] = useState<string>("");
   const [clientNowMs, setClientNowMs] = useState<number>(0);
+  const loggerGridScrollRef = useRef<HTMLDivElement | null>(null);
 
   // Edit modal state
   const [editOpen, setEditOpen] = useState(false);
@@ -897,7 +1219,9 @@ useEffect(() => {
     const today = todayISO();
     setClientToday(today);
     setClientNowMs(Date.now());
-    setTimelineEnd(today);
+    setLoggerAnchorDate(today);
+    setCustomStartDate(today);
+    setCustomEndDate(today);
     setLogDate(today);
     setMode(storedTabToMode(localStorage.getItem(ACTIVE_TAB_STORAGE_KEY)));
     setBackupStatus(getLatestLocalBackupLabel());
@@ -1358,16 +1682,99 @@ useEffect(() => {
     return scored;
   }, [attentionIncludedCategoryIdSet, attentionIncludedCategoryIds.length, filtered, weights]);
 
-  const loggerDays = useMemo(() => {
-    const center = isValidISODate(timelineEnd) ? timelineEnd : todayISO();
-    const startOffset = -Math.floor(LOGGER_DAY_COUNT / 2) + 1;
+  useEffect(() => {
+    const target = window as typeof window & {
+      yasmineCompareAttentionV2?: () => Array<Record<string, string | number | null>>;
+    };
 
-    return Array.from({ length: LOGGER_DAY_COUNT }, (_, i) => addDaysISO(center, startOffset + i));
-  }, [timelineEnd]);
+    target.yasmineCompareAttentionV2 = () => {
+      const rows = scoredTasks
+        .map(({ task, total }) => {
+          const v2 = attentionScoreV2(task, timeLogs);
+          return {
+            task: task.title,
+            category: courseLabel(task.courseId),
+            status: task.status,
+            priority: task.priority,
+            deadline: task.due ?? task.visionHorizon ?? "none",
+            activityType: task.activityType ?? "none",
+            currentScore: Math.round(total),
+            v2RawScore: Number(v2.rawScore.toFixed(2)),
+            v2DisplayedScore: v2.displayedScore,
+            deadlinePressure: Number(v2.deadlinePressure.toFixed(2)),
+            deadlineContribution: Number(v2.deadlineContribution.toFixed(2)),
+            intrinsicImportance: v2.intrinsicImportance,
+            startPressure: Number(v2.startPressure.toFixed(2)),
+            startContribution: Number(v2.startContribution.toFixed(2)),
+            horizonPressure: v2.horizonPressure,
+            contextModifier: v2.contextModifier,
+            lastWorkedDate: v2.lastWorkedDate ?? "never",
+            daysSinceLastWorked: v2.daysSinceLastWorked,
+            hoursLast7Days: Number(v2.hoursLast7Days.toFixed(2)),
+            hoursLast14Days: Number(v2.hoursLast14Days.toFixed(2)),
+            hoursLast30Days: Number(v2.hoursLast30Days.toFixed(2)),
+            hasEverBeenWorked: v2.hasEverBeenWorked ? "yes" : "no",
+            neverWorkedBasePressure: Number(v2.neverWorkedBasePressure.toFixed(2)),
+            activityCadenceMultiplier: Number(v2.activityCadenceMultiplier.toFixed(2)),
+            cadencePressureBeforeActivity: Number(v2.cadencePressureBeforeActivity.toFixed(2)),
+            cadencePressure: Number(v2.cadencePressure.toFixed(2)),
+            cadenceContribution: Number(v2.cadenceContribution.toFixed(2)),
+          };
+        })
+        .sort((a, b) => Number(b.v2RawScore) - Number(a.v2RawScore));
+
+      console.table(rows);
+      return rows;
+    };
+
+    return () => {
+      delete target.yasmineCompareAttentionV2;
+    };
+  }, [courseLabel, scoredTasks, timeLogs]);
+
+  const loggerDateRange = useMemo(() => {
+    return loggerDateRangeForMode(
+      loggerRangeMode,
+      loggerAnchorDate,
+      customStartDate,
+      customEndDate
+    );
+  }, [customEndDate, customStartDate, loggerAnchorDate, loggerRangeMode]);
+
+  const loggerPeriodLabel = useMemo(() => {
+    return formatLoggerPeriod(loggerRangeMode, loggerDateRange, loggerAnchorDate || todayISO());
+  }, [loggerAnchorDate, loggerDateRange, loggerRangeMode]);
+
+  const loggerDays = useMemo(() => {
+    if (loggerRangeMode === "year") return [];
+    return loggerDaysForRange(loggerDateRange);
+  }, [loggerDateRange, loggerRangeMode]);
+  const useCompactLoggerGrid =
+    loggerRangeMode === "month" || (loggerRangeMode === "custom" && loggerDays.length > 7);
+
+  useEffect(() => {
+    if (loggerRangeMode === "month" || loggerRangeMode === "custom") {
+      loggerGridScrollRef.current?.scrollTo({ left: 0 });
+    }
+  }, [loggerDateRange.end, loggerDateRange.start, loggerRangeMode]);
+
+  const logsInRange = useMemo(() => {
+    return timeLogs.filter((log) => log.date >= loggerDateRange.start && log.date <= loggerDateRange.end);
+  }, [loggerDateRange, timeLogs]);
 
   const calculatedLogHours = useMemo(() => {
     return durationHoursFromTimes(logStartTime, logEndTime);
   }, [logEndTime, logStartTime]);
+  const isCalculatedLogDuration = calculatedLogHours !== null;
+  const displayedLogHoursInput = isCalculatedLogDuration
+    ? formatHourInput(calculatedLogHours)
+    : logHoursInput;
+
+  useEffect(() => {
+    if (calculatedLogHours !== null) {
+      setLogHoursInput(formatHourInput(calculatedLogHours));
+    }
+  }, [calculatedLogHours]);
 
   const loggerTasks = useMemo(() => {
     const taskIdsWithLogs = new Set(timeLogs.map((log) => log.taskId));
@@ -1424,21 +1831,69 @@ useEffect(() => {
     });
   }, [loggerDays, loggerTasks, timeLogs]);
 
+  const loggerRangeSummary = useMemo(() => {
+    const totalHours = logsInRange.reduce((sum, log) => sum + log.hours, 0);
+    const activeDates = new Set(logsInRange.map((log) => log.date));
+    const averageHoursPerActiveDay = activeDates.size ? totalHours / activeDates.size : 0;
+    const taskTotals = new Map<string, number>();
+    const categoryTotals = new Map<string, number>();
+
+    for (const log of logsInRange) {
+      const taskKey = log.taskId || "archived";
+      taskTotals.set(taskKey, (taskTotals.get(taskKey) ?? 0) + log.hours);
+
+      const task = log.taskId ? taskById[log.taskId] : null;
+      const categoryKey = task?.courseId ?? "archived";
+      categoryTotals.set(categoryKey, (categoryTotals.get(categoryKey) ?? 0) + log.hours);
+    }
+
+    const mostWorkedTaskEntry = Array.from(taskTotals.entries()).sort((a, b) => b[1] - a[1])[0] ?? null;
+    const mostWorkedCategoryEntry = Array.from(categoryTotals.entries()).sort((a, b) => b[1] - a[1])[0] ?? null;
+    const mostWorkedTask = mostWorkedTaskEntry
+      ? {
+          id: mostWorkedTaskEntry[0],
+          title: taskById[mostWorkedTaskEntry[0]]?.title ?? "Archived task",
+          hours: mostWorkedTaskEntry[1],
+        }
+      : null;
+    const mostWorkedCategory = mostWorkedCategoryEntry
+      ? {
+          id: mostWorkedCategoryEntry[0],
+          label: mostWorkedCategoryEntry[0] === "archived" ? "Archived category" : courseLabel(mostWorkedCategoryEntry[0]),
+          hours: mostWorkedCategoryEntry[1],
+        }
+      : null;
+
+    return {
+      totalHours,
+      activeDayCount: activeDates.size,
+      averageHoursPerActiveDay,
+      mostWorkedTask,
+      mostWorkedCategory,
+    };
+  }, [courseLabel, logsInRange, taskById]);
+
   const workCalendar = useMemo(() => {
     const totals = new Map<string, number>();
-    for (const log of timeLogs) {
+    for (const log of logsInRange) {
       totals.set(log.date, (totals.get(log.date) ?? 0) + log.hours);
     }
 
-    const end = isValidISODate(clientToday) ? clientToday : todayISO();
-    const rawStart = addDaysISO(end, -364);
-    const startDate = new Date(rawStart + "T00:00:00");
-    const start = addDaysISO(rawStart, -startDate.getDay());
+    const rawStart = loggerDateRange.start;
+    const end = loggerDateRange.end;
+    const days = loggerDaysForRange(loggerDateRange).map((date) => ({
+      date,
+      hours: totals.get(date) ?? 0,
+    }));
+    const compact = loggerRangeMode === "year" || days.length > 62;
+    const alignStart = compact || loggerRangeMode === "month"
+      ? addDaysISO(rawStart, -new Date(rawStart + "T00:00:00").getDay())
+      : rawStart;
     const weeks: { weekStart: string; days: { date: string; hours: number }[] }[] = [];
-    let cursor = start;
+    let cursor = alignStart;
 
-    for (let week = 0; week < 53; week += 1) {
-      const days = Array.from({ length: 7 }, (_, dayIndex) => {
+    while (cursor <= end || weeks.length === 0) {
+      const weekDays = Array.from({ length: 7 }, (_, dayIndex) => {
         const date = addDaysISO(cursor, dayIndex);
         return {
           date,
@@ -1446,17 +1901,18 @@ useEffect(() => {
         };
       });
 
-      weeks.push({ weekStart: cursor, days });
+      weeks.push({ weekStart: cursor, days: weekDays });
       cursor = addDaysISO(cursor, 7);
     }
 
-    return { rawStart, end, weeks };
-  }, [clientToday, timeLogs]);
+    return { rawStart, end, days, weeks, compact };
+  }, [loggerDateRange, loggerRangeMode, logsInRange]);
 
   const topWorkedTasks = useMemo(() => {
     const totals = new Map<string, number>();
-    for (const log of timeLogs) {
-      totals.set(log.taskId, (totals.get(log.taskId) ?? 0) + log.hours);
+    for (const log of logsInRange) {
+      const taskKey = log.taskId || "archived";
+      totals.set(taskKey, (totals.get(taskKey) ?? 0) + log.hours);
     }
 
     const rows = Array.from(totals.entries())
@@ -1478,7 +1934,7 @@ useEffect(() => {
       rows,
       maxHours: rows[0]?.hours ?? 0,
   };
-}, [taskById, timeLogs]);
+}, [logsInRange, taskById]);
 
   function openNewTaskForCourse(courseId: string) {
     setNewCourseId(courseId);
@@ -1715,15 +2171,32 @@ useEffect(() => {
     setLogOpen(true);
   }
 
-  function moveLoggerRange(direction: -1 | 1) {
-    setTimelineEnd((date) => {
-      const anchor = isValidISODate(date)
-        ? date
-        : isValidISODate(clientToday)
-          ? clientToday
-          : todayISO();
-      return addDaysISO(anchor, direction * LOGGER_DAY_COUNT);
-    });
+  function setLoggerAnchor(nextAnchor: string) {
+    setLoggerAnchorDate(nextAnchor);
+  }
+
+  function moveLoggerSelectedRange(direction: -1 | 1) {
+    if (loggerRangeMode === "custom") return;
+
+    const anchor = isValidISODate(loggerAnchorDate)
+      ? loggerAnchorDate
+      : isValidISODate(clientToday)
+        ? clientToday
+        : todayISO();
+    const nextAnchor =
+      loggerRangeMode === "week"
+        ? addDaysISO(anchor, direction * 7)
+        : loggerRangeMode === "month"
+          ? addMonthsISO(anchor, direction)
+          : addYearsISO(anchor, direction);
+
+    setLoggerAnchor(nextAnchor);
+  }
+
+  function returnLoggerRangeToToday() {
+    const today = todayISO();
+    setClientToday(today);
+    setLoggerAnchor(today);
   }
 
   function submitTimeLog() {
@@ -1827,8 +2300,9 @@ useEffect(() => {
     refreshBackupStatus();
 
     if (incoming.attentionWeights && typeof incoming.attentionWeights === "object") {
-      setWeights(incoming.attentionWeights as typeof weights);
-      localStorage.setItem("attentionWeights", JSON.stringify(incoming.attentionWeights));
+      const restoredWeights = normalizeAttentionWeights(incoming.attentionWeights);
+      setWeights(restoredWeights);
+      localStorage.setItem("attentionWeights", JSON.stringify(restoredWeights));
     }
 
     timeLogsRef.current = nextTimeLogs;
@@ -2363,11 +2837,33 @@ useEffect(() => {
               <div>
                 <div className="text-sm font-semibold">Logger</div>
                 <div className="mt-1 text-xs text-slate-500">
-                  {loggerDays[0]} to {loggerDays[loggerDays.length - 1]}
+                  {loggerPeriodLabel}
                 </div>
               </div>
 
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <div className="inline-flex rounded-full border border-slate-200 bg-white p-1">
+                  {[
+                    { id: "week", label: "Week" },
+                    { id: "month", label: "Month" },
+                    { id: "year", label: "Year" },
+                    { id: "custom", label: "Custom" },
+                  ].map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => setLoggerRangeMode(option.id as LoggerRangeMode)}
+                      className={`rounded-full px-3 py-1.5 text-sm ${
+                        loggerRangeMode === option.id
+                          ? "bg-slate-900 text-white"
+                          : "text-slate-600 hover:bg-slate-50"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+
                 <select
                   value={loggerTaskFilter}
                   onChange={(e) => setLoggerTaskFilter(e.target.value)}
@@ -2404,26 +2900,24 @@ useEffect(() => {
                 <div className="inline-flex rounded-full border border-slate-200 bg-white p-1">
                   <button
                     type="button"
-                    onClick={() => moveLoggerRange(-1)}
-                    className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                    onClick={() => moveLoggerSelectedRange(-1)}
+                    disabled={loggerRangeMode === "custom"}
+                    className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
                   >
                     Previous
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
-                      const today = todayISO();
-                      setClientToday(today);
-                      setTimelineEnd(today);
-                    }}
+                    onClick={returnLoggerRangeToToday}
                     className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
                   >
                     Today
                   </button>
                   <button
                     type="button"
-                    onClick={() => moveLoggerRange(1)}
-                    className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                    onClick={() => moveLoggerSelectedRange(1)}
+                    disabled={loggerRangeMode === "custom"}
+                    className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
                   >
                     Next
                   </button>
@@ -2439,108 +2933,260 @@ useEffect(() => {
               </div>
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="min-w-max border-separate border-spacing-0 text-sm">
-                <thead className="text-xs text-slate-600">
-                  <tr>
-                    <th className="sticky left-0 z-30 w-40 border-b border-r border-slate-200 bg-slate-50 px-3 py-2 text-left font-medium">
-                      Category
-                    </th>
-                    <th className="sticky left-40 z-30 w-64 border-b border-r border-slate-200 bg-slate-50 px-3 py-2 text-left font-medium">
-                      Task
-                    </th>
-                    {loggerDays.map((day) => (
-                      <th
-                        key={day}
-                        className="w-28 border-b border-r border-slate-200 bg-slate-50 px-3 py-2 text-center font-medium"
-                      >
-                        <div>{formatLoggerWeekday(day)}</div>
-                        <div className="mt-0.5 tabular-nums text-slate-400">{formatLoggerDate(day)}</div>
-                      </th>
-                    ))}
-                    <th className="sticky right-0 z-30 w-28 border-b border-l border-slate-200 bg-slate-50 px-3 py-2 text-right font-medium">
-                      Total
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {loggerRows.length ? (
-                    loggerRows.map(({ task, total }) => (
-                      <tr key={task.id}>
-                        <td className="sticky left-0 z-20 w-40 border-b border-r border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
-                          {courseLabel(task.courseId)}
-                        </td>
-                        <td className="sticky left-40 z-20 w-64 border-b border-r border-slate-200 bg-white px-3 py-2">
-                          <button
-                            type="button"
-                            onClick={() => openLogTime(task.id)}
-                            className="block max-w-56 truncate text-left font-medium text-slate-800 hover:text-slate-950"
-                          >
-                            {task.title}
-                          </button>
-                        </td>
-                        {loggerDays.map((day) => {
-                          const cellLogs = logsByTaskDate[`${task.id}:${day}`] ?? [];
-                          const hours = cellLogs.reduce((sum, log) => sum + log.hours, 0);
-                          const title = `${task.title} • ${day} • ${formatDuration(hours)}`;
-                          const timeLines = cellLogs.length
-                            ? cellLogs.map((log) =>
-                                log.startTime && log.endTime ? `${log.startTime}-${log.endTime}` : "—"
-                              )
-                            : ["—"];
+            {loggerRangeMode === "custom" ? (
+              <div className="flex flex-wrap items-center gap-3 border-b border-slate-100 px-4 pb-4 text-xs text-slate-500">
+                <label className="flex items-center gap-2">
+                  <span>From</span>
+                  <input
+                    type="date"
+                    value={customStartDate}
+                    max={customEndDate || undefined}
+                    onChange={(e) => {
+                      const nextStart = e.target.value;
+                      if (!isValidISODate(nextStart)) return;
+                      setCustomStartDate(nextStart);
+                      if (!isValidISODate(customEndDate) || nextStart > customEndDate) {
+                        setCustomEndDate(nextStart);
+                      }
+                    }}
+                    className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </label>
+                <label className="flex items-center gap-2">
+                  <span>To</span>
+                  <input
+                    type="date"
+                    value={customEndDate}
+                    min={customStartDate || undefined}
+                    onChange={(e) => {
+                      const nextEnd = e.target.value;
+                      if (!isValidISODate(nextEnd)) return;
+                      setCustomEndDate(nextEnd);
+                      if (!isValidISODate(customStartDate) || nextEnd < customStartDate) {
+                        setCustomStartDate(nextEnd);
+                      }
+                    }}
+                    className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </label>
+              </div>
+            ) : null}
 
-                          return (
-                            <td
-                              key={`${task.id}-${day}`}
-                              className={`h-16 w-28 border-b border-r border-slate-200 px-3 py-2 text-center text-xs font-medium tabular-nums ${loggerCellTone(hours)}`}
-                              title={title}
+            <div className="grid gap-3 border-b border-slate-100 px-4 py-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-2xl border border-slate-200 bg-white p-3">
+                <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">Total hours</div>
+                <div className="mt-2 text-lg font-semibold tabular-nums text-slate-900">
+                  {formatLoggedTime(loggerRangeSummary.totalHours)}
+                </div>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-3">
+                <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">
+                  Avg / active day
+                </div>
+                <div className="mt-2 text-lg font-semibold tabular-nums text-slate-900">
+                  {loggerRangeSummary.activeDayCount
+                    ? formatLoggedTime(loggerRangeSummary.averageHoursPerActiveDay)
+                    : "—"}
+                </div>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-3">
+                <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">
+                  Most worked task
+                </div>
+                <div className="mt-2 truncate text-sm font-semibold text-slate-900">
+                  {loggerRangeSummary.mostWorkedTask?.title ?? "—"}
+                </div>
+                {loggerRangeSummary.mostWorkedTask ? (
+                  <div className="mt-1 text-xs tabular-nums text-slate-500">
+                    {formatLoggedTime(loggerRangeSummary.mostWorkedTask.hours)}
+                  </div>
+                ) : null}
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-3">
+                <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">
+                  Most worked category
+                </div>
+                <div className="mt-2 truncate text-sm font-semibold text-slate-900">
+                  {loggerRangeSummary.mostWorkedCategory?.label ?? "—"}
+                </div>
+                {loggerRangeSummary.mostWorkedCategory ? (
+                  <div className="mt-1 text-xs tabular-nums text-slate-500">
+                    {formatLoggedTime(loggerRangeSummary.mostWorkedCategory.hours)}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            {loggerRangeMode === "year" ? (
+              <div className="border-b border-slate-100 px-4 py-8 text-center text-sm text-slate-400">
+                Detailed daily view is available in Week, Month or Custom.
+              </div>
+            ) : (
+              <div ref={loggerGridScrollRef} className="overflow-x-auto px-3 py-3">
+                <table
+                  className={`min-w-max border-separate text-sm ${
+                    useCompactLoggerGrid
+                      ? "border-spacing-x-0 border-spacing-y-1"
+                      : "border-spacing-x-1 border-spacing-y-1"
+                  }`}
+                >
+                  <thead className="text-xs text-slate-500">
+                    <tr>
+                      <th
+                        className={`sticky left-0 z-40 bg-white text-left font-medium shadow-[1px_0_0_rgba(148,163,184,0.18)] ${
+                          useCompactLoggerGrid
+                            ? "w-[232px] min-w-[232px] max-w-[232px] rounded-lg px-3 py-1.5"
+                            : "w-64 rounded-xl px-3 py-2"
+                        }`}
+                      >
+                        Task
+                      </th>
+                      <th
+                        className={`sticky z-40 bg-white text-left font-medium text-slate-400 shadow-[1px_0_0_rgba(148,163,184,0.14)] ${
+                          useCompactLoggerGrid
+                            ? "left-[232px] w-[156px] min-w-[156px] max-w-[156px] rounded-lg px-3 py-1.5"
+                            : "left-64 w-44 rounded-xl px-3 py-2"
+                        }`}
+                      >
+                        Category
+                      </th>
+                      {loggerDays.map((day) => (
+                        <th
+                          key={day}
+                          className={`text-center font-medium ${
+                            useCompactLoggerGrid
+                              ? "w-12 min-w-12 px-0.5 py-0.5"
+                              : "w-16 min-w-16 px-1 py-1"
+                          }`}
+                        >
+                          <div
+                            className={`${
+                              useCompactLoggerGrid ? "rounded-lg px-1 py-1.5" : "rounded-xl px-2 py-2"
+                            } ${
+                              day === clientToday ? "bg-slate-100 text-slate-800" : "bg-white text-slate-500"
+                            }`}
+                          >
+                            <div className="text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                              {formatLoggerWeekday(day).slice(0, 3)}
+                            </div>
+                            <div className="mt-0.5 text-sm font-semibold tabular-nums text-slate-700">
+                              {new Date(day + "T00:00:00").getDate()}
+                            </div>
+                          </div>
+                        </th>
+                      ))}
+                      <th
+                        className={`sticky right-0 z-40 bg-white text-right font-medium shadow-[-1px_0_0_rgba(148,163,184,0.18)] ${
+                          useCompactLoggerGrid
+                            ? "w-20 min-w-20 rounded-lg px-2 py-1.5"
+                            : "w-24 rounded-xl px-3 py-2"
+                        }`}
+                      >
+                        Total
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {loggerRows.length ? (
+                      loggerRows.map(({ task, total }) => (
+                        <tr key={task.id}>
+                          <td
+                            className={`sticky left-0 z-30 bg-white shadow-[1px_0_0_rgba(148,163,184,0.14)] ${
+                              useCompactLoggerGrid
+                                ? "w-[232px] min-w-[232px] max-w-[232px] rounded-lg px-3 py-1.5"
+                                : "w-64 rounded-xl px-3 py-2"
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => openLogTime(task.id)}
+                              className={`block truncate text-left font-medium text-slate-800 hover:text-slate-950 ${
+                                useCompactLoggerGrid ? "max-w-[208px]" : "max-w-56"
+                              }`}
                             >
-                              <button
-                                type="button"
-                                onClick={() => openLogTime(task.id, day, cellLogs[0])}
-                                className="h-full w-full"
-                                aria-label={title}
+                              {task.title}
+                            </button>
+                          </td>
+                          <td
+                            className={`sticky z-30 bg-white text-xs text-slate-500 shadow-[1px_0_0_rgba(148,163,184,0.1)] ${
+                              useCompactLoggerGrid
+                                ? "left-[232px] w-[156px] min-w-[156px] max-w-[156px] rounded-lg px-3 py-1.5"
+                                : "left-64 w-44 rounded-xl px-3 py-2"
+                            }`}
+                          >
+                            <span className="block truncate">{courseLabel(task.courseId)}</span>
+                          </td>
+                          {loggerDays.map((day) => {
+                            const cellLogs = logsByTaskDate[`${task.id}:${day}`] ?? [];
+                            const hours = cellLogs.reduce((sum, log) => sum + log.hours, 0);
+                            const count = cellLogs.length;
+                            const hasValue = loggerValueMode === "hours" ? hours > 0 : count > 0;
+                            const title = `${task.title} • ${day} • ${
+                              loggerValueMode === "hours" ? formatDuration(hours) : `${count} logs`
+                            }`;
+
+                            return (
+                              <td
+                                key={`${task.id}-${day}`}
+                                className={`text-center text-xs font-medium tabular-nums ${
+                                  useCompactLoggerGrid
+                                    ? "h-10 w-12 min-w-12 px-0.5 py-0.5"
+                                    : "h-11 w-16 min-w-16 px-1 py-1"
+                                }`}
+                                title={title}
                               >
-                                {loggerValueMode === "hours" ? (
-                                  formatDuration(hours)
-                                ) : (
-                                  <span className="flex flex-col gap-0.5 leading-tight">
-                                    {timeLines.map((line, index) => (
-                                      <span key={`${line}-${index}`}>{line}</span>
-                                    ))}
-                                  </span>
-                                )}
-                              </button>
-                            </td>
-                          );
-                        })}
-                        <td className="sticky right-0 z-20 w-28 border-b border-l border-slate-200 bg-white px-3 py-2 text-right text-xs font-semibold tabular-nums text-slate-800">
-                          {formatDuration(total)}
+                                <button
+                                  type="button"
+                                  onClick={() => openLogTime(task.id, day, cellLogs[0])}
+                                  className={`flex items-center justify-center transition-colors ${
+                                    useCompactLoggerGrid ? "h-9 w-11 rounded-lg" : "h-10 w-14 rounded-xl"
+                                  } ${
+                                    loggerValueMode === "hours"
+                                      ? loggerCellTone(hours)
+                                      : loggerCountCellTone(count)
+                                  } ${hasValue ? "hover:ring-1 hover:ring-violet-200" : "hover:bg-slate-50"}`}
+                                  aria-label={title}
+                                >
+                                  {loggerValueMode === "hours" ? formatGridHours(hours) : count || ""}
+                                </button>
+                              </td>
+                            );
+                          })}
+                          <td
+                            className={`sticky right-0 z-30 bg-white text-right text-xs font-semibold tabular-nums text-slate-800 shadow-[-1px_0_0_rgba(148,163,184,0.14)] ${
+                              useCompactLoggerGrid
+                                ? "w-20 min-w-20 rounded-lg px-2 py-1.5"
+                                : "w-24 rounded-xl px-3 py-2"
+                            }`}
+                          >
+                            {loggerValueMode === "hours"
+                              ? total > 0
+                                ? formatLoggedTime(total)
+                                : ""
+                              : timeLogs.filter((log) => log.taskId === task.id && loggerDays.includes(log.date)).length || ""}
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td
+                          colSpan={loggerDays.length + 3}
+                          className="px-4 py-8 text-center text-sm text-slate-400"
+                        >
+                          No tasks have time logs in this view.
                         </td>
                       </tr>
-                    ))
-                  ) : (
-                    <tr>
-                      <td
-                        colSpan={loggerDays.length + 3}
-                        className="border-b border-slate-200 px-4 py-8 text-center text-sm text-slate-400"
-                      >
-                        No tasks have time logs in this view.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
 
             <div className="space-y-4 border-t border-slate-100 px-4 py-4">
               <div className="rounded-2xl border border-slate-200 bg-white p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <div className="text-sm font-semibold">Daily work calendar</div>
-                    <div className="mt-1 text-xs text-slate-500">
-                      {workCalendar.rawStart} to {workCalendar.end}
-                    </div>
+                    <div className="text-sm font-semibold">Daily work</div>
                   </div>
                   <div className="flex items-center gap-1 text-[11px] text-slate-500">
                     <span>Less</span>
@@ -2556,61 +3202,100 @@ useEffect(() => {
                 </div>
 
                 <div className="mt-4 overflow-x-auto pb-1">
-                  <div className="min-w-max">
-                    <div className="grid grid-cols-[28px_1fr] gap-x-2">
-                      <div />
-                      <div
-                        className="grid h-4 text-[10px] text-slate-400"
-                        style={{ gridTemplateColumns: `repeat(${workCalendar.weeks.length}, 12px)` }}
-                      >
-                        {workCalendar.weeks.map((week, index) => {
-                          const month = new Date(week.weekStart + "T00:00:00").getMonth();
-                          const previousMonth =
-                            index > 0
-                              ? new Date(workCalendar.weeks[index - 1].weekStart + "T00:00:00").getMonth()
-                              : null;
-                          return (
-                            <div key={week.weekStart} className="relative">
-                              {index === 0 || month !== previousMonth ? (
-                                <span className="absolute left-0 whitespace-nowrap">
-                                  {new Intl.DateTimeFormat("en", { month: "short" }).format(
-                                    new Date(week.weekStart + "T00:00:00")
-                                  )}
-                                </span>
-                              ) : null}
-                            </div>
-                          );
-                        })}
-                      </div>
+                  {loggerRangeMode === "week" || (loggerRangeMode === "custom" && workCalendar.days.length <= 14) ? (
+                    <div className="flex min-w-max gap-2">
+                      {workCalendar.days.map((day) => (
+                        <div key={day.date} className="grid gap-1 text-center">
+                          <span className="text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                            {formatLoggerWeekday(day.date).slice(0, 3)}
+                          </span>
+                          <span
+                            className={`h-10 w-10 rounded-lg ${calendarCellTone(day.hours)}`}
+                            title={`${formatLoggerDate(day.date)} • ${
+                              day.hours > 0 ? `${formatLoggedTime(day.hours)} worked` : "No time logged"
+                            }`}
+                            aria-label={`${day.date}: ${
+                              day.hours > 0 ? `${formatLoggedTime(day.hours)} worked` : "No time logged"
+                            }`}
+                          />
+                          <span className="text-[11px] tabular-nums text-slate-500">
+                            {new Date(day.date + "T00:00:00").getDate()}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="min-w-max">
+                      <div className="grid grid-cols-[28px_1fr] gap-x-2">
+                        <div />
+                        <div
+                          className="grid h-4 text-[10px] text-slate-400"
+                          style={{
+                            gridTemplateColumns: `repeat(${workCalendar.weeks.length}, ${
+                              workCalendar.compact ? "12px" : "22px"
+                            })`,
+                          }}
+                        >
+                          {workCalendar.weeks.map((week, index) => {
+                            const month = new Date(week.weekStart + "T00:00:00").getMonth();
+                            const previousMonth =
+                              index > 0
+                                ? new Date(workCalendar.weeks[index - 1].weekStart + "T00:00:00").getMonth()
+                                : null;
+                            return (
+                              <div key={week.weekStart} className="relative">
+                                {index === 0 || month !== previousMonth ? (
+                                  <span className="absolute left-0 whitespace-nowrap">
+                                    {new Intl.DateTimeFormat("en", { month: "short" }).format(
+                                      new Date(week.weekStart + "T00:00:00")
+                                    )}
+                                  </span>
+                                ) : null}
+                              </div>
+                            );
+                          })}
+                        </div>
 
-                      <div className="grid grid-rows-7 gap-[3px] pt-[3px] text-[10px] leading-3 text-slate-400">
-                        {["", "Mon", "", "Wed", "", "Fri", ""].map((label, index) => (
-                          <div key={`${label}-${index}`} className="h-3">
-                            {label}
-                          </div>
-                        ))}
-                      </div>
-                      <div className="flex gap-[3px]">
-                        {workCalendar.weeks.map((week) => (
-                          <div key={week.weekStart} className="grid grid-rows-7 gap-[3px]">
-                            {week.days.map((day) => {
-                              const isInRange = day.date >= workCalendar.rawStart && day.date <= workCalendar.end;
-                              return (
-                                <span
-                                  key={day.date}
-                                  className={`h-3 w-3 rounded-[3px] ${
-                                    isInRange ? calendarCellTone(day.hours) : "bg-transparent"
-                                  }`}
-                                  title={`${day.date} • ${formatLoggedTime(day.hours)} logged`}
-                                  aria-label={`${day.date}: ${formatLoggedTime(day.hours)} logged`}
-                                />
-                              );
-                            })}
-                          </div>
-                        ))}
+                        <div
+                          className={`grid grid-rows-7 ${
+                            workCalendar.compact ? "gap-[3px]" : "gap-1"
+                          } pt-[3px] text-[10px] leading-3 text-slate-400`}
+                        >
+                          {["", "Mon", "", "Wed", "", "Fri", ""].map((label, index) => (
+                            <div key={`${label}-${index}`} className={workCalendar.compact ? "h-3" : "h-5"}>
+                              {label}
+                            </div>
+                          ))}
+                        </div>
+                        <div className={`flex ${workCalendar.compact ? "gap-[3px]" : "gap-1"}`}>
+                          {workCalendar.weeks.map((week) => (
+                            <div
+                              key={week.weekStart}
+                              className={`grid grid-rows-7 ${workCalendar.compact ? "gap-[3px]" : "gap-1"}`}
+                            >
+                              {week.days.map((day) => {
+                                const isInRange = day.date >= workCalendar.rawStart && day.date <= workCalendar.end;
+                                return (
+                                  <span
+                                    key={day.date}
+                                    className={`${workCalendar.compact ? "h-3 w-3 rounded-[3px]" : "h-5 w-5 rounded-md"} ${
+                                      isInRange ? calendarCellTone(day.hours) : "bg-transparent"
+                                    }`}
+                                    title={`${formatLoggerDate(day.date)} • ${
+                                      isInRange && day.hours > 0 ? `${formatLoggedTime(day.hours)} worked` : "No time logged"
+                                    }`}
+                                    aria-label={`${day.date}: ${
+                                      isInRange && day.hours > 0 ? `${formatLoggedTime(day.hours)} worked` : "No time logged"
+                                    }`}
+                                  />
+                                );
+                              })}
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     </div>
-                  </div>
+                  )}
                 </div>
               </div>
 
@@ -2917,26 +3602,6 @@ useEffect(() => {
 
                   <div>
                     <label className="flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500">
-                      <span>Priority</span>
-                      <span className="tabular-nums text-slate-900">{weights.priority}</span>
-                    </label>
-                    <div className="editorial-slider-wrap mt-3">
-                      <span className="editorial-slider-marker left-1/4" />
-                      <span className="editorial-slider-marker left-1/2" />
-                      <span className="editorial-slider-marker left-3/4" />
-                      <input
-                        type="range"
-                        min="0"
-                        max="100"
-                        value={weights.priority}
-                        onChange={(e) => setWeights({ ...weights, priority: Number(e.target.value) })}
-                        className="editorial-slider"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500">
                       <span>Duration</span>
                       <span className="tabular-nums text-slate-900">{weights.duration}</span>
                     </label>
@@ -2977,12 +3642,7 @@ useEffect(() => {
 
                   <button
                     onClick={() =>
-                      setWeights({
-                        time: 50,
-                        priority: 100,
-                        duration: 15,
-                        difficulty: 15,
-                      })
+                      setWeights(DEFAULT_ATTENTION_WEIGHTS)
                     }
                     className="w-full rounded-xl border border-slate-300 px-2 py-1 text-xs text-slate-600"
                   >
@@ -3339,22 +3999,39 @@ useEffect(() => {
               />
             </Field>
 
-            <Field label="Hours">
-              <input
-                type="number"
-                min="0"
-                step="any"
-                value={logHoursInput}
-                onChange={(e) => setLogHoursInput(e.target.value)}
-                placeholder={calculatedLogHours ? formatHourInput(calculatedLogHours) : "0.5"}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm tabular-nums outline-none focus:ring-2 focus:ring-slate-200"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    submitTimeLog();
-                  }
-                }}
-              />
+            <Field label="Duration">
+              <div className="relative">
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={displayedLogHoursInput}
+                  readOnly={isCalculatedLogDuration}
+                  onChange={(e) => {
+                    if (!isCalculatedLogDuration) {
+                      setLogHoursInput(e.target.value);
+                    }
+                  }}
+                  placeholder="0.5"
+                  className={`w-full rounded-xl border border-slate-200 px-3 py-2 pr-14 text-sm tabular-nums outline-none focus:ring-2 focus:ring-slate-200 ${
+                    isCalculatedLogDuration
+                      ? "bg-slate-50 text-slate-600"
+                      : "bg-white text-slate-900"
+                  }`}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      submitTimeLog();
+                    }
+                  }}
+                />
+                <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-slate-400">
+                  hours
+                </span>
+              </div>
+              {isCalculatedLogDuration ? (
+                <p className="mt-1 text-[11px] text-slate-400">Calculated from start and end time</p>
+              ) : null}
             </Field>
           </div>
 
