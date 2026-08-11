@@ -3,6 +3,7 @@ export type Status = "to_do" | "in_progress" | "frozen" | "completed";
 export type DeadlineMode = "date" | "vision";
 export type VisionHorizon = "short" | "mid" | "long";
 export type ActivityType = "correspondence" | "activity" | "uni_work";
+export type EffortLevel = "quick" | "moderate" | "extensive";
 
 export type Task = {
   id: string;
@@ -14,6 +15,7 @@ export type Task = {
   deadlineMode?: DeadlineMode;
   visionHorizon?: VisionHorizon | null;
   activityType?: ActivityType;
+  effortLevel?: EffortLevel | null;
   notes?: string;
   durationHrs?: number | null;
   difficulty?: number | null;

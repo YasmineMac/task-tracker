@@ -1,4 +1,4 @@
-import type { ActivityType, DeadlineMode, Priority, Status, Task, VisionHorizon } from "./taskTypes";
+import type { ActivityType, DeadlineMode, EffortLevel, Priority, Status, Task, VisionHorizon } from "./taskTypes";
 
 const isDemoMode = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
 const defaultCourseId = isDemoMode ? "studio_work" : "robotics_studio";
@@ -38,6 +38,10 @@ export function normalizeTask(t: Record<string, unknown>): Task {
     t.activityType === "correspondence" || t.activityType === "activity" || t.activityType === "uni_work"
       ? (t.activityType as ActivityType)
       : undefined;
+  const effortLevel =
+    t.effortLevel === "quick" || t.effortLevel === "moderate" || t.effortLevel === "extensive"
+      ? (t.effortLevel as EffortLevel)
+      : null;
   const completedAt = typeof t.completedAt === "string" && t.completedAt ? t.completedAt : null;
 
   return {
@@ -50,6 +54,7 @@ export function normalizeTask(t: Record<string, unknown>): Task {
     deadlineMode,
     visionHorizon: deadlineMode === "vision" ? rawVisionHorizon : null,
     activityType,
+    effortLevel,
     notes:
       typeof t.notes === "string"
         ? t.notes

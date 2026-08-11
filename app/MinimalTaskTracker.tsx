@@ -1,7 +1,22 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { BookOpen, Check, Circle, Clock, Mail } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  BookOpen,
+  Check,
+  Circle,
+  CircleCheck,
+  Clock,
+  Gauge,
+  Layers,
+  LoaderCircle,
+  Mail,
+  Minus,
+  Snowflake,
+  Zap,
+} from "lucide-react";
 import {
   categoryDisplayLabel,
   createCategory,
@@ -22,6 +37,7 @@ import type {
   ActivityType,
   BackupSnapshot,
   DeadlineMode,
+  EffortLevel,
   Priority,
   Status,
   Task,
@@ -62,6 +78,11 @@ const ACTIVITY_TYPES: { id: ActivityType; label: string }[] = [
   { id: "correspondence", label: "Correspondence" },
   { id: "activity", label: "Activity" },
   { id: "uni_work", label: "Uni work" },
+];
+const EFFORT_LEVELS: { id: EffortLevel; label: string }[] = [
+  { id: "quick", label: "Quick" },
+  { id: "moderate", label: "Moderate" },
+  { id: "extensive", label: "Extensive" },
 ];
 const CATEGORY_COLOURS = [
   { id: "slate", label: "Slate", swatch: "bg-slate-300" },
@@ -713,6 +734,15 @@ function daysBetweenISODates(startISO: string, endISO: string) {
 
 function cadenceStatsForTask(task: Task, timeLogs: TimeLog[]) {
   const today = todayISO();
+  const createdAtDate = Number.isFinite(task.createdAt) ? new Date(task.createdAt) : null;
+  const taskCreatedDate = createdAtDate
+    ? new Date(Date.UTC(
+        createdAtDate.getFullYear(),
+        createdAtDate.getMonth(),
+        createdAtDate.getDate()
+      )).toISOString().slice(0, 10)
+    : null;
+  const daysSinceTaskCreated = taskCreatedDate ? daysBetweenISODates(taskCreatedDate, today) : null;
   const taskLogs = timeLogs.filter((log) => log.taskId === task.id && isValidISODate(log.date));
   const lastWorkedDate = taskLogs.reduce<string | null>(
     (latest, log) => (!latest || log.date > latest ? log.date : latest),
@@ -759,17 +789,23 @@ function cadenceStatsForTask(task: Task, timeLogs: TimeLog[]) {
       : 0);
   const recentCoverage = clamp(hoursLast14Days / expectedHours14, 0, 1);
   const recentHoursMultiplier = 1 - recentCoverage * 0.65;
-  const neverWorkedBasePressure =
-    (task.priority === "high" ? 28 : task.priority === "normal" ? 14 : 5) +
+  const neverWorkedInitialPressure =
+    (task.priority === "high" ? 12 : task.priority === "normal" ? 7 : 3) +
     (task.deadlineMode === "vision"
       ? task.visionHorizon === "short"
-        ? 8
+        ? 5
         : task.visionHorizon === "mid"
-          ? 4
+          ? 3
           : task.visionHorizon === "long"
             ? 1
             : 0
       : 0);
+  const neverWorkedMaturityMax = task.priority === "high" ? 16 : task.priority === "normal" ? 12 : 6;
+  const neverWorkedMaturityPressure =
+    !lastWorkedDate && !hasFixedDeadline && daysSinceTaskCreated !== null
+      ? neverWorkedMaturityMax * (1 - Math.exp(-daysSinceTaskCreated / 28))
+      : 0;
+  const neverWorkedBasePressure = neverWorkedInitialPressure + neverWorkedMaturityPressure;
   const neglectPressure = lastWorkedDate
     ? 100 * (1 - Math.exp(-(daysSinceLastWorked ?? 0) / (expectedCadenceDays * 1.4)))
     : clamp(neverWorkedBasePressure, 0, 35);
@@ -797,12 +833,15 @@ function cadenceStatsForTask(task: Task, timeLogs: TimeLog[]) {
   );
 
   return {
+    taskCreatedDate,
+    daysSinceTaskCreated,
     lastWorkedDate,
     daysSinceLastWorked,
     hoursLast7Days,
     hoursLast14Days,
     hoursLast30Days,
     hasEverBeenWorked: taskLogs.length > 0,
+    neverWorkedMaturityPressure,
     neverWorkedBasePressure: lastWorkedDate ? 0 : clamp(neverWorkedBasePressure, 0, 35),
     activityCadenceMultiplier,
     cadencePressureBeforeActivity,
@@ -821,7 +860,7 @@ function attentionScoreV2(task: Task, timeLogs: TimeLog[] = []) {
     : 0;
   const deadlineContribution = deadlinePressure * 0.5;
   const intrinsicImportance =
-    task.priority === "high" ? 28 : task.priority === "normal" ? 16 : 6;
+    task.priority === "high" ? 24 : task.priority === "normal" ? 16 : 6;
   const difficultyFactor = clamp(1 + ((task.difficulty ?? 3) - 3) * 0.2, 0.6, 1.4);
   const effortHours = Math.max(0, task.durationHrs ?? 0) * difficultyFactor;
   const effortDays = effortHours / 2;
@@ -934,9 +973,28 @@ function activityPillTone(activityType: ActivityType) {
 }
 
 function ActivityTypeIcon({ activityType }: { activityType: ActivityType }) {
-  if (activityType === "correspondence") return <Mail className="h-3 w-3" aria-hidden="true" />;
-  if (activityType === "uni_work") return <BookOpen className="h-3 w-3" aria-hidden="true" />;
-  return <Circle className="h-3 w-3" aria-hidden="true" />;
+  if (activityType === "correspondence") return <Mail className="h-3.5 w-3.5" aria-hidden="true" />;
+  if (activityType === "uni_work") return <BookOpen className="h-3.5 w-3.5" aria-hidden="true" />;
+  return <Circle className="h-3.5 w-3.5" aria-hidden="true" />;
+}
+
+function StatusIcon({ status }: { status: Status }) {
+  if (status === "in_progress") return <LoaderCircle className="h-3.5 w-3.5" aria-hidden="true" />;
+  if (status === "frozen") return <Snowflake className="h-3.5 w-3.5" aria-hidden="true" />;
+  if (status === "completed") return <CircleCheck className="h-3.5 w-3.5" aria-hidden="true" />;
+  return <Circle className="h-3.5 w-3.5" aria-hidden="true" />;
+}
+
+function PriorityIcon({ priority }: { priority: Priority }) {
+  if (priority === "high") return <ArrowUp className="h-3.5 w-3.5" aria-hidden="true" />;
+  if (priority === "low") return <ArrowDown className="h-3.5 w-3.5" aria-hidden="true" />;
+  return <Minus className="h-3.5 w-3.5" aria-hidden="true" />;
+}
+
+function EffortIcon({ effortLevel }: { effortLevel: EffortLevel }) {
+  if (effortLevel === "quick") return <Zap className="h-3.5 w-3.5" aria-hidden="true" />;
+  if (effortLevel === "extensive") return <Layers className="h-3.5 w-3.5" aria-hidden="true" />;
+  return <Gauge className="h-3.5 w-3.5" aria-hidden="true" />;
 }
 
 function TaskMetaPill({
@@ -1070,12 +1128,120 @@ function ActivityTypeField({
                   : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
               }`}
             >
-              {option.label}
+              <span className="inline-flex items-center justify-center gap-1.5">
+                <ActivityTypeIcon activityType={option.id} />
+                <span>{option.label}</span>
+              </span>
             </button>
           );
         })}
       </div>
     </Field>
+  );
+}
+
+function inferredEffortLevel(durationHrs?: number | null): EffortLevel | null {
+  if (durationHrs == null || !Number.isFinite(durationHrs)) return null;
+  if (durationHrs <= 1) return "quick";
+  if (durationHrs <= 4) return "moderate";
+  return "extensive";
+}
+
+function taskDisplayEffortLevel(task: Task): EffortLevel | null {
+  return task.effortLevel ?? inferredEffortLevel(task.durationHrs);
+}
+
+function effortLabel(value?: EffortLevel | null) {
+  return EFFORT_LEVELS.find((option) => option.id === value)?.label ?? "—";
+}
+
+function effortRank(value?: EffortLevel | null) {
+  if (value === "quick") return 0;
+  if (value === "moderate") return 1;
+  if (value === "extensive") return 2;
+  return 999999;
+}
+
+function EffortLevelField({
+  value,
+  suggestedValue,
+  onChange,
+}: {
+  value?: EffortLevel | null;
+  suggestedValue?: EffortLevel | null;
+  onChange: (value: EffortLevel) => void;
+}) {
+  const displayedValue = value ?? suggestedValue ?? null;
+
+  return (
+    <Field label="Effort">
+      <IconSelectBox<EffortLevel>
+        value={displayedValue}
+        onChange={onChange}
+        options={EFFORT_LEVELS}
+        renderIcon={(effortLevel) => <EffortIcon effortLevel={effortLevel} />}
+      />
+    </Field>
+  );
+}
+
+function IconSelectBox<T extends string>({
+  value,
+  onChange,
+  options,
+  renderIcon,
+}: {
+  value?: T | null;
+  onChange: (v: T) => void;
+  options: { id: T; label: string }[];
+  renderIcon: (value: T) => React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+  const selected = options.find((option) => option.id === value) ?? null;
+
+  useEffect(() => {
+    if (!open) return;
+
+    function onPointerDown(event: PointerEvent) {
+      if (!ref.current?.contains(event.target as Node)) setOpen(false);
+    }
+
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        className="flex h-10 w-full items-center gap-2 rounded-[16px] border border-slate-200 bg-white px-3 text-left text-sm text-slate-700 outline-none transition-colors hover:bg-slate-50 focus:ring-2 focus:ring-slate-200"
+      >
+        {selected ? <span className="shrink-0 text-slate-400">{renderIcon(selected.id)}</span> : null}
+        <span className="min-w-0 truncate">{selected?.label ?? "—"}</span>
+      </button>
+      {open ? (
+        <div className="absolute left-0 top-full z-[1000] mt-1 w-full min-w-[132px] overflow-hidden rounded-[16px] border border-slate-200 bg-white py-1 text-sm shadow-xl ring-1 ring-slate-900/5">
+          {options.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              onClick={() => {
+                onChange(option.id);
+                setOpen(false);
+              }}
+              className={`flex w-full items-center gap-2 bg-white px-3 py-2 text-left transition-colors hover:bg-slate-50 ${
+                option.id === value ? "text-slate-900" : "text-slate-600"
+              }`}
+            >
+              <span className="shrink-0 text-slate-400">{renderIcon(option.id)}</span>
+              <span>{option.label}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -1164,7 +1330,7 @@ useEffect(() => {
   const [newDeadlineMode, setNewDeadlineMode] = useState<DeadlineMode | undefined>(undefined);
   const [newVisionHorizon, setNewVisionHorizon] = useState<VisionHorizon | null>(null);
   const [newActivityType, setNewActivityType] = useState<ActivityType | undefined>(undefined);
-  const [newDurationHrs, setNewDurationHrs] = useState<string>("");
+  const [newEffortLevel, setNewEffortLevel] = useState<EffortLevel>("moderate");
   const [newDifficulty, setNewDifficulty] = useState<string>("3");
   const [newNotes, setNewNotes] = useState<string>("");
 
@@ -1193,7 +1359,7 @@ useEffect(() => {
 
   // List sorting
   const [listSortKey, setListSortKey] = useState<
-    "title" | "course" | "status" | "priority" | "due" | "timeLeft" | "duration" | "difficulty"
+    "title" | "course" | "status" | "priority" | "due" | "timeLeft" | "effort" | "duration" | "difficulty"
   >("due");
   const [listSortDir, setListSortDir] = useState<"asc" | "desc">("asc");
   const [openStatusTaskId, setOpenStatusTaskId] = useState<string | null>(null);
@@ -1605,6 +1771,8 @@ useEffect(() => {
           const d = t.due ? daysLeftFromISO(t.due) : null;
           return d === null ? 999999 : d;
         }
+        case "effort":
+          return effortRank(taskDisplayEffortLevel(t));
         case "duration":
           return t.durationHrs == null ? 999999 : Number(t.durationHrs);
         case "difficulty":
@@ -1708,12 +1876,15 @@ useEffect(() => {
             startContribution: Number(v2.startContribution.toFixed(2)),
             horizonPressure: v2.horizonPressure,
             contextModifier: v2.contextModifier,
+            taskCreatedDate: v2.taskCreatedDate ?? "unknown",
+            daysSinceTaskCreated: v2.daysSinceTaskCreated,
             lastWorkedDate: v2.lastWorkedDate ?? "never",
             daysSinceLastWorked: v2.daysSinceLastWorked,
             hoursLast7Days: Number(v2.hoursLast7Days.toFixed(2)),
             hoursLast14Days: Number(v2.hoursLast14Days.toFixed(2)),
             hoursLast30Days: Number(v2.hoursLast30Days.toFixed(2)),
             hasEverBeenWorked: v2.hasEverBeenWorked ? "yes" : "no",
+            neverWorkedMaturityPressure: Number(v2.neverWorkedMaturityPressure.toFixed(2)),
             neverWorkedBasePressure: Number(v2.neverWorkedBasePressure.toFixed(2)),
             activityCadenceMultiplier: Number(v2.activityCadenceMultiplier.toFixed(2)),
             cadencePressureBeforeActivity: Number(v2.cadencePressureBeforeActivity.toFixed(2)),
@@ -2072,7 +2243,6 @@ useEffect(() => {
     const title = newTitle.trim();
     if (!title) return;
 
-    const dur = optionalFiniteNumber(newDurationHrs);
     const diff = optionalFiniteNumber(newDifficulty);
     const deadlineMode = newDue ? "date" : newVisionHorizon ? "vision" : undefined;
 
@@ -2086,8 +2256,9 @@ useEffect(() => {
       deadlineMode,
       visionHorizon: deadlineMode === "vision" ? newVisionHorizon : null,
       activityType: newActivityType,
+      effortLevel: newEffortLevel,
       notes: newNotes.trim() || undefined,
-      durationHrs: dur,
+      durationHrs: null,
       difficulty: diff,
       completedAt: newStatus === "completed" ? new Date().toISOString() : null,
       createdAt: Date.now(),
@@ -2103,7 +2274,7 @@ useEffect(() => {
     setNewDeadlineMode(undefined);
     setNewVisionHorizon(null);
     setNewActivityType(undefined);
-    setNewDurationHrs("");
+    setNewEffortLevel("moderate");
     setNewDifficulty("3");
     setNewNotes("");
     setNewCourseId(firstCategoryId);
@@ -2637,7 +2808,6 @@ useEffect(() => {
                 })}
 
                 {renderTimeLeftFilterMenu()}
-                {renderDurationFilterMenu()}
               </>
             ) : null}
 
@@ -2708,7 +2878,7 @@ useEffect(() => {
                       ["priority", "Priority"],
                       ["due", "Due"],
                       ["timeLeft", "Time left"],
-                      ["duration", "Duration"],
+                      ["effort", "Effort"],
                       ["difficulty", "Difficulty"],
                     ] as Array<[typeof listSortKey, string]>).map(([key, label]) => (
                       <th key={key} className="px-3 py-2 text-left font-medium">
@@ -2787,9 +2957,7 @@ useEffect(() => {
                         <td className={`px-3 py-2 tabular-nums ${days !== null && days <= 2 ? "text-red-600" : "text-slate-600"}`}>
                           {days === null ? "—" : timeLeftLabel(days)}
                         </td>
-                        <td className="px-3 py-2 tabular-nums text-slate-600">
-                          {t.durationHrs == null ? "—" : `${t.durationHrs}h`}
-                        </td>
+                        <td className="px-3 py-2 text-slate-600">{effortLabel(taskDisplayEffortLevel(t))}</td>
                         <td className="px-3 py-2 tabular-nums text-slate-600">{t.difficulty == null ? "—" : t.difficulty}</td>
                       </tr>
                     );
@@ -3735,10 +3903,11 @@ useEffect(() => {
           <SectionHeading>Organisation</SectionHeading>
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Status">
-              <SelectBox
+              <IconSelectBox<Status>
                 value={newStatus}
-                onChange={(v) => setNewStatus(v as Status)}
+                onChange={setNewStatus}
                 options={STATUSES}
+                renderIcon={(status) => <StatusIcon status={status} />}
               />
             </Field>
 
@@ -3758,12 +3927,13 @@ useEffect(() => {
           </div>
 
           <SectionHeading>Planning</SectionHeading>
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-[1.4fr_0.8fr_1.8fr]">
             <Field label="Priority">
-              <SelectBox
+              <IconSelectBox<Priority>
                 value={newPriority}
-                onChange={(v) => setNewPriority(v as Priority)}
+                onChange={setNewPriority}
                 options={PRIORITIES}
+                renderIcon={(priority) => <PriorityIcon priority={priority} />}
               />
             </Field>
 
@@ -3781,15 +3951,7 @@ useEffect(() => {
               </select>
             </Field>
 
-            <Field label="Duration (hours)">
-              <input
-                inputMode="decimal"
-                placeholder="e.g. 1.5"
-                value={newDurationHrs}
-                onChange={(e) => setNewDurationHrs(e.target.value)}
-                className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-              />
-            </Field>
+            <EffortLevelField value={newEffortLevel} onChange={setNewEffortLevel} />
           </div>
 
           <DeadlineField
@@ -4100,10 +4262,11 @@ useEffect(() => {
             <SectionHeading>Organisation</SectionHeading>
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="Status">
-                <SelectBox
+                <IconSelectBox<Status>
                   value={draft.status}
-                  onChange={(v) => setDraft(applyTaskStatus(draft, v))}
+                  onChange={(status) => setDraft(applyTaskStatus(draft, status))}
                   options={STATUSES}
+                  renderIcon={(status) => <StatusIcon status={status} />}
                 />
               </Field>
 
@@ -4123,12 +4286,13 @@ useEffect(() => {
             </div>
 
             <SectionHeading>Planning</SectionHeading>
-            <div className="grid gap-3 sm:grid-cols-3">
+            <div className="grid gap-3 sm:grid-cols-[1.4fr_0.8fr_1.8fr]">
               <Field label="Priority">
-                <SelectBox
+                <IconSelectBox<Priority>
                   value={draft.priority}
-                  onChange={(v) => setDraft({ ...draft, priority: v })}
+                  onChange={(priority) => setDraft({ ...draft, priority })}
                   options={PRIORITIES}
+                  renderIcon={(priority) => <PriorityIcon priority={priority} />}
                 />
               </Field>
 
@@ -4146,16 +4310,11 @@ useEffect(() => {
               </select>
               </Field>
 
-              <Field label="Duration (hours)">
-                <input
-                  inputMode="decimal"
-                  value={draft.durationHrs == null ? "" : String(draft.durationHrs)}
-                  onChange={(e) =>
-                    setDraft({ ...draft, durationHrs: optionalFiniteNumber(e.target.value) })
-                  }
-                  className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                />
-              </Field>
+              <EffortLevelField
+                value={draft.effortLevel ?? null}
+                suggestedValue={draft.effortLevel ? null : inferredEffortLevel(draft.durationHrs)}
+                onChange={(effortLevel) => setDraft({ ...draft, effortLevel })}
+              />
             </div>
 
             <DeadlineField
