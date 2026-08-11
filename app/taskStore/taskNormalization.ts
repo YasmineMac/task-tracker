@@ -33,6 +33,7 @@ export function normalizeTask(t: Record<string, unknown>): Task {
     t.activityType === "correspondence" || t.activityType === "activity" || t.activityType === "uni_work"
       ? (t.activityType as ActivityType)
       : undefined;
+  const completedAt = typeof t.completedAt === "string" && t.completedAt ? t.completedAt : null;
 
   return {
     id: String(t.id ?? uid()),
@@ -52,6 +53,7 @@ export function normalizeTask(t: Record<string, unknown>): Task {
           : undefined,
     durationHrs: t.durationHrs == null ? null : Number(t.durationHrs),
     difficulty: t.difficulty == null ? null : Number(t.difficulty),
+    completedAt,
     createdAt: typeof t.createdAt === "number" ? t.createdAt : Date.now(),
     mode: resolvedCourseId === practiceCourseId ? "practice" : "task",
   };

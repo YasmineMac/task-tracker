@@ -17,6 +17,7 @@ export type Task = {
   notes?: string;
   durationHrs?: number | null;
   difficulty?: number | null;
+  completedAt?: string | null;
   createdAt: number;
   mode?: "task" | "practice";
 };

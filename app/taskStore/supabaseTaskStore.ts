@@ -16,6 +16,7 @@ function taskFromSupabaseRow(t: Record<string, unknown>) {
     notes: t.notes,
     durationHrs: t.duration_hrs,
     difficulty: t.difficulty,
+    completedAt: t.completed_at,
     createdAt:
       typeof t.created_at === "string" || typeof t.created_at === "number"
         ? new Date(t.created_at).getTime()
@@ -117,6 +118,7 @@ export const supabaseTaskStore: TaskStore = {
       notes: t.notes ?? null,
       duration_hrs: t.durationHrs ?? null,
       difficulty: t.difficulty ?? null,
+      completed_at: t.completedAt ?? null,
     }));
 
     const deletedTaskIds = Array.from(new Set(options.deletedTaskIds ?? [])).filter(Boolean);

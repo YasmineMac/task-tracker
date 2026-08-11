@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { BookOpen, Check, Circle, Clock, Mail } from "lucide-react";
 import {
   categoryDisplayLabel,
   createCategory,
@@ -33,6 +34,8 @@ const SYNC_CODE = isDemoMode ? "DEMO-TASKS" : "YAS-TEST-001";
 type ViewMode = "board" | "list" | "logger";
 type LoggerValueMode = "hours" | "times";
 const LOGGER_DAY_COUNT = 14;
+const COMPLETED_RECOVERY_DAYS = 30;
+const DAY_MS = 24 * 60 * 60 * 1000;
 const VISION_HORIZONS: { id: VisionHorizon; label: string }[] = [
   { id: "short", label: "Short" },
   { id: "mid", label: "Mid" },
@@ -56,6 +59,13 @@ const STATUSES: { id: Status; label: string }[] = [
   { id: "to_do", label: "To do" },
   { id: "in_progress", label: "In progress" },
   { id: "urgent", label: "Urgent" },
+  { id: "frozen", label: "Frozen" },
+  { id: "completed", label: "Completed" },
+];
+
+const LIST_STATUS_OPTIONS: { id: Status; label: string }[] = [
+  { id: "to_do", label: "To do" },
+  { id: "in_progress", label: "In progress" },
   { id: "frozen", label: "Frozen" },
   { id: "completed", label: "Completed" },
 ];
@@ -103,6 +113,40 @@ function isCompleted(t: Task) {
   return t.status === "completed";
 }
 
+function applyTaskStatus(task: Task, status: Status, completedAt = new Date().toISOString()): Task {
+  if (status === "completed") {
+    return {
+      ...task,
+      status,
+      completedAt: task.status === "completed" && task.completedAt ? task.completedAt : completedAt,
+    };
+  }
+
+  return {
+    ...task,
+    status,
+    completedAt: null,
+  };
+}
+
+function isRecoverableCompleted(task: Task, nowMs: number) {
+  if (task.status !== "completed") return false;
+  if (!task.completedAt) return true;
+
+  const completedMs = new Date(task.completedAt).getTime();
+  if (!Number.isFinite(completedMs)) return true;
+
+  return nowMs - completedMs < COMPLETED_RECOVERY_DAYS * DAY_MS;
+}
+
+function frozenTaskClass(task: Task) {
+  return task.status === "frozen" ? "opacity-60" : "";
+}
+
+function frozenTitleClass(task: Task) {
+  return task.status === "frozen" ? "italic text-slate-400" : "";
+}
+
 function openCount(list: Task[]) {
   return list.filter((t) => !isCompleted(t)).length;
 }
@@ -138,6 +182,20 @@ function optionalFiniteNumber(raw: string) {
   if (raw.trim() === "") return null;
   const n = Number(raw);
   return Number.isFinite(n) ? n : null;
+}
+
+function formatHourInput(hours: number) {
+  if (!Number.isFinite(hours)) return "";
+  return String(hours);
+}
+
+function parseTimeLogHours(raw: string) {
+  const hours = parseFloat(raw);
+  return Number.isFinite(hours) && hours > 0 ? hours : null;
+}
+
+function resolveTimeLogHours(raw: string, calculatedHours: number | null) {
+  return raw.trim() ? parseTimeLogHours(raw) : calculatedHours;
 }
 
 function todayISO() {
@@ -461,6 +519,66 @@ function Pill({ children, tone = "neutral" }: { children: React.ReactNode; tone?
   return <span className={cls}>{children}</span>;
 }
 
+function compactDeadlineLabel(task: Task) {
+  if (task.due) {
+    const days = daysLeftFromISO(task.due);
+    if (days === null) return null;
+    if (days < 0) return `${Math.abs(days)}d overdue`;
+    if (days === 0) return "Today";
+    return `${days}d`;
+  }
+
+  if (task.deadlineMode === "vision" && task.visionHorizon) {
+    return VISION_HORIZONS.find((option) => option.id === task.visionHorizon)?.label ?? null;
+  }
+
+  return null;
+}
+
+function activityTypeLabel(activityType?: ActivityType) {
+  return ACTIVITY_TYPES.find((option) => option.id === activityType)?.label ?? null;
+}
+
+function deadlinePillTone(task: Task) {
+  if (task.due) {
+    const days = daysLeftFromISO(task.due);
+    if (days === null) return "bg-rose-50/50 text-rose-500";
+    if (days <= 1) return "bg-rose-100/80 text-rose-700";
+    if (days <= 3) return "bg-rose-100/70 text-rose-600";
+    if (days <= 7) return "bg-rose-50 text-rose-600";
+    if (days <= 14) return "bg-rose-50/80 text-rose-500";
+    return "bg-rose-50/50 text-rose-400";
+  }
+
+  return "bg-rose-50/50 text-rose-500";
+}
+
+function activityPillTone(activityType: ActivityType) {
+  if (activityType === "correspondence") return "bg-indigo-50/70 text-indigo-500";
+  if (activityType === "uni_work") return "bg-emerald-50/70 text-emerald-600";
+  return "bg-orange-50/70 text-rose-500";
+}
+
+function ActivityTypeIcon({ activityType }: { activityType: ActivityType }) {
+  if (activityType === "correspondence") return <Mail className="h-3 w-3" aria-hidden="true" />;
+  if (activityType === "uni_work") return <BookOpen className="h-3 w-3" aria-hidden="true" />;
+  return <Circle className="h-3 w-3" aria-hidden="true" />;
+}
+
+function TaskMetaPill({
+  children,
+  className,
+}: {
+  children: React.ReactNode;
+  className: string;
+}) {
+  return (
+    <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[11px] font-medium leading-none ${className}`}>
+      {children}
+    </span>
+  );
+}
+
 function Modal({
   open,
   title,
@@ -493,8 +611,16 @@ function Modal({
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="grid gap-1">
-      <div className="text-xs text-slate-500">{label}</div>
+    <div className="grid gap-1.5">
+      <div className="text-xs font-medium text-slate-500">{label}</div>
+      {children}
+    </div>
+  );
+}
+
+function SectionHeading({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="border-t border-slate-100 pt-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
       {children}
     </div>
   );
@@ -515,14 +641,15 @@ function DeadlineField({
 }) {
   return (
     <Field label="Deadline">
-      <div className="grid gap-2">
+      <div className="grid gap-2 sm:grid-cols-[1fr_auto_1.4fr] sm:items-center">
         <input
           type="date"
           value={deadlineMode === "date" ? due ?? "" : ""}
           onChange={(e) => onDateChange(e.target.value)}
-          className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+          className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
         />
-        <div className="flex flex-wrap gap-2">
+        <div className="hidden text-xs text-slate-300 sm:block">or</div>
+        <div className="grid grid-cols-3 gap-2">
           {VISION_HORIZONS.map((option) => {
             const selected = deadlineMode === "vision" && visionHorizon === option.id;
             return (
@@ -530,7 +657,7 @@ function DeadlineField({
                 key={option.id}
                 type="button"
                 onClick={() => onVisionChange(option.id)}
-                className={`rounded-full border px-3 py-1 text-xs transition-colors ${
+                className={`h-10 rounded-full border px-3 text-xs font-medium transition-colors ${
                   selected
                     ? "border-slate-200 bg-slate-100 text-slate-800"
                     : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
@@ -540,13 +667,6 @@ function DeadlineField({
               </button>
             );
           })}
-        </div>
-        <div className="text-[11px] text-slate-500">
-          {deadlineMode === "date" && due && daysLeftFromISO(due) !== null
-            ? `Time left: ${timeLeftLabel(daysLeftFromISO(due) as number)}`
-            : deadlineMode === "vision" && visionHorizon
-              ? `${VISION_HORIZONS.find((option) => option.id === visionHorizon)?.label} term vision`
-              : "No fixed date"}
         </div>
       </div>
     </Field>
@@ -562,7 +682,7 @@ function ActivityTypeField({
 }) {
   return (
     <Field label="Activity type">
-      <div className="flex flex-wrap gap-2">
+      <div className="grid gap-2 sm:grid-cols-3">
         {ACTIVITY_TYPES.map((option) => {
           const selected = value === option.id;
           return (
@@ -570,7 +690,7 @@ function ActivityTypeField({
               key={option.id}
               type="button"
               onClick={() => onChange(selected ? undefined : option.id)}
-              className={`rounded-full border px-3 py-1 text-xs transition-colors ${
+              className={`h-10 rounded-full border px-3 text-xs font-medium transition-colors ${
                 selected
                   ? "border-slate-200 bg-slate-100 text-slate-800"
                   : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
@@ -598,7 +718,7 @@ function SelectBox<T extends string>({
     <select
       value={value}
       onChange={(e) => onChange(e.target.value as T)}
-      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+      className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
     >
       {options.map((o) => (
         <option key={o.id} value={o.id}>
@@ -679,11 +799,13 @@ useEffect(() => {
   const [logDate, setLogDate] = useState<string>("");
   const [logStartTime, setLogStartTime] = useState<string>("");
   const [logEndTime, setLogEndTime] = useState<string>("");
+  const [logHoursInput, setLogHoursInput] = useState<string>("");
   const [logNote, setLogNote] = useState<string>("");
   const [loggerTaskFilter, setLoggerTaskFilter] = useState<string>("all");
   const [loggerValueMode, setLoggerValueMode] = useState<LoggerValueMode>("hours");
   const [timelineEnd, setTimelineEnd] = useState<string>("");
   const [clientToday, setClientToday] = useState<string>("");
+  const [clientNowMs, setClientNowMs] = useState<number>(0);
 
   // Edit modal state
   const [editOpen, setEditOpen] = useState(false);
@@ -694,13 +816,13 @@ useEffect(() => {
     "title" | "course" | "status" | "priority" | "due" | "timeLeft" | "duration" | "difficulty"
   >("due");
   const [listSortDir, setListSortDir] = useState<"asc" | "desc">("asc");
+  const [openStatusTaskId, setOpenStatusTaskId] = useState<string | null>(null);
 
   // Attention score toggles
   const [scoreUseTime, setScoreUseTime] = useState(true);
   const [scoreUsePriority, setScoreUsePriority] = useState(true);
   const [scoreUseDuration, setScoreUseDuration] = useState(true);
   const [scoreUseDifficulty, setScoreUseDifficulty] = useState(true);
-  const [scoreShowCompleted, setScoreShowCompleted] = useState(false);
 
   const searchRef = useRef<HTMLInputElement | null>(null);
 
@@ -710,6 +832,7 @@ useEffect(() => {
 
     const today = todayISO();
     setClientToday(today);
+    setClientNowMs(Date.now());
     setTimelineEnd(today);
     setLogDate(today);
     setMode(storedTabToMode(localStorage.getItem(ACTIVE_TAB_STORAGE_KEY)));
@@ -734,6 +857,21 @@ useEffect(() => {
   if (!hasMounted) return;
   localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, modeToStoredTab(mode));
 }, [hasMounted, mode]);
+
+useEffect(() => {
+  if (mode !== "list") setOpenStatusTaskId(null);
+}, [mode]);
+
+useEffect(() => {
+  if (!openStatusTaskId) return;
+
+  function closeStatusDropdown() {
+    setOpenStatusTaskId(null);
+  }
+
+  document.addEventListener("click", closeStatusDropdown);
+  return () => document.removeEventListener("click", closeStatusDropdown);
+}, [openStatusTaskId]);
 
 useEffect(() => {
   let cancelled = false;
@@ -938,6 +1076,7 @@ useEffect(() => {
     const q = query.trim().toLowerCase();
     return tasks
       .filter((t) => {
+        if (t.status === "completed") return false;
         if (courseFilter !== "all" && t.courseId !== courseFilter) return false;
         if (!q) return true;
         return (
@@ -947,12 +1086,6 @@ useEffect(() => {
       })
       .slice()
       .sort((a, b) => {
-        // completed last in list mode
-        if (mode === "list") {
-          if (a.status === "completed" && b.status !== "completed") return 1;
-          if (b.status === "completed" && a.status !== "completed") return -1;
-        }
-
         const pr = priorityRank(a.priority) - priorityRank(b.priority);
         if (pr !== 0) return pr;
 
@@ -962,7 +1095,28 @@ useEffect(() => {
 
         return (b.createdAt ?? 0) - (a.createdAt ?? 0);
       });
-  }, [tasks, query, courseFilter, mode]);
+  }, [tasks, query, courseFilter]);
+
+  const completedRows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return tasks
+      .filter((t) => {
+        if (!isRecoverableCompleted(t, clientNowMs)) return false;
+        if (courseFilter !== "all" && t.courseId !== courseFilter) return false;
+        if (!q) return true;
+        return (
+          t.title.toLowerCase().includes(q) ||
+          (t.notes ?? "").toLowerCase().includes(q)
+        );
+      })
+      .slice()
+      .sort((a, b) => {
+        const ad = a.completedAt ?? "";
+        const bd = b.completedAt ?? "";
+        if (ad !== bd) return bd.localeCompare(ad);
+        return (b.createdAt ?? 0) - (a.createdAt ?? 0);
+      });
+  }, [clientNowMs, courseFilter, query, tasks]);
 
   const listRows = useMemo(() => {
     const rows = filtered.slice();
@@ -1038,14 +1192,12 @@ useEffect(() => {
   }, [activeCategories, filtered, firstCategoryId]);
 
   const scoredTasks = useMemo(() => {
-    const baseList = scoreShowCompleted ? filtered : filtered.filter((t) => t.status !== "completed");
-
-  const scored = baseList.map((task) => ({
-    task,
-    total: urgencyScore(task, weights),
-  }));
-
-
+    const scored = filtered
+      .filter((task) => task.status !== "frozen")
+      .map((task) => ({
+        task,
+        total: urgencyScore(task, weights),
+      }));
 
     scored.sort((a, b) => {
       if (b.total !== a.total) return b.total - a.total;
@@ -1058,7 +1210,7 @@ useEffect(() => {
     });
 
     return scored;
-  }, [filtered, scoreShowCompleted, weights]);
+  }, [filtered, weights]);
 
   const loggerDays = useMemo(() => {
     const center = isValidISODate(timelineEnd) ? timelineEnd : todayISO();
@@ -1100,7 +1252,10 @@ useEffect(() => {
   }, [tasks]);
 
   const logTaskOptions = useMemo(() => {
-    return tasks.slice().sort((a, b) => a.title.localeCompare(b.title));
+    return tasks
+      .filter((task) => task.status !== "completed")
+      .slice()
+      .sort((a, b) => a.title.localeCompare(b.title));
   }, [tasks]);
 
   const logsByTaskDate = useMemo(() => {
@@ -1332,6 +1487,7 @@ useEffect(() => {
       notes: newNotes.trim() || undefined,
       durationHrs: dur,
       difficulty: diff,
+      completedAt: newStatus === "completed" ? new Date().toISOString() : null,
       createdAt: Date.now(),
     };
 
@@ -1363,13 +1519,37 @@ useEffect(() => {
     setTimeLogs((prev) => prev.filter((log) => log.taskId !== id));
   }
 
+  function updateTaskStatus(id: string, status: Status) {
+    setTasks((prev) =>
+      prev.map((task) => (task.id === id ? applyTaskStatus(task, status) : task))
+    );
+    setOpenStatusTaskId(null);
+  }
+
+  function completeTask(id: string) {
+    updateTaskStatus(id, "completed");
+  }
+
+  function restoreTask(id: string) {
+    updateTaskStatus(id, "to_do");
+  }
+
   function openEdit(t: Task) {
     setDraft(t);
     setEditOpen(true);
   }
 
   function saveEdit(next: Task) {
-    setTasks((prev) => prev.map((t) => (t.id === next.id ? next : t)));
+    setTasks((prev) =>
+      prev.map((t) =>
+        t.id === next.id
+          ? applyTaskStatus(
+              { ...next, completedAt: next.completedAt ?? t.completedAt ?? null },
+              next.status
+            )
+          : t
+      )
+    );
     setEditOpen(false);
     setDraft(null);
   }
@@ -1377,12 +1557,14 @@ useEffect(() => {
   function openLogTime(taskId?: string, date = clientToday || todayISO(), log?: TimeLog) {
     const selectedTaskId = taskId ?? loggerTasks[0]?.id ?? logTaskOptions[0]?.id ?? "";
     const existing = log ?? null;
+    const existingHoursInput = existing ? formatHourInput(existing.hours) : "";
 
     setEditingLogId(existing?.id ?? null);
     setLogTaskId(existing?.taskId ?? selectedTaskId);
     setLogDate(existing?.date ?? date);
     setLogStartTime(existing?.startTime ?? "");
     setLogEndTime(existing?.endTime ?? "");
+    setLogHoursInput(existingHoursInput);
     setLogNote(existing?.note ?? "");
     setLogOpen(true);
   }
@@ -1399,8 +1581,8 @@ useEffect(() => {
   }
 
   function submitTimeLog() {
-    const hours = calculatedLogHours;
-    if (!logTaskId || hours === null || hours <= 0) return;
+    const hours = resolveTimeLogHours(logHoursInput, calculatedLogHours);
+    if (!logTaskId || hours === null) return;
 
     const date = logDate || clientToday || todayISO();
     const existing = editingLogId
@@ -1580,72 +1762,140 @@ useEffect(() => {
 
         {/* Main */}
         {mode === "list" ? (
-          <div className="mt-5 overflow-x-auto rounded-2xl border border-slate-200 bg-white">
-            <table className="w-full text-sm">
-              <thead className="bg-slate-50 text-xs text-slate-600">
-                <tr>
-                  {([
-                    ["title", "Title"],
-                    ["course", "Course"],
-                    ["status", "Status"],
-                    ["priority", "Priority"],
-                    ["due", "Due"],
-                    ["timeLeft", "Time left"],
-                    ["duration", "Duration"],
-                    ["difficulty", "Difficulty"],
-                  ] as Array<[typeof listSortKey, string]>).map(([key, label]) => (
-                    <th key={key} className="px-3 py-2 text-left font-medium">
+          <>
+            <div className="mt-5 overflow-x-auto overflow-y-visible rounded-2xl border border-slate-200 bg-white">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-xs text-slate-600">
+                  <tr>
+                    {([
+                      ["title", "Title"],
+                      ["course", "Course"],
+                      ["status", "Status"],
+                      ["priority", "Priority"],
+                      ["due", "Due"],
+                      ["timeLeft", "Time left"],
+                      ["duration", "Duration"],
+                      ["difficulty", "Difficulty"],
+                    ] as Array<[typeof listSortKey, string]>).map(([key, label]) => (
+                      <th key={key} className="px-3 py-2 text-left font-medium">
+                        <button
+                          type="button"
+                          className="hover:underline"
+                          onClick={() => {
+                            if (listSortKey === key) setListSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                            else {
+                              setListSortKey(key);
+                              setListSortDir("asc");
+                            }
+                          }}
+                        >
+                          {label} {listSortKey === key ? (listSortDir === "asc" ? "↑" : "↓") : ""}
+                        </button>
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {listRows.map((t) => {
+                    const days = t.due ? daysLeftFromISO(t.due) : null;
+                    const statusMenuOpen = openStatusTaskId === t.id;
+                    return (
+                      <tr
+                        key={t.id}
+                        className={`relative cursor-pointer border-t border-slate-100 hover:bg-slate-50 ${
+                          statusMenuOpen ? "z-50" : "z-0"
+                        }`}
+                        onClick={() => openEdit(t)}
+                      >
+                        <td className={`max-w-[420px] truncate px-3 py-2 font-medium ${frozenTitleClass(t)}`}>{t.title}</td>
+                        <td className={`px-3 py-2 ${t.status === "frozen" ? "text-slate-400" : "text-slate-600"}`}>{courseLabel(t.courseId)}</td>
+                        <td
+                          className={`relative px-3 py-2 ${statusMenuOpen ? "z-[120]" : "z-0"}`}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <span className="relative z-[130] inline-flex">
+                            <button
+                              type="button"
+                              className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${statusPill(t.status)}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setOpenStatusTaskId((id) => (id === t.id ? null : t.id));
+                              }}
+                            >
+                              {statusLabel(t.status)}
+                            </button>
+                            {statusMenuOpen ? (
+                              <div
+                                className="absolute left-0 top-full z-[999] mt-1 min-w-[136px] overflow-hidden rounded-xl border border-slate-200 bg-white py-1 text-xs shadow-xl ring-1 ring-slate-900/5"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                {LIST_STATUS_OPTIONS.map((option) => (
+                                  <button
+                                    key={option.id}
+                                    type="button"
+                                    className="block w-full whitespace-nowrap bg-white px-3 py-2 text-left text-slate-600 hover:bg-slate-50"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      updateTaskStatus(t.id, option.id);
+                                    }}
+                                  >
+                                    {option.label}
+                                  </button>
+                                ))}
+                              </div>
+                            ) : null}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 text-slate-600">{priorityLabel(t.priority)}</td>
+                        <td className="px-3 py-2 tabular-nums text-slate-600">{t.due ?? "—"}</td>
+                        <td className={`px-3 py-2 tabular-nums ${days !== null && days <= 2 ? "text-red-600" : "text-slate-600"}`}>
+                          {days === null ? "—" : timeLeftLabel(days)}
+                        </td>
+                        <td className="px-3 py-2 tabular-nums text-slate-600">
+                          {t.durationHrs == null ? "—" : `${t.durationHrs}h`}
+                        </td>
+                        <td className="px-3 py-2 tabular-nums text-slate-600">{t.difficulty == null ? "—" : t.difficulty}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {completedRows.length ? (
+              <section className="mt-5 rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="text-sm font-semibold text-slate-700">Completed</div>
+                <div className="mt-1 text-xs text-slate-400">
+                  Recoverable for {COMPLETED_RECOVERY_DAYS} days, then hidden from this list.
+                </div>
+                <div className="mt-3 divide-y divide-slate-100">
+                  {completedRows.map((task) => (
+                    <div key={task.id} className="flex items-center justify-between gap-3 py-2 opacity-70">
                       <button
                         type="button"
-                        className="hover:underline"
-                        onClick={() => {
-                          if (listSortKey === key) setListSortDir((d) => (d === "asc" ? "desc" : "asc"));
-                          else {
-                            setListSortKey(key);
-                            setListSortDir("asc");
-                          }
-                        }}
+                        onClick={() => openEdit(task)}
+                        className="min-w-0 text-left"
                       >
-                        {label} {listSortKey === key ? (listSortDir === "asc" ? "↑" : "↓") : ""}
+                        <div className="truncate text-sm font-medium text-slate-600">{task.title}</div>
+                        <div className="mt-0.5 flex flex-wrap gap-2 text-xs text-slate-400">
+                          <span>{courseLabel(task.courseId)}</span>
+                          <span>{task.completedAt ? `Completed ${task.completedAt.slice(0, 10)}` : "Completed date unknown"}</span>
+                        </div>
                       </button>
-                    </th>
+                      <button
+                        type="button"
+                        onClick={() => restoreTask(task.id)}
+                        className="shrink-0 rounded-full border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
+                      >
+                        Restore
+                      </button>
+                    </div>
                   ))}
-                </tr>
-              </thead>
-
-              <tbody>
-                {listRows.map((t) => {
-                  const days = t.due ? daysLeftFromISO(t.due) : null;
-                  return (
-                    <tr
-                      key={t.id}
-                      className={`cursor-pointer border-t border-slate-100 hover:bg-slate-50 ${
-                        t.status === "completed" ? "opacity-60" : ""
-                      }`}
-                      onClick={() => openEdit(t)}
-                    >
-                      <td className="max-w-[420px] truncate px-3 py-2 font-medium">{t.title}</td>
-                      <td className="px-3 py-2 text-slate-600">{courseLabel(t.courseId)}</td>
-                      <td className="px-3 py-2">
-                      <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${statusPill(t.status)}`}>
-                        {statusLabel(t.status)}
-                      </span>
-                    </td>
-                      <td className="px-3 py-2 text-slate-600">{priorityLabel(t.priority)}</td>
-                      <td className="px-3 py-2 tabular-nums text-slate-600">{t.due ?? "—"}</td>
-                      <td className={`px-3 py-2 tabular-nums ${days !== null && days <= 2 ? "text-red-600" : "text-slate-600"}`}>
-                        {days === null ? "—" : timeLeftLabel(days)}
-                      </td>
-                      <td className="px-3 py-2 tabular-nums text-slate-600">
-                        {t.durationHrs == null ? "—" : `${t.durationHrs}h`}
-                      </td>
-                      <td className="px-3 py-2 tabular-nums text-slate-600">{t.difficulty == null ? "—" : t.difficulty}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                </div>
+              </section>
+            ) : null}
+          </>
         ) : mode === "logger" ? (
           <div className="mt-5 rounded-2xl border border-slate-200 bg-white shadow-sm">
             <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
@@ -1950,10 +2200,6 @@ useEffect(() => {
                     <div className="flex items-center justify-between gap-3">
                       <div className="text-sm font-semibold">{categoryDisplayLabel(c)}</div>
                       <div className="flex items-center gap-2">
-                        <div className="text-xs text-slate-500">
-                          {byCourse[c.id]?.length ?? 0} total
-                          {byCourse[c.id]?.length ? <> • {openCount(byCourse[c.id])} open</> : null}
-                        </div>
                         <button
                           type="button"
                           onClick={() => openEditCategory(c)}
@@ -1968,14 +2214,14 @@ useEffect(() => {
                   <div className="space-y-3 px-4 py-4">
                     {byCourse[c.id]?.length ? (
                       byCourse[c.id].map((t) => {
-                        const days = t.due ? daysLeftFromISO(t.due) : null;
-                        const dueSoon = days !== null && days <= 2;
+                        const deadlineLabel = compactDeadlineLabel(t);
+                        const activityLabel = activityTypeLabel(t.activityType);
 
                         return (
                           <div
                             key={t.id}
                             onClick={() => openEdit(t)}
-                            className="cursor-pointer rounded-xl border border-slate-200 bg-white p-3 hover:bg-slate-50"
+                            className={`cursor-pointer rounded-xl border border-slate-200 bg-white p-3 hover:bg-slate-50 ${frozenTaskClass(t)}`}
                             role="button"
                             tabIndex={0}
                             onKeyDown={(e) => {
@@ -1984,27 +2230,32 @@ useEffect(() => {
                           >
                             <div className="flex items-start justify-between gap-3">
                               <div className="min-w-0">
-                                <div className="truncate text-sm font-medium">{t.title}</div>
+                                <div className={`truncate text-sm font-medium ${frozenTitleClass(t)}`}>{t.title}</div>
                                 <div className="mt-2 flex flex-wrap gap-2">
-                                  {t.priority === "high" ? <Pill tone="red">High</Pill> : null}
-                                  {t.due ? <Pill tone={dueSoon ? "red" : "neutral"}>Due {t.due}</Pill> : null}
-                                  {days !== null ? (
-                                    <Pill tone={days <= 2 ? "red" : "neutral"}>{timeLeftLabel(days)}</Pill>
+                                  {deadlineLabel ? (
+                                    <TaskMetaPill className={deadlinePillTone(t)}>
+                                      <Clock className="h-3 w-3" aria-hidden="true" />
+                                      {deadlineLabel}
+                                    </TaskMetaPill>
                                   ) : null}
-                                  {t.durationHrs != null ? <Pill>{t.durationHrs}h</Pill> : null}
-                                  {t.difficulty != null ? <Pill>D{t.difficulty}</Pill> : null}
+                                  {t.activityType && activityLabel ? (
+                                    <TaskMetaPill className={activityPillTone(t.activityType)}>
+                                      <ActivityTypeIcon activityType={t.activityType} />
+                                      {activityLabel}
+                                    </TaskMetaPill>
+                                  ) : null}
                                 </div>
                               </div>
 
                               <button
-                                className="rounded-full border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-100"
+                                className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-700"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  deleteTask(t.id);
+                                  completeTask(t.id);
                                 }}
-                                aria-label="Delete"
+                                aria-label="Mark completed"
                               >
-                                Delete
+                                <Check className="h-3.5 w-3.5" aria-hidden="true" />
                               </button>
                             </div>
                           </div>
@@ -2114,18 +2365,6 @@ useEffect(() => {
                     type="button"
                   >
                     Difficulty
-                  </button>
-                </div>
-
-                <div className="mt-2">
-                  <button
-                    className={`w-full rounded-xl border px-2 py-1 text-xs ${
-                      scoreShowCompleted ? "border-slate-300 bg-slate-50" : "border-slate-200 bg-white text-slate-400"
-                    }`}
-                    onClick={() => setScoreShowCompleted((v) => !v)}
-                    type="button"
-                  >
-                    Include completed
                   </button>
                 </div>
               </div>
@@ -2362,7 +2601,7 @@ useEffect(() => {
               value={newTitle}
               onChange={(e) => setNewTitle(e.target.value)}
               placeholder="Task title (brief)"
-              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+              className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
@@ -2372,20 +2611,21 @@ useEffect(() => {
             />
           </Field>
 
-          <div className="grid grid-cols-2 gap-3">
+          <SectionHeading>Organisation</SectionHeading>
+          <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Status">
               <SelectBox
-  value={newStatus}
-  onChange={(v) => setNewStatus(v as Status)}
-  options={STATUSES}
-/>
+                value={newStatus}
+                onChange={(v) => setNewStatus(v as Status)}
+                options={STATUSES}
+              />
             </Field>
 
-            <Field label="Course">
+            <Field label="Category">
               <select
                 value={newCourseId}
                 onChange={(e) => setNewCourseId(e.target.value)}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
               >
                 {activeCategories.map((c) => (
                   <option key={c.id} value={c.id}>
@@ -2396,20 +2636,21 @@ useEffect(() => {
             </Field>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <SectionHeading>Planning</SectionHeading>
+          <div className="grid gap-3 sm:grid-cols-3">
             <Field label="Priority">
               <SelectBox
-  value={newPriority}
-  onChange={(v) => setNewPriority(v as Priority)}
-  options={PRIORITIES}
-/>
+                value={newPriority}
+                onChange={(v) => setNewPriority(v as Priority)}
+                options={PRIORITIES}
+              />
             </Field>
 
             <Field label="Difficulty (1–5)">
               <select
                 value={newDifficulty}
                 onChange={(e) => setNewDifficulty(e.target.value)}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
               >
                 {["1", "2", "3", "4", "5"].map((x) => (
                   <option key={x} value={x}>
@@ -2418,24 +2659,6 @@ useEffect(() => {
                 ))}
               </select>
             </Field>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <DeadlineField
-              due={newDue}
-              deadlineMode={newDeadlineMode}
-              visionHorizon={newVisionHorizon}
-              onDateChange={(due) => {
-                setNewDue(due);
-                setNewDeadlineMode(due ? "date" : undefined);
-                setNewVisionHorizon(null);
-              }}
-              onVisionChange={(horizon) => {
-                setNewDue("");
-                setNewDeadlineMode("vision");
-                setNewVisionHorizon(horizon);
-              }}
-            />
 
             <Field label="Duration (hours)">
               <input
@@ -2443,23 +2666,42 @@ useEffect(() => {
                 placeholder="e.g. 1.5"
                 value={newDurationHrs}
                 onChange={(e) => setNewDurationHrs(e.target.value)}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
               />
             </Field>
           </div>
 
+          <DeadlineField
+            due={newDue}
+            deadlineMode={newDeadlineMode}
+            visionHorizon={newVisionHorizon}
+            onDateChange={(due) => {
+              setNewDue(due);
+              setNewDeadlineMode(due ? "date" : undefined);
+              setNewVisionHorizon(null);
+            }}
+            onVisionChange={(horizon) => {
+              setNewDue("");
+              setNewDeadlineMode("vision");
+              setNewVisionHorizon(horizon);
+            }}
+          />
+
+          <SectionHeading>Type</SectionHeading>
           <ActivityTypeField value={newActivityType} onChange={setNewActivityType} />
 
+          <SectionHeading>Notes</SectionHeading>
           <Field label="Notes">
             <textarea
               value={newNotes}
               onChange={(e) => setNewNotes(e.target.value)}
               placeholder="Any extra context"
-              className="min-h-[100px] w-full rounded-xl border border-slate-200 bg-white p-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+              className="min-h-[64px] w-full rounded-[18px] border border-slate-200 bg-white p-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
             />
           </Field>
 
-          <div className="flex items-center justify-end gap-2 pt-1">
+          <SectionHeading>Actions</SectionHeading>
+          <div className="flex items-center justify-end gap-2">
             <button
               className="rounded-full border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
               onClick={() => setNewOpen(false)}
@@ -2636,10 +2878,22 @@ useEffect(() => {
               />
             </Field>
 
-            <Field label="Calculated duration">
-              <div className="flex h-10 items-center rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm tabular-nums text-slate-600">
-                {calculatedLogHours ? formatDuration(calculatedLogHours) : "—"}
-              </div>
+            <Field label="Hours">
+              <input
+                type="number"
+                min="0"
+                step="any"
+                value={logHoursInput}
+                onChange={(e) => setLogHoursInput(e.target.value)}
+                placeholder={calculatedLogHours ? formatHourInput(calculatedLogHours) : "0.5"}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm tabular-nums outline-none focus:ring-2 focus:ring-slate-200"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    submitTimeLog();
+                  }
+                }}
+              />
             </Field>
           </div>
 
@@ -2677,7 +2931,7 @@ useEffect(() => {
               <button
                 className="rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
                 onClick={submitTimeLog}
-                disabled={!logTaskId || !calculatedLogHours}
+                disabled={!logTaskId || resolveTimeLogHours(logHoursInput, calculatedLogHours) === null}
               >
                 {editingLogId ? "Save" : "Log time"}
               </button>
@@ -2701,24 +2955,25 @@ useEffect(() => {
               <input
                 value={draft.title}
                 onChange={(e) => setDraft({ ...draft, title: e.target.value })}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
               />
             </Field>
 
-            <div className="grid grid-cols-2 gap-3">
+            <SectionHeading>Organisation</SectionHeading>
+            <div className="grid gap-3 sm:grid-cols-2">
               <Field label="Status">
                 <SelectBox
                   value={draft.status}
-                  onChange={(v) => setDraft({ ...draft, status: v })}
+                  onChange={(v) => setDraft(applyTaskStatus(draft, v))}
                   options={STATUSES}
                 />
               </Field>
 
-              <Field label="Course">
+              <Field label="Category">
                 <select
                   value={draft.courseId}
                   onChange={(e) => setDraft({ ...draft, courseId: e.target.value })}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                  className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                 >
                   {activeCategories.map((c) => (
                     <option key={c.id} value={c.id}>
@@ -2729,7 +2984,8 @@ useEffect(() => {
               </Field>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <SectionHeading>Planning</SectionHeading>
+            <div className="grid gap-3 sm:grid-cols-3">
               <Field label="Priority">
                 <SelectBox
                   value={draft.priority}
@@ -2742,39 +2998,15 @@ useEffect(() => {
                 <select
                   value={draft.difficulty == null ? "3" : String(draft.difficulty)}
                   onChange={(e) => setDraft({ ...draft, difficulty: Number(e.target.value) })}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                  className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                 >
                   {["1", "2", "3", "4", "5"].map((x) => (
                     <option key={x} value={x}>
                       {x}
                     </option>
-                  ))}
-                </select>
+                ))}
+              </select>
               </Field>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <DeadlineField
-                due={draft.due}
-                deadlineMode={draft.deadlineMode ?? (draft.due ? "date" : undefined)}
-                visionHorizon={draft.visionHorizon ?? null}
-                onDateChange={(due) =>
-                  setDraft({
-                    ...draft,
-                    due: due || undefined,
-                    deadlineMode: due ? "date" : undefined,
-                    visionHorizon: null,
-                  })
-                }
-                onVisionChange={(horizon) =>
-                  setDraft({
-                    ...draft,
-                    due: null,
-                    deadlineMode: "vision",
-                    visionHorizon: horizon,
-                  })
-                }
-              />
 
               <Field label="Duration (hours)">
                 <input
@@ -2783,25 +3015,50 @@ useEffect(() => {
                   onChange={(e) =>
                     setDraft({ ...draft, durationHrs: optionalFiniteNumber(e.target.value) })
                   }
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                  className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                 />
               </Field>
             </div>
 
+            <DeadlineField
+              due={draft.due}
+              deadlineMode={draft.deadlineMode ?? (draft.due ? "date" : undefined)}
+              visionHorizon={draft.visionHorizon ?? null}
+              onDateChange={(due) =>
+                setDraft({
+                  ...draft,
+                  due: due || undefined,
+                  deadlineMode: due ? "date" : undefined,
+                  visionHorizon: null,
+                })
+              }
+              onVisionChange={(horizon) =>
+                setDraft({
+                  ...draft,
+                  due: null,
+                  deadlineMode: "vision",
+                  visionHorizon: horizon,
+                })
+              }
+            />
+
+            <SectionHeading>Type</SectionHeading>
             <ActivityTypeField
               value={draft.activityType}
               onChange={(activityType) => setDraft({ ...draft, activityType })}
             />
 
+            <SectionHeading>Notes</SectionHeading>
             <Field label="Notes">
               <textarea
                 value={draft.notes ?? ""}
                 onChange={(e) => setDraft({ ...draft, notes: e.target.value })}
-                className="min-h-[110px] w-full rounded-xl border border-slate-200 bg-white p-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                className="min-h-[64px] w-full rounded-[18px] border border-slate-200 bg-white p-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
               />
             </Field>
 
-            <div className="flex items-center justify-between pt-1">
+            <SectionHeading>Actions</SectionHeading>
+            <div className="flex items-center justify-between">
               <button
                 className="rounded-full border border-slate-200 px-4 py-2 text-sm text-red-600 hover:bg-red-50"
                 onClick={() => {
