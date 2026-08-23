@@ -5,16 +5,24 @@ import {
   ArrowDown,
   ArrowUp,
   BookOpen,
+  BriefcaseBusiness,
   Check,
   Circle,
   CircleCheck,
+  Diamond,
   Clock,
+  Flag,
   Gauge,
+  GraduationCap,
   Layers,
   LoaderCircle,
   Mail,
   Minus,
+  Plane,
   Snowflake,
+  UserRound,
+  Users,
+  WandSparkles,
   Zap,
 } from "lucide-react";
 import {
@@ -33,6 +41,16 @@ import {
   loadTimeLogs,
   saveTimeLog as saveSupabaseTimeLog,
 } from "./timeLogStore/supabaseTimeLogStore";
+import {
+  deleteCalendarEvent,
+  loadCalendarEvents,
+  saveCalendarEvent,
+} from "./calendarEventStore/supabaseCalendarEventStore";
+import {
+  createCalendarEventId,
+  type CalendarEvent,
+  type CalendarEventType,
+} from "./calendarEventStore/calendarEventTypes";
 import type {
   ActivityType,
   BackupSnapshot,
@@ -55,7 +73,81 @@ const ATTENTION_CATEGORY_SCOPE_KEY = isDemoMode
   : "yasmine_attention_category_scope_v1";
 const SYNC_CODE = isDemoMode ? "DEMO-TASKS" : "YAS-TEST-001";
 
-type ViewMode = "board" | "list" | "logger";
+type ViewMode = "board" | "planner" | "list" | "logger";
+type PlannerView = "week" | "month" | "year";
+type PlannerEventModalMode = "create" | "edit";
+type PlannerEventDraft = {
+  id: string;
+  eventType: CalendarEventType;
+  title: string;
+  allDay: boolean;
+  date: string;
+  endDate: string;
+  startTime: string;
+  endTime: string;
+  taskId: string;
+  description: string;
+  who: string;
+  location: string;
+  videoUrl: string;
+  origin: string;
+  destination: string;
+  notes: string;
+  timezone: string;
+  repeat: "none" | "weekly";
+  recurrenceWeekday: number;
+  recurrenceStartDate: string;
+  recurrenceEndDate: string;
+  recurrenceApplyScope: "this" | "future" | "all";
+  recurrenceParentId: string | null;
+  recurrenceExceptionDate: string | null;
+};
+type PlannerWeekInteraction = {
+  kind: "move" | "resize";
+  eventId: string;
+  originalEvent: CalendarEvent;
+  previewEvent: CalendarEvent;
+  pointerStartX: number;
+  pointerStartY: number;
+  gridLeft: number;
+  dayWidth: number;
+  originalStartMinutes: number;
+  originalEndMinutes: number;
+  originalDurationMinutes: number;
+  hasMoved: boolean;
+};
+type PlannerDateItem =
+  | { sourceType: "calendar_event"; event: CalendarEvent }
+  | { sourceType: "task_deadline"; task: Task; date: string };
+type PlannerAllDaySpan = {
+  item: PlannerDateItem;
+  startIndex: number;
+  span: number;
+  startsBefore: boolean;
+  endsAfter: boolean;
+};
+type PlannerWorkResolutionStatus = "logged" | "skipped";
+type SmartImportRecurrence = "none" | "weekly";
+type SmartImportProposal = {
+  id: string;
+  sourceText: string;
+  include: boolean;
+  savedEventId?: string;
+  title: string;
+  eventType: CalendarEventType;
+  recurrence: SmartImportRecurrence;
+  allDay: boolean;
+  date: string;
+  endDate: string;
+  weekday: number;
+  startTime: string;
+  endTime: string;
+  location: string;
+  origin: string;
+  destination: string;
+  notes: string;
+  warnings: string[];
+};
 type LoggerValueMode = "hours" | "times";
 type LoggerRangeMode = "week" | "month" | "year" | "custom";
 type ListFilterMenu = "status" | "priority" | "difficulty" | "timeLeft" | "duration";
@@ -84,6 +176,11 @@ const EFFORT_LEVELS: { id: EffortLevel; label: string }[] = [
   { id: "moderate", label: "Moderate" },
   { id: "extensive", label: "Extensive" },
 ];
+const EFFORT_RUNWAY_FACTORS: Record<EffortLevel, number> = {
+  quick: 0.7,
+  moderate: 1.4,
+  extensive: 2.8,
+};
 const CATEGORY_COLOURS = [
   { id: "slate", label: "Slate", swatch: "bg-slate-300" },
   { id: "sky", label: "Sky", swatch: "bg-sky-300" },
@@ -118,6 +215,28 @@ const TIME_LEFT_MIN = 0;
 const TIME_LEFT_MAX = 365;
 const DURATION_MIN_HOURS = 5 / 60;
 const DURATION_MAX_HOURS = 10;
+const PLANNER_START_HOUR = 6;
+const PLANNER_END_HOUR = 24;
+const PLANNER_HOUR_HEIGHT = 56;
+const PLANNER_SNAP_MINUTES = 15;
+const PLANNER_EVENT_TYPES: { id: CalendarEventType; label: string }[] = [
+  { id: "work", label: "Work" },
+  { id: "class", label: "Class" },
+  { id: "meeting", label: "Meeting" },
+  { id: "deadline", label: "Deadline" },
+  { id: "milestone", label: "Milestone" },
+  { id: "personal", label: "Personal" },
+  { id: "travel", label: "Travel" },
+];
+const PLANNER_WEEKDAY_OPTIONS = [
+  { id: 1, label: "Monday" },
+  { id: 2, label: "Tuesday" },
+  { id: 3, label: "Wednesday" },
+  { id: 4, label: "Thursday" },
+  { id: 5, label: "Friday" },
+  { id: 6, label: "Saturday" },
+  { id: 7, label: "Sunday" },
+];
 
 function statusLabel(id: Status) {
   return STATUSES.find((s) => s.id === id)?.label ?? id;
@@ -342,6 +461,1142 @@ function startOfLoggerWeek(iso: string) {
   const date = new Date(iso + "T00:00:00");
   const mondayOffset = (date.getDay() + 6) % 7;
   return addDaysISO(iso, -mondayOffset);
+}
+
+function startOfPlannerWeek(iso: string) {
+  return startOfLoggerWeek(iso);
+}
+
+function plannerWeekDaysForAnchor(anchorDate: string) {
+  const anchor = isValidISODate(anchorDate) ? anchorDate : todayISO();
+  const start = startOfPlannerWeek(anchor);
+
+  return Array.from({ length: 7 }, (_, index) => addDaysISO(start, index));
+}
+
+function plannerMonthDaysForAnchor(anchorDate: string) {
+  const anchor = isValidISODate(anchorDate) ? anchorDate : todayISO();
+  const monthStart = startOfLoggerMonth(anchor);
+  const monthEnd = endOfLoggerMonth(anchor);
+  const gridStart = startOfPlannerWeek(monthStart);
+  const gridEnd = addDaysISO(startOfPlannerWeek(monthEnd), 6);
+  const days: { date: string; isCurrentMonth: boolean }[] = [];
+  let cursor = gridStart;
+
+  while (cursor <= gridEnd) {
+    days.push({
+      date: cursor,
+      isCurrentMonth: cursor.slice(0, 7) === monthStart.slice(0, 7),
+    });
+    cursor = addDaysISO(cursor, 1);
+  }
+
+  return days;
+}
+
+function plannerYearMonthsForAnchor(anchorDate: string) {
+  const anchor = isValidISODate(anchorDate) ? anchorDate : todayISO();
+  const year = isoParts(anchor).year;
+
+  return Array.from({ length: 12 }, (_, monthIndex) => {
+    const month = monthIndex + 1;
+    const monthAnchor = `${year}-${String(month).padStart(2, "0")}-01`;
+    return {
+      id: monthAnchor.slice(0, 7),
+      anchorDate: monthAnchor,
+      label: new Intl.DateTimeFormat("en", { month: "short" }).format(
+        new Date(monthAnchor + "T00:00:00")
+      ),
+      days: plannerMonthDaysForAnchor(monthAnchor),
+    };
+  });
+}
+
+function formatPlannerMonthLabel(anchorDate: string) {
+  const anchor = isValidISODate(anchorDate) ? anchorDate : todayISO();
+  return new Intl.DateTimeFormat("en", { month: "long", year: "numeric" }).format(
+    new Date(startOfLoggerMonth(anchor) + "T00:00:00")
+  );
+}
+
+function formatPlannerYearLabel(anchorDate: string) {
+  const anchor = isValidISODate(anchorDate) ? anchorDate : todayISO();
+  return String(isoParts(anchor).year);
+}
+
+function formatPlannerWeekRange(days: string[]) {
+  if (!days.length) return "";
+
+  const start = new Date(days[0] + "T00:00:00");
+  const end = new Date(days[days.length - 1] + "T00:00:00");
+  const sameMonth = start.getMonth() === end.getMonth() && start.getFullYear() === end.getFullYear();
+  const monthFormatter = new Intl.DateTimeFormat("en", { month: "long", year: "numeric" });
+  const compactFormatter = new Intl.DateTimeFormat("en", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+
+  if (sameMonth) {
+    return `${start.getDate()}-${end.getDate()} ${monthFormatter.format(end)}`;
+  }
+
+  return `${compactFormatter.format(start)} - ${compactFormatter.format(end)}`;
+}
+
+function plannerHourLabels() {
+  return Array.from({ length: PLANNER_END_HOUR - PLANNER_START_HOUR + 1 }, (_, index) => {
+    const hour = PLANNER_START_HOUR + index;
+    return `${String(hour).padStart(2, "0")}:00`;
+  });
+}
+
+function localDateISO(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+    date.getDate()
+  ).padStart(2, "0")}`;
+}
+
+function eventLocalDate(timestamp?: string | null) {
+  if (!timestamp) return null;
+  const date = new Date(timestamp);
+  if (!Number.isFinite(date.getTime())) return null;
+  return localDateISO(date);
+}
+
+function formatPlannerEventTime(timestamp?: string | null) {
+  if (!timestamp) return "";
+  const date = new Date(timestamp);
+  if (!Number.isFinite(date.getTime())) return "";
+
+  return new Intl.DateTimeFormat("en", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
+function localMinutesFromTimestamp(timestamp?: string | null) {
+  if (!timestamp) return null;
+  const date = new Date(timestamp);
+  if (!Number.isFinite(date.getTime())) return null;
+  return date.getHours() * 60 + date.getMinutes();
+}
+
+function minutesToTimeInput(minutes: number) {
+  const clamped = clamp(Math.round(minutes), 0, 24 * 60);
+  const hours = Math.floor(clamped / 60);
+  const mins = clamped % 60;
+  return `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}`;
+}
+
+function isoFromLocalDateMinutes(date: string, minutes: number) {
+  if (!isValidISODate(date)) return null;
+  const { year, month, day } = isoParts(date);
+  const parsed = new Date(year, month - 1, day, 0, minutes, 0, 0);
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
+}
+
+function zonedOffsetMs(utcMs: number, timezone: string) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(new Date(utcMs));
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    const localAsUTC = Date.UTC(
+      Number(values.year),
+      Number(values.month) - 1,
+      Number(values.day),
+      Number(values.hour),
+      Number(values.minute),
+      Number(values.second)
+    );
+    return localAsUTC - utcMs;
+  } catch {
+    return new Date().getTimezoneOffset() * -60000;
+  }
+}
+
+function zonedDateTimeToUtcISO(date: string, time: string, timezone: string) {
+  if (!isValidISODate(date) || timeToMinutes(time) === null) return null;
+  const { year, month, day } = isoParts(date);
+  const [hours, minutes] = time.split(":").map(Number);
+  let utcMs = Date.UTC(year, month - 1, day, hours, minutes, 0, 0);
+  utcMs = Date.UTC(year, month - 1, day, hours, minutes, 0, 0) - zonedOffsetMs(utcMs, timezone);
+  utcMs = Date.UTC(year, month - 1, day, hours, minutes, 0, 0) - zonedOffsetMs(utcMs, timezone);
+  const parsed = new Date(utcMs);
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
+}
+
+function snapPlannerMinutes(minutes: number) {
+  return Math.round(minutes / PLANNER_SNAP_MINUTES) * PLANNER_SNAP_MINUTES;
+}
+
+function timeInputFromTimestamp(timestamp?: string | null) {
+  if (!timestamp) return "";
+  const date = new Date(timestamp);
+  if (!Number.isFinite(date.getTime())) return "";
+
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function browserTimezone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "Europe/Madrid";
+}
+
+type WeeklyRecurrenceRule = {
+  freq: "weekly";
+  weekday: number;
+  startDate: string;
+  endDate: string;
+  startTime: string;
+  endTime: string;
+  timezone: string;
+};
+
+function parseWeeklyRecurrenceRule(raw?: string | null): WeeklyRecurrenceRule | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<WeeklyRecurrenceRule>;
+    if (
+      parsed.freq !== "weekly" ||
+      typeof parsed.weekday !== "number" ||
+      !isValidISODate(parsed.startDate ?? "") ||
+      !isValidISODate(parsed.endDate ?? "") ||
+      typeof parsed.startTime !== "string" ||
+      typeof parsed.endTime !== "string" ||
+      timeToMinutes(parsed.startTime) === null ||
+      timeToMinutes(parsed.endTime) === null ||
+      typeof parsed.timezone !== "string"
+    ) {
+      return null;
+    }
+    return parsed as WeeklyRecurrenceRule;
+  } catch {
+    return null;
+  }
+}
+
+function stringifyWeeklyRecurrenceRule(rule: WeeklyRecurrenceRule) {
+  return JSON.stringify(rule);
+}
+
+function isoWeekday(iso: string) {
+  const date = new Date(iso + "T00:00:00");
+  return ((date.getDay() + 6) % 7) + 1;
+}
+
+function nextDateForIsoWeekday(startDate: string, weekday: number) {
+  const current = isoWeekday(startDate);
+  const offset = (weekday - current + 7) % 7;
+  return addDaysISO(startDate, offset);
+}
+
+function defaultPlannerEventDraft(eventType: CalendarEventType, date: string): PlannerEventDraft {
+  const resolvedDate = isValidISODate(date) ? date : todayISO();
+  const allDay = eventType === "deadline" || eventType === "milestone";
+  const timezone = browserTimezone();
+
+  return {
+    id: createCalendarEventId(),
+    eventType,
+    title: "",
+    allDay,
+    date: resolvedDate,
+    endDate: resolvedDate,
+    startTime: "09:00",
+    endTime: eventType === "deadline" ? "" : "10:00",
+    taskId: "",
+    description: "",
+    who: "",
+    location: "",
+    videoUrl: "",
+    origin: "",
+    destination: "",
+    notes: "",
+    timezone,
+    repeat: "none",
+    recurrenceWeekday: isoWeekday(resolvedDate),
+    recurrenceStartDate: resolvedDate,
+    recurrenceEndDate: resolvedDate,
+    recurrenceApplyScope: "this",
+    recurrenceParentId: null,
+    recurrenceExceptionDate: null,
+  };
+}
+
+function plannerDraftFromEvent(event: CalendarEvent): PlannerEventDraft {
+  const metadata = event.metadata ?? {};
+  const recurrenceRule = parseWeeklyRecurrenceRule(event.recurrenceRule);
+  const parentId = parentIdForPlannerOccurrence(event);
+  const occurrenceDate = occurrenceDateForPlannerEvent(event);
+  const isVirtualOccurrence = isVirtualRecurringOccurrence(event);
+  const startDate = event.allDay
+    ? event.startDate ?? todayISO()
+    : eventLocalDate(event.startAt) ?? todayISO();
+  const endDate = event.allDay
+    ? event.endDate ?? startDate
+    : eventLocalDate(event.endAt) ?? startDate;
+
+  return {
+    id: isVirtualOccurrence ? createCalendarEventId() : event.id,
+    eventType: event.eventType,
+    title: event.title,
+    allDay: event.allDay,
+    date: startDate,
+    endDate,
+    startTime: timeInputFromTimestamp(event.startAt),
+    endTime: timeInputFromTimestamp(event.endAt),
+    taskId: event.taskId ?? "",
+    description: event.description ?? "",
+    who: typeof metadata.who === "string" ? metadata.who : "",
+    location: event.location ?? "",
+    videoUrl: event.videoUrl ?? "",
+    origin: typeof metadata.origin === "string" ? metadata.origin : "",
+    destination: typeof metadata.destination === "string" ? metadata.destination : "",
+    notes: event.notes ?? "",
+    timezone: event.timezone || browserTimezone(),
+    repeat: recurrenceRule ? "weekly" : "none",
+    recurrenceWeekday: recurrenceRule?.weekday ?? isoWeekday(startDate),
+    recurrenceStartDate: recurrenceRule?.startDate ?? startDate,
+    recurrenceEndDate: recurrenceRule?.endDate ?? endDate,
+    recurrenceApplyScope: parentId ? "this" : "all",
+    recurrenceParentId: parentId ?? null,
+    recurrenceExceptionDate: occurrenceDate ?? null,
+  };
+}
+
+function eventRequiresEndTime(eventType: CalendarEventType) {
+  return eventType === "work" || eventType === "class" || eventType === "meeting" || eventType === "personal" || eventType === "travel";
+}
+
+function calendarEventFromDraft(draft: PlannerEventDraft): { event: CalendarEvent | null; error: string | null } {
+  const title = draft.title.trim();
+  if (!title) return { event: null, error: "Title is required." };
+  if (!isValidISODate(draft.date)) return { event: null, error: "A valid date is required." };
+
+  const allDay = draft.eventType === "milestone" ? true : draft.allDay;
+  const endDate = isValidISODate(draft.endDate) ? draft.endDate : draft.date;
+  const timezone = draft.timezone || browserTimezone();
+
+  if (allDay) {
+    if (endDate < draft.date) return { event: null, error: "End date cannot be before start date." };
+
+    return {
+      error: null,
+      event: {
+        id: draft.id,
+        eventType: draft.eventType,
+        title,
+        description: draft.description.trim() || null,
+        allDay: true,
+        startAt: null,
+        endAt: null,
+        startDate: draft.date,
+        endDate: endDate === draft.date ? null : endDate,
+        timezone,
+        taskId: draft.taskId || null,
+        categoryId: null,
+        location: draft.location.trim() || null,
+        videoUrl: draft.videoUrl.trim() || null,
+        notes: draft.notes.trim() || null,
+        metadata: {
+          who: draft.who.trim() || undefined,
+          origin: draft.origin.trim() || undefined,
+          destination: draft.destination.trim() || undefined,
+        },
+        recurrenceRule: null,
+        recurrenceParentId: draft.recurrenceParentId,
+        recurrenceExceptionDate: draft.recurrenceExceptionDate,
+        recurrenceStatus: draft.recurrenceParentId ? "moved" : null,
+      },
+    };
+  }
+
+  if (!draft.startTime) return { event: null, error: "Start time is required." };
+  if (eventRequiresEndTime(draft.eventType) && !draft.endTime) {
+    return { event: null, error: "End time is required." };
+  }
+
+  const startAt = zonedDateTimeToUtcISO(draft.date, draft.startTime, timezone);
+  const endAt = draft.endTime ? zonedDateTimeToUtcISO(endDate, draft.endTime, timezone) : null;
+  if (!startAt) return { event: null, error: "Start time is invalid." };
+  if (draft.endTime && !endAt) return { event: null, error: "End time is invalid." };
+  if (endAt && Date.parse(endAt) <= Date.parse(startAt)) {
+    return { event: null, error: "End time must be after start time." };
+  }
+  const weeklyRule =
+    draft.eventType === "class" && draft.repeat === "weekly" && !draft.recurrenceParentId
+      ? {
+          freq: "weekly" as const,
+          weekday: draft.recurrenceWeekday,
+          startDate: draft.recurrenceStartDate,
+          endDate: draft.recurrenceEndDate,
+          startTime: draft.startTime,
+          endTime: draft.endTime,
+          timezone,
+        }
+      : null;
+
+  if (weeklyRule) {
+    if (
+      weeklyRule.weekday < 1 ||
+      weeklyRule.weekday > 7 ||
+      !isValidISODate(weeklyRule.startDate) ||
+      !isValidISODate(weeklyRule.endDate) ||
+      weeklyRule.endDate < weeklyRule.startDate
+    ) {
+      return { event: null, error: "A valid weekly date range is required." };
+    }
+  }
+
+  return {
+    error: null,
+    event: {
+      id: draft.id,
+      eventType: draft.eventType,
+      title,
+      description: draft.description.trim() || null,
+      allDay: false,
+      startAt,
+      endAt,
+      startDate: null,
+      endDate: null,
+      timezone,
+      taskId: draft.taskId || null,
+      categoryId: null,
+      location: draft.location.trim() || null,
+      videoUrl: draft.videoUrl.trim() || null,
+      notes: draft.notes.trim() || null,
+      metadata: {
+        who: draft.who.trim() || undefined,
+        origin: draft.origin.trim() || undefined,
+        destination: draft.destination.trim() || undefined,
+      },
+      recurrenceRule: weeklyRule ? stringifyWeeklyRecurrenceRule(weeklyRule) : null,
+      recurrenceParentId: draft.recurrenceParentId,
+      recurrenceExceptionDate: draft.recurrenceExceptionDate,
+      recurrenceStatus: draft.recurrenceParentId ? "moved" : null,
+    },
+  };
+}
+
+function plannerTimedEventSegment(event: CalendarEvent, day: string) {
+  if (!event.startAt) return null;
+
+  const start = new Date(event.startAt);
+  if (!Number.isFinite(start.getTime())) return null;
+
+  const fallbackEnd = new Date(start.getTime() + 60 * 60 * 1000);
+  const parsedEnd = event.endAt ? new Date(event.endAt) : fallbackEnd;
+  const end = Number.isFinite(parsedEnd.getTime()) && parsedEnd > start ? parsedEnd : fallbackEnd;
+  const dayStart = new Date(day + "T00:00:00");
+  const visibleStart = new Date(dayStart.getTime() + PLANNER_START_HOUR * 60 * 60 * 1000);
+  const visibleEnd = new Date(dayStart.getTime() + PLANNER_END_HOUR * 60 * 60 * 1000);
+  const segmentStart = new Date(Math.max(start.getTime(), visibleStart.getTime()));
+  const segmentEnd = new Date(Math.min(end.getTime(), visibleEnd.getTime()));
+
+  if (segmentEnd <= segmentStart) return null;
+
+  const startMinutes = (segmentStart.getTime() - dayStart.getTime()) / 60000;
+  const endMinutes = (segmentEnd.getTime() - dayStart.getTime()) / 60000;
+
+  return {
+    event,
+    startMinutes,
+    endMinutes,
+    top: ((startMinutes - PLANNER_START_HOUR * 60) / 60) * PLANNER_HOUR_HEIGHT,
+    height: Math.max(26, ((endMinutes - startMinutes) / 60) * PLANNER_HOUR_HEIGHT),
+  };
+}
+
+function layoutPlannerTimedEvents(events: CalendarEvent[], day: string) {
+  const segments = events
+    .map((event) => plannerTimedEventSegment(event, day))
+    .filter((segment): segment is NonNullable<ReturnType<typeof plannerTimedEventSegment>> =>
+      Boolean(segment)
+    )
+    .sort((a, b) => a.startMinutes - b.startMinutes || a.endMinutes - b.endMinutes);
+  const columnEnds: number[] = [];
+  const positioned = segments.map((segment) => {
+    const columnIndex = columnEnds.findIndex((end) => end <= segment.startMinutes);
+    const resolvedColumnIndex = columnIndex === -1 ? columnEnds.length : columnIndex;
+    columnEnds[resolvedColumnIndex] = segment.endMinutes;
+    return { ...segment, columnIndex: resolvedColumnIndex };
+  });
+  const columnCount = Math.max(1, columnEnds.length);
+
+  return positioned.map((segment) => ({ ...segment, columnCount }));
+}
+
+function calendarEventIntersectsWeek(event: CalendarEvent, weekStart: string, weekEnd: string) {
+  if (event.allDay) {
+    const start = event.startDate;
+    const end = event.endDate || event.startDate;
+    return Boolean(start && end && start <= weekEnd && end >= weekStart);
+  }
+
+  const start = eventLocalDate(event.startAt);
+  const end = eventLocalDate(event.endAt) || start;
+  return Boolean(start && end && start <= weekEnd && end >= weekStart);
+}
+
+function calendarEventIntersectsDay(event: CalendarEvent, day: string) {
+  if (event.allDay) {
+    const start = event.startDate;
+    const end = event.endDate || event.startDate;
+    return Boolean(start && end && start <= day && end >= day);
+  }
+
+  const start = eventLocalDate(event.startAt);
+  const end = eventLocalDate(event.endAt) || start;
+  return Boolean(start && end && start <= day && end >= day);
+}
+
+function plannerMonthEventPrefix(event: CalendarEvent, day: string) {
+  if (event.allDay) return "";
+  return eventLocalDate(event.startAt) === day ? formatPlannerEventTime(event.startAt) : "";
+}
+
+function eventDateSpan(event: CalendarEvent) {
+  if (event.allDay) {
+    const start = event.startDate;
+    const end = event.endDate || event.startDate;
+    return start && end ? { start, end } : null;
+  }
+
+  const start = eventLocalDate(event.startAt);
+  const end = eventLocalDate(event.endAt) || start;
+  return start && end ? { start, end } : null;
+}
+
+function recurringOccurrenceMetadata(parent: CalendarEvent, occurrenceDate: string) {
+  return {
+    ...(parent.metadata ?? {}),
+    virtualOccurrence: true,
+    parentEventId: parent.id,
+    occurrenceDate,
+  };
+}
+
+function isVirtualRecurringOccurrence(event: CalendarEvent) {
+  return event.metadata?.virtualOccurrence === true && typeof event.metadata.parentEventId === "string";
+}
+
+function parentIdForPlannerOccurrence(event: CalendarEvent) {
+  return typeof event.metadata?.parentEventId === "string" ? event.metadata.parentEventId : event.recurrenceParentId;
+}
+
+function occurrenceDateForPlannerEvent(event: CalendarEvent) {
+  return typeof event.metadata?.occurrenceDate === "string"
+    ? event.metadata.occurrenceDate
+    : event.recurrenceExceptionDate;
+}
+
+function exceptionEventForPlannerOccurrence(event: CalendarEvent) {
+  const parentId = parentIdForPlannerOccurrence(event);
+  const occurrenceDate = occurrenceDateForPlannerEvent(event);
+  if (!parentId || !occurrenceDate) return event;
+
+  const metadata = { ...(event.metadata ?? {}) };
+  delete metadata.virtualOccurrence;
+  delete metadata.parentEventId;
+  delete metadata.occurrenceDate;
+
+  return {
+    ...event,
+    id: isVirtualRecurringOccurrence(event) ? createCalendarEventId() : event.id,
+    recurrenceRule: null,
+    recurrenceParentId: parentId,
+    recurrenceExceptionDate: occurrenceDate,
+    recurrenceStatus: "moved",
+    metadata,
+  };
+}
+
+function expandRecurringPlannerEvents(events: CalendarEvent[], rangeStart: string, rangeEnd: string) {
+  const exceptionsByParentAndDate = new Map<string, CalendarEvent[]>();
+
+  events.forEach((event) => {
+    if (!event.recurrenceParentId || !event.recurrenceExceptionDate) return;
+    const key = `${event.recurrenceParentId}:${event.recurrenceExceptionDate}`;
+    exceptionsByParentAndDate.set(key, [...(exceptionsByParentAndDate.get(key) ?? []), event]);
+  });
+
+  const expanded: CalendarEvent[] = [];
+
+  events.forEach((event) => {
+    if (event.recurrenceParentId) {
+      if (event.recurrenceStatus !== "cancelled") expanded.push(event);
+      return;
+    }
+
+    const rule = parseWeeklyRecurrenceRule(event.recurrenceRule);
+    if (!rule) {
+      expanded.push(event);
+      return;
+    }
+
+    const start = rule.startDate > rangeStart ? rule.startDate : rangeStart;
+    const end = rule.endDate < rangeEnd ? rule.endDate : rangeEnd;
+    if (start > end) return;
+
+    let occurrenceDate = nextDateForIsoWeekday(start, rule.weekday);
+    while (occurrenceDate <= end) {
+      const exceptionKey = `${event.id}:${occurrenceDate}`;
+      const exceptions = exceptionsByParentAndDate.get(exceptionKey) ?? [];
+      const hasCancellation = exceptions.some((exception) => exception.recurrenceStatus === "cancelled");
+
+      if (!hasCancellation && !exceptions.some((exception) => exception.recurrenceStatus === "moved")) {
+        const startAt = zonedDateTimeToUtcISO(occurrenceDate, rule.startTime, rule.timezone);
+        const endAt = zonedDateTimeToUtcISO(occurrenceDate, rule.endTime, rule.timezone);
+        if (startAt && endAt) {
+          expanded.push({
+            ...event,
+            id: `${event.id}::${occurrenceDate}`,
+            startAt,
+            endAt,
+            startDate: null,
+            endDate: null,
+            recurrenceParentId: event.id,
+            recurrenceExceptionDate: occurrenceDate,
+            recurrenceStatus: "active",
+            metadata: recurringOccurrenceMetadata(event, occurrenceDate),
+          });
+        }
+      }
+
+      occurrenceDate = addDaysISO(occurrenceDate, 7);
+    }
+  });
+
+  return expanded;
+}
+
+const IMPORT_MONTHS: Record<string, number> = {
+  jan: 1,
+  january: 1,
+  feb: 2,
+  february: 2,
+  mar: 3,
+  march: 3,
+  apr: 4,
+  april: 4,
+  may: 5,
+  jun: 6,
+  june: 6,
+  jul: 7,
+  july: 7,
+  aug: 8,
+  august: 8,
+  sep: 9,
+  sept: 9,
+  september: 9,
+  oct: 10,
+  october: 10,
+  nov: 11,
+  november: 11,
+  dec: 12,
+  december: 12,
+};
+
+const IMPORT_WEEKDAYS: Record<string, number> = {
+  monday: 1,
+  mon: 1,
+  tuesday: 2,
+  tue: 2,
+  tues: 2,
+  wednesday: 3,
+  wed: 3,
+  thursday: 4,
+  thu: 4,
+  thurs: 4,
+  friday: 5,
+  fri: 5,
+  saturday: 6,
+  sat: 6,
+  sunday: 7,
+  sun: 7,
+};
+
+function smartImportContextYear(anchorDate: string) {
+  return isoParts(isValidISODate(anchorDate) ? anchorDate : todayISO()).year;
+}
+
+function smartImportDate(year: number, monthName: string, dayText: string) {
+  const month = IMPORT_MONTHS[monthName.toLowerCase()];
+  const day = Number(dayText.replace(/(?:st|nd|rd|th)$/i, ""));
+  if (!month || !Number.isFinite(day)) return "";
+  const iso = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  return isValidISODate(iso) ? iso : "";
+}
+
+function smartImportTimeToken(token: string, inheritedMeridiem?: "am" | "pm") {
+  const match = token.trim().toLowerCase().match(/^(\d{1,2})(?:(?::|\.)(\d{2}))?\s*(am|pm)?$/);
+  if (!match) return null;
+
+  let hour = Number(match[1]);
+  const minute = match[2] ? Number(match[2]) : 0;
+  const meridiem = (match[3] as "am" | "pm" | undefined) ?? inheritedMeridiem;
+  if (!Number.isFinite(hour) || !Number.isFinite(minute) || minute > 59) return null;
+  if (meridiem === "pm" && hour < 12) hour += 12;
+  if (meridiem === "am" && hour === 12) hour = 0;
+  if (hour > 23) return null;
+
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function smartImportTimeRange(text: string) {
+  const match = text.match(
+    /\b(\d{1,2}(?:(?::|\.)\d{2})?\s*(?:am|pm)?)\s*(?:-|–|to)\s*(\d{1,2}(?:(?::|\.)\d{2})?\s*(?:am|pm)?)\b/i
+  );
+  if (!match) return { startTime: "", endTime: "" };
+
+  const endMeridiem = match[2].toLowerCase().match(/(am|pm)/)?.[1] as "am" | "pm" | undefined;
+  const startTime = smartImportTimeToken(match[1], endMeridiem);
+  const endTime = smartImportTimeToken(match[2]);
+
+  return { startTime: startTime ?? "", endTime: endTime ?? "" };
+}
+
+function smartImportSingleTime(text: string) {
+  const match = text.match(/\b(?:at\s+)?(\d{1,2}(?:(?::|\.)\d{2})\s*(?:am|pm)?|\d{1,2}\s*(?:am|pm))\b/i);
+  return match ? smartImportTimeToken(match[1]) ?? "" : "";
+}
+
+function inferSmartImportEventType(text: string): CalendarEventType {
+  const lower = text.toLowerCase();
+  if (/\b(class|studio|seminar|lecture)\b/.test(lower)) return "class";
+  if (/\b(meeting|tutorial|supervision)\b/.test(lower)) return "meeting";
+  if (/\b(deadline|submission|due)\b/.test(lower)) return "deadline";
+  if (/\b(flight|train|travel)\b/.test(lower)) return "travel";
+  if (/\b(dentist|doctor|appointment)\b/.test(lower)) return "personal";
+  if (/\b(london|paris|madrid|zurich|barcelona|rome|berlin)\b/.test(lower) && /\b\d{1,2}\s*[-–]\s*\d{1,2}\s+[a-z]+/i.test(text)) {
+    return "travel";
+  }
+  return "personal";
+}
+
+function smartImportTitle(text: string) {
+  return text
+    .replace(/\bevery\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|tues|wed|thu|thurs|fri|sat|sun)\b.*$/i, "")
+    .replace(/\bbetween\s+.*$/i, "")
+    .replace(/\bfrom\s+.*$/i, "")
+    .replace(/\bat\s+\d{1,2}.*$/i, "")
+    .replace(/\b\d{1,2}\s*[-–]\s*\d{1,2}\s+[a-z]+.*$/i, "")
+    .replace(/\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\s+\d{1,2}.*$/i, "")
+    .replace(/\b\d{1,2}(?:(?::|\.)\d{2})?\s*(?:am|pm)?\s*(?:-|–|to)\s*\d{1,2}.*$/i, "")
+    .trim();
+}
+
+function smartImportOrdinalDateMatch(text: string) {
+  return text.match(
+    /\b(?:(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|tues|wed|thu|thurs|fri|sat|sun)\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b/i
+  );
+}
+
+function smartImportRoute(text: string) {
+  const airportRoute = text.match(/\b([A-Z]{3})\s*(?:to|→|->|–|-)\s*([A-Z]{3})\b/);
+  if (airportRoute) {
+    return { origin: airportRoute[1], destination: airportRoute[2], confident: true };
+  }
+
+  const namedRoute = text.match(/\b([A-Z][A-Za-z]+)\s+to\s+([A-Z][A-Za-z]+)\b/);
+  if (namedRoute) {
+    return { origin: namedRoute[1], destination: namedRoute[2], confident: false };
+  }
+
+  return { origin: "", destination: "", confident: false };
+}
+
+function smartImportTravelTitle(text: string, origin: string, destination: string) {
+  if (/\bflight\b/i.test(text) && origin && destination) return `Flight ${origin} → ${destination}`;
+  if (/\btrain\b/i.test(text) && origin && destination) return `Train ${origin} → ${destination}`;
+  if (origin && destination) return `${origin} → ${destination}`;
+  return smartImportTitle(text);
+}
+
+function smartImportLocation(text: string) {
+  const match = text.match(/\b(?:room|rm)\s+([a-z0-9 -]+)/i);
+  if (match) return `Room ${match[1].trim().replace(/\s+(between|from|until|every)\b.*$/i, "")}`;
+  const inMatch = text.match(/\bin\s+([^,]+?)(?=\s+(?:from|between|until|every|at)\b|$)/i);
+  return inMatch ? inMatch[1].trim() : "";
+}
+
+function splitSmartImportInput(raw: string) {
+  return raw
+    .split(/\n+|;/)
+    .flatMap((line) =>
+      line.split(/\s+and\s+(?=[A-Z][^,\n]*(?:\bevery\b|\bclass\b|\bmeeting\b|\bdentist\b|\bdeadline\b|\bstudio\b|\bflight\b|\btrain\b|\btravel\b|\b[A-Z][a-z]+\s+\d{1,2}\b|\b[A-Z][a-z]+\s+\d{1,2}\s*[-–]\s*\d{1,2}\b))/)
+    )
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function parseSmartScheduleImport(raw: string, contextYear: number): SmartImportProposal[] {
+  return splitSmartImportInput(raw).map((sourceText) => {
+    const lower = sourceText.toLowerCase();
+    const eventType = inferSmartImportEventType(sourceText);
+    const weeklyMatch = lower.match(/\bevery\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|tues|wed|thu|thurs|fri|sat|sun)\b/i);
+    const recurrence: SmartImportRecurrence = weeklyMatch ? "weekly" : "none";
+    const weekday = weeklyMatch ? IMPORT_WEEKDAYS[weeklyMatch[1].toLowerCase()] ?? 1 : 1;
+    const betweenMatch = sourceText.match(
+      /\b(?:between|from)\s+([a-z]+)\s+(\d{1,2})\s+(?:and|until|to)\s+([a-z]+)\s+(\d{1,2})/i
+    );
+    const dateRangeMatch = sourceText.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s*[-–]\s*(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)\b/i);
+    const ordinalDateMatch = smartImportOrdinalDateMatch(sourceText);
+    const singleDateMatch = sourceText.match(
+      /\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\s+(\d{1,2})\b/i
+    );
+    const timeRange = smartImportTimeRange(sourceText);
+    const singleTime = timeRange.startTime ? "" : smartImportSingleTime(sourceText);
+    const hasSpecificTime = Boolean(timeRange.startTime || singleTime);
+    const allDay =
+      (eventType === "travel" && !hasSpecificTime) ||
+      eventType === "milestone" ||
+      (eventType === "deadline" && !hasSpecificTime);
+    const route = smartImportRoute(sourceText);
+    const warnings: string[] = [];
+    let date = "";
+    let endDate = "";
+
+    if (betweenMatch) {
+      date = smartImportDate(contextYear, betweenMatch[1], betweenMatch[2]);
+      endDate = smartImportDate(contextYear, betweenMatch[3], betweenMatch[4]);
+    } else if (dateRangeMatch) {
+      date = smartImportDate(contextYear, dateRangeMatch[3], dateRangeMatch[1]);
+      endDate = smartImportDate(contextYear, dateRangeMatch[3], dateRangeMatch[2]);
+    } else if (ordinalDateMatch) {
+      date = smartImportDate(contextYear, ordinalDateMatch[3], ordinalDateMatch[2]);
+      endDate = date;
+    } else if (singleDateMatch) {
+      date = smartImportDate(contextYear, singleDateMatch[1], singleDateMatch[2]);
+      endDate = date;
+    }
+
+    const statedWeekday = ordinalDateMatch?.[1]?.toLowerCase();
+    if (statedWeekday && date) {
+      const expectedWeekday = IMPORT_WEEKDAYS[statedWeekday];
+      if (expectedWeekday && isoWeekday(date) !== expectedWeekday) {
+        warnings.push("Weekday does not match parsed date");
+      }
+    }
+
+    if (recurrence === "weekly" && !date) warnings.push("Date range missing");
+    if (recurrence === "weekly" && date && !endDate) warnings.push("Series end missing");
+    if (!date && recurrence === "none") warnings.push("Date missing");
+    if (!allDay && !timeRange.startTime && !singleTime) warnings.push("Start time missing");
+    if (!allDay && !timeRange.endTime) warnings.push("End time missing");
+    if (timeRange.startTime && timeRange.endTime && timeRange.endTime <= timeRange.startTime) {
+      warnings.push("End time needs review");
+    }
+
+    const title =
+      eventType === "travel"
+        ? smartImportTravelTitle(sourceText, route.origin, route.destination)
+        : smartImportTitle(sourceText) || sourceText.split(/\s+/).slice(0, 4).join(" ");
+    if (!title) warnings.push("Title missing");
+
+    return {
+      id: createCalendarEventId(),
+      sourceText,
+      include: warnings.length === 0,
+      title,
+      eventType,
+      recurrence,
+      allDay,
+      date,
+      endDate: endDate || date,
+      weekday,
+      startTime: timeRange.startTime || singleTime,
+      endTime: timeRange.endTime,
+      location: smartImportLocation(sourceText),
+      origin: route.origin,
+      destination: route.destination,
+      notes: "",
+      warnings,
+    };
+  });
+}
+
+function validateSmartImportProposal(proposal: SmartImportProposal) {
+  const warnings: string[] = [];
+  if (!proposal.title.trim()) warnings.push("Title missing");
+  if (!isValidISODate(proposal.date)) warnings.push("Date missing");
+  if (proposal.endDate && !isValidISODate(proposal.endDate)) warnings.push("End date invalid");
+  if (proposal.endDate && proposal.date && proposal.endDate < proposal.date) warnings.push("End date before start date");
+  if (proposal.recurrence === "weekly") {
+    if (proposal.weekday < 1 || proposal.weekday > 7) warnings.push("Weekday missing");
+    if (!isValidISODate(proposal.endDate)) warnings.push("Series end missing");
+  }
+  if (!proposal.allDay) {
+    if (!proposal.startTime || timeToMinutes(proposal.startTime) === null) warnings.push("Start time missing");
+    if (!proposal.endTime || timeToMinutes(proposal.endTime) === null) warnings.push("End time missing");
+    if (proposal.startTime && proposal.endTime && proposal.endTime <= proposal.startTime) {
+      warnings.push("End time must be after start time");
+    }
+  }
+  return warnings;
+}
+
+function smartImportProposalToCalendarEvent(
+  proposal: SmartImportProposal,
+  timezone: string
+): CalendarEvent | null {
+  const warnings = validateSmartImportProposal(proposal);
+  if (warnings.length) return null;
+
+  const allDay = proposal.allDay;
+  const startAt = allDay ? null : zonedDateTimeToUtcISO(proposal.date, proposal.startTime, timezone);
+  const endAt = allDay ? null : zonedDateTimeToUtcISO(proposal.date, proposal.endTime, timezone);
+  if (!allDay && (!startAt || !endAt)) return null;
+
+  const recurrenceRule =
+    proposal.recurrence === "weekly"
+      ? stringifyWeeklyRecurrenceRule({
+          freq: "weekly",
+          weekday: proposal.weekday,
+          startDate: proposal.date,
+          endDate: proposal.endDate,
+          startTime: proposal.startTime,
+          endTime: proposal.endTime,
+          timezone,
+        })
+      : null;
+
+  return {
+    id: proposal.savedEventId ?? createCalendarEventId(),
+    eventType: proposal.eventType,
+    title: proposal.title.trim(),
+    description: null,
+    allDay,
+    startAt,
+    endAt,
+    startDate: allDay ? proposal.date : null,
+    endDate: allDay && proposal.endDate !== proposal.date ? proposal.endDate : null,
+    timezone,
+    taskId: null,
+    categoryId: null,
+    location: proposal.location.trim() || null,
+    videoUrl: null,
+    notes: proposal.notes.trim() || null,
+    metadata: {
+      importedFrom: "smart_schedule_import",
+      origin: proposal.origin.trim() || undefined,
+      destination: proposal.destination.trim() || undefined,
+    },
+    recurrenceRule,
+    recurrenceParentId: null,
+    recurrenceExceptionDate: null,
+    recurrenceStatus: null,
+  };
+}
+
+function smartImportDuplicateWarning(proposal: SmartImportProposal, events: CalendarEvent[]) {
+  const candidateTitle = proposal.title.trim().toLowerCase();
+  if (!candidateTitle || !proposal.date) return false;
+
+  return events.some((event) => {
+    const eventTitle = event.title.trim().toLowerCase();
+    const sameTitle = eventTitle === candidateTitle || eventTitle.includes(candidateTitle) || candidateTitle.includes(eventTitle);
+    if (!sameTitle) return false;
+
+    const rule = parseWeeklyRecurrenceRule(event.recurrenceRule);
+    if (proposal.recurrence === "weekly" || rule) {
+      return Boolean(
+        proposal.recurrence === "weekly" &&
+          rule &&
+          rule.weekday === proposal.weekday &&
+          rule.startTime === proposal.startTime &&
+          rule.endTime === proposal.endTime
+      );
+    }
+
+    const eventDate = event.allDay ? event.startDate : eventLocalDate(event.startAt);
+    const eventTime = event.allDay ? "" : timeInputFromTimestamp(event.startAt);
+    return eventDate === proposal.date && eventTime === proposal.startTime;
+  });
+}
+
+function plannerYearMarkerTone(eventType: CalendarEventType) {
+  if (eventType === "work") return "bg-[#2098D4] text-white";
+  if (eventType === "class") return "bg-[#7045D8] text-white";
+  if (eventType === "meeting") return "bg-[#FFC515] text-slate-900";
+  if (eventType === "deadline") return "bg-[#F04A2D] text-white";
+  if (eventType === "milestone") return "bg-[#FF8A1F] text-white";
+  if (eventType === "travel") return "bg-[#43D4DC] text-slate-900";
+  return "bg-[#43C995] text-slate-900";
+}
+
+function plannerYearPillTone(eventType: CalendarEventType) {
+  if (eventType === "work") return "border-[#2098D4]/30 bg-[#2098D4]/12 text-[#1775A5]";
+  if (eventType === "class") return "border-[#7045D8]/30 bg-[#7045D8]/12 text-[#5632B0]";
+  if (eventType === "meeting") return "border-[#FFC515]/40 bg-[#FFC515]/18 text-[#9A7200]";
+  if (eventType === "deadline") return "border-[#F04A2D]/35 bg-[#F04A2D]/14 text-[#B93822]";
+  if (eventType === "milestone") return "border-[#FF8A1F]/35 bg-[#FF8A1F]/14 text-[#B85C0B]";
+  if (eventType === "travel") return "border-[#43D4DC]/40 bg-[#43D4DC]/14 text-[#16858C]";
+  return "border-[#43C995]/35 bg-[#43C995]/14 text-[#1F805B]";
+}
+
+function PlannerYearMarkerIcon({ eventType }: { eventType: CalendarEventType }) {
+  if (eventType === "work") return <BriefcaseBusiness className="h-2.5 w-2.5" aria-hidden="true" />;
+  if (eventType === "class") return <GraduationCap className="h-2.5 w-2.5" aria-hidden="true" />;
+  if (eventType === "meeting") return <Users className="h-2.5 w-2.5" aria-hidden="true" />;
+  if (eventType === "deadline") return <Flag className="h-2.5 w-2.5" aria-hidden="true" />;
+  if (eventType === "milestone") return <Diamond className="h-2.5 w-2.5" aria-hidden="true" />;
+  if (eventType === "travel") return <Plane className="h-2.5 w-2.5" aria-hidden="true" />;
+  return <UserRound className="h-2.5 w-2.5" aria-hidden="true" />;
+}
+
+function plannerDeadlineTone(task: Task) {
+  return task.status === "frozen"
+    ? "border-[#F04A2D]/25 bg-[#F04A2D]/10 text-[#B93822]"
+    : "border-[#F04A2D]/30 bg-[#F04A2D]/12 text-[#B93822]";
+}
+
+function plannerWorkResolutionStatus(event: CalendarEvent): PlannerWorkResolutionStatus | null {
+  const status = event.metadata?.plannerResolutionStatus;
+  return status === "logged" || status === "skipped" ? status : null;
+}
+
+function withPlannerWorkResolution(
+  event: CalendarEvent,
+  status: PlannerWorkResolutionStatus,
+  loggedTimeLogId: string | null = null
+): CalendarEvent {
+  const metadata: Record<string, unknown> = {
+    ...(event.metadata ?? {}),
+    plannerResolutionStatus: status,
+    resolvedAt: new Date().toISOString(),
+  };
+  if (loggedTimeLogId) {
+    metadata.loggedTimeLogId = loggedTimeLogId;
+  } else {
+    delete metadata.loggedTimeLogId;
+  }
+
+  return {
+    ...event,
+    metadata,
+  };
+}
+
+function isPastUnresolvedPlannerWorkEvent(event: CalendarEvent, nowMs: number | null) {
+  if (event.eventType !== "work" || event.allDay || !event.startAt || !event.endAt || !nowMs) {
+    return false;
+  }
+
+  if (plannerWorkResolutionStatus(event)) return false;
+
+  const endMs = Date.parse(event.endAt);
+  return Number.isFinite(endMs) && endMs < nowMs;
+}
+
+function plannedWorkTimeLogFromEvent(event: CalendarEvent): TimeLog | null {
+  if (event.eventType !== "work" || !event.taskId || !event.startAt || !event.endAt) return null;
+
+  const date = eventLocalDate(event.startAt);
+  const startTime = timeInputFromTimestamp(event.startAt);
+  const endTime = timeInputFromTimestamp(event.endAt);
+  const startMs = Date.parse(event.startAt);
+  const endMs = Date.parse(event.endAt);
+  const hours = (endMs - startMs) / (60 * 60 * 1000);
+
+  if (!date || !startTime || !endTime || !Number.isFinite(hours) || hours <= 0) return null;
+
+  return {
+    id: createTimeLogId(),
+    taskId: event.taskId,
+    date,
+    startTime,
+    endTime,
+    hours,
+    note: `Logged from planned work: ${event.title}`,
+  };
+}
+
+function plannerDateItemSortValue(item: PlannerDateItem) {
+  if (item.sourceType === "task_deadline") return `0-${item.task.title}`;
+  const event = item.event;
+  const allDayRank = event.allDay ? 1 : 2;
+  return `${allDayRank}-${event.startAt ?? event.startDate ?? ""}-${event.title}`;
+}
+
+function plannerItemsForDate(
+  date: string,
+  calendarEventsForRender: CalendarEvent[],
+  taskDeadlinesByDate: Record<string, Task[]>
+) {
+  const calendarItems: PlannerDateItem[] = calendarEventsForRender
+    .filter((event) => calendarEventIntersectsDay(event, date))
+    .map((event) => ({ sourceType: "calendar_event", event }));
+  const deadlineItems: PlannerDateItem[] = (taskDeadlinesByDate[date] ?? []).map((task) => ({
+    sourceType: "task_deadline",
+    task,
+    date,
+  }));
+
+  return [...deadlineItems, ...calendarItems].sort((a, b) =>
+    plannerDateItemSortValue(a).localeCompare(plannerDateItemSortValue(b))
+  );
+}
+
+function plannerItemTitle(item: PlannerDateItem) {
+  return item.sourceType === "task_deadline" ? item.task.title : item.event.title;
+}
+
+function plannerItemPrefix(item: PlannerDateItem, date: string) {
+  if (item.sourceType === "task_deadline") return "";
+  return plannerMonthEventPrefix(item.event, date);
+}
+
+function plannerYearItemEventType(item: PlannerDateItem): CalendarEventType {
+  return item.sourceType === "task_deadline" ? "deadline" : item.event.eventType;
+}
+
+function plannerItemDateSpan(item: PlannerDateItem) {
+  if (item.sourceType === "task_deadline") return { start: item.date, end: item.date };
+  return eventDateSpan(item.event);
+}
+
+function plannerAllDaySpansForDays(days: string[], items: PlannerDateItem[]): PlannerAllDaySpan[] {
+  const rangeStart = days[0];
+  const rangeEnd = days[days.length - 1];
+  if (!rangeStart || !rangeEnd) return [];
+
+  return items
+    .map((item) => {
+      const span = plannerItemDateSpan(item);
+      if (!span || span.end < rangeStart || span.start > rangeEnd) return null;
+
+      const start = span.start < rangeStart ? rangeStart : span.start;
+      const end = span.end > rangeEnd ? rangeEnd : span.end;
+      const startIndex = days.indexOf(start);
+      const endIndex = days.indexOf(end);
+      if (startIndex === -1 || endIndex === -1) return null;
+
+      return {
+        item,
+        startIndex,
+        span: endIndex - startIndex + 1,
+        startsBefore: span.start < rangeStart,
+        endsAfter: span.end > rangeEnd,
+      };
+    })
+    .filter((span): span is PlannerAllDaySpan => Boolean(span))
+    .sort((a, b) => a.startIndex - b.startIndex || b.span - a.span || plannerItemTitle(a.item).localeCompare(plannerItemTitle(b.item)));
+}
+
+function plannerAllDaySpanKey(span: PlannerAllDaySpan, prefix: string) {
+  const id = span.item.sourceType === "calendar_event" ? span.item.event.id : span.item.task.id;
+  return `${prefix}-${id}-${span.startIndex}-${span.span}`;
 }
 
 function startOfLoggerMonth(iso: string) {
@@ -642,7 +1897,7 @@ function modeToStoredTab(mode: ViewMode) {
 }
 
 function storedTabToMode(value: string | null): ViewMode {
-  if (value === "list" || value === "logger") return value;
+  if (value === "planner" || value === "list" || value === "logger") return value;
   return "board";
 }
 
@@ -730,6 +1985,24 @@ function daysBetweenISODates(startISO: string, endISO: string) {
   const start = new Date(startISO + "T00:00:00").getTime();
   const end = new Date(endISO + "T00:00:00").getTime();
   return Math.max(0, Math.floor((end - start) / DAY_MS));
+}
+
+function resolveAttentionEffort(task: Task) {
+  const explicitEffortLevel = task.effortLevel ?? null;
+  const legacyDurationHrs =
+    task.durationHrs == null || !Number.isFinite(task.durationHrs) ? null : task.durationHrs;
+  const legacyEffortLevel = explicitEffortLevel ? null : inferredEffortLevel(legacyDurationHrs);
+  const resolvedEffortLevel = explicitEffortLevel ?? legacyEffortLevel;
+  const effortSource = explicitEffortLevel ? "explicit" : legacyEffortLevel ? "legacy-duration" : "none";
+  const effortFactor = resolvedEffortLevel ? EFFORT_RUNWAY_FACTORS[resolvedEffortLevel] : 0;
+
+  return {
+    explicitEffortLevel,
+    resolvedEffortLevel,
+    effortSource,
+    legacyDurationHrs,
+    effortFactor,
+  };
 }
 
 function cadenceStatsForTask(task: Task, timeLogs: TimeLog[]) {
@@ -861,12 +2134,14 @@ function attentionScoreV2(task: Task, timeLogs: TimeLog[] = []) {
   const deadlineContribution = deadlinePressure * 0.5;
   const intrinsicImportance =
     task.priority === "high" ? 24 : task.priority === "normal" ? 16 : 6;
-  const difficultyFactor = clamp(1 + ((task.difficulty ?? 3) - 3) * 0.2, 0.6, 1.4);
-  const effortHours = Math.max(0, task.durationHrs ?? 0) * difficultyFactor;
-  const effortDays = effortHours / 2;
+  const effort = resolveAttentionEffort(task);
   const startPressure =
-    hasFixedDeadline && effortDays > 0
-      ? clamp((effortDays / (Math.max(effectiveDays ?? 0, 0.5) + effortDays)) * 100, 0, 100)
+    hasFixedDeadline && effort.effortFactor > 0
+      ? clamp(
+          (effort.effortFactor / (Math.pow(Math.max(effectiveDays ?? 0, 0.5), 0.85) + effort.effortFactor)) * 100,
+          0,
+          100
+        )
       : 0;
   const startContribution = startPressure * 0.3;
   const horizonPressure = hasFixedDeadline
@@ -899,6 +2174,7 @@ function attentionScoreV2(task: Task, timeLogs: TimeLog[] = []) {
     deadlinePressure,
     deadlineContribution,
     intrinsicImportance,
+    ...effort,
     startPressure,
     startContribution,
     horizonPressure,
@@ -910,12 +2186,119 @@ function attentionScoreV2(task: Task, timeLogs: TimeLog[] = []) {
   };
 }
 
+type AttentionV2Result = ReturnType<typeof attentionScoreV2>;
+
+function deadlineAttentionReason(days: number | null) {
+  if (days === null) return null;
+  if (days < 0) return "Deadline overdue";
+  if (days <= 1) return "Deadline imminent";
+  if (days <= 14) return "Deadline approaching";
+  if (days <= 60) return "Deadline pressure building";
+  return "Deadline still distant";
+}
+
+function horizonAttentionReason(task: Task) {
+  if (task.deadlineMode !== "vision") return null;
+  if (task.visionHorizon === "short") return "Short-term focus";
+  if (task.visionHorizon === "mid") return "Mid-term focus";
+  if (task.visionHorizon === "long") return "Long-term background goal";
+  return null;
+}
+
+function getAttentionReasons(task: Task, v2: AttentionV2Result) {
+  const candidates: { text: string; weight: number }[] = [];
+  const deadlineReason = deadlineAttentionReason(v2.currentDaysUntilDeadline);
+
+  if (task.priority === "high") {
+    candidates.push({ text: "High priority", weight: 95 });
+  }
+
+  if (deadlineReason && v2.deadlineContribution > 0) {
+    const deadlineWeight =
+      v2.currentDaysUntilDeadline !== null && v2.currentDaysUntilDeadline <= 14
+        ? 90
+        : v2.currentDaysUntilDeadline !== null && v2.currentDaysUntilDeadline <= 60
+          ? 82
+          : 45;
+    candidates.push({ text: deadlineReason, weight: deadlineWeight });
+  }
+
+  if (v2.startContribution >= 2.5 && v2.resolvedEffortLevel === "extensive") {
+    candidates.push({ text: "Extensive work needs runway", weight: 78 });
+  } else if (v2.startContribution >= 2) {
+    candidates.push({ text: "Larger task needs an earlier start", weight: 70 });
+  }
+
+  if (v2.cadenceContribution >= 8 && v2.daysSinceLastWorked !== null) {
+    candidates.push({ text: `Not worked on for ${v2.daysSinceLastWorked} days`, weight: 88 });
+  } else if (v2.cadenceContribution >= 5 && v2.daysSinceLastWorked !== null) {
+    candidates.push({ text: "Attention overdue", weight: 74 });
+  } else if (v2.cadenceContribution >= 3 && v2.daysSinceLastWorked !== null) {
+    candidates.push({ text: "Consistency slipping", weight: 58 });
+  }
+
+  if (!v2.hasEverBeenWorked && v2.neverWorkedBasePressure >= 12) {
+    candidates.push({ text: "Not started yet", weight: 50 });
+  }
+
+  const horizonReason = horizonAttentionReason(task);
+  if (horizonReason && v2.horizonPressure > 0) {
+    const horizonWeight =
+      task.visionHorizon === "short" ? 76 : task.visionHorizon === "mid" ? 62 : 46;
+    candidates.push({ text: horizonReason, weight: horizonWeight });
+  }
+
+  if (v2.hoursLast7Days >= 3) {
+    candidates.push({ text: "Well covered recently", weight: 35 });
+  } else if (v2.hoursLast14Days >= 3 && v2.cadenceContribution < 5) {
+    candidates.push({ text: "Worked on recently", weight: 32 });
+  }
+
+  return candidates
+    .sort((a, b) => b.weight - a.weight)
+    .map((candidate) => candidate.text)
+    .filter((reason, index, reasons) => reasons.indexOf(reason) === index)
+    .slice(0, 2);
+}
+
 function urgencyColour(score: number) {
-  if (score >= 85) return "bg-rose-500";   // calm strong green
-  if (score >= 70) return "bg-orange-500";      // fresh lime
-  if (score >= 55) return "bg-amber-400";    // warm amber
-  if (score >= 40) return "bg-lime-300";   // soft coral-orange
-  return "bg-lime-100";                      // muted rose, not danger red
+  if (score >= 85) return "bg-rose-500";
+  if (score >= 70) return "bg-orange-400";
+  if (score >= 55) return "bg-amber-300";
+  if (score >= 35) return "bg-lime-300";
+  return "bg-emerald-100";
+}
+
+function visualAttentionLevel(score: number) {
+  if (score >= 85) return "highest";
+  if (score >= 70) return "high";
+  if (score >= 55) return "elevated";
+  if (score >= 35) return "medium";
+  return "low";
+}
+
+function visualAttentionScores(rawScores: number[]) {
+  if (rawScores.length === 0) return [];
+
+  const min = Math.min(...rawScores);
+  const max = Math.max(...rawScores);
+  const range = max - min;
+  const rangeStrength = clamp((range - 1) / 12, 0, 1);
+  const relativeWeight = 0.45 * rangeStrength;
+  const absoluteWeight = 1 - relativeWeight;
+
+  return rawScores.map((rawScore) => {
+    const absoluteScore = clamp((rawScore / 50) * 100, 0, 100);
+    const relativePosition = range > 0 ? clamp((rawScore - min) / range, 0, 1) : 0.5;
+    const relativeScore = relativePosition * 100;
+    const visualScore = clamp(absoluteScore * absoluteWeight + relativeScore * relativeWeight, 18, 100);
+
+    return {
+      relativePosition,
+      visualAttentionScore: visualScore,
+      visualLevel: visualAttentionLevel(visualScore),
+    };
+  });
 }
 
 
@@ -995,6 +2378,26 @@ function EffortIcon({ effortLevel }: { effortLevel: EffortLevel }) {
   if (effortLevel === "quick") return <Zap className="h-3.5 w-3.5" aria-hidden="true" />;
   if (effortLevel === "extensive") return <Layers className="h-3.5 w-3.5" aria-hidden="true" />;
   return <Gauge className="h-3.5 w-3.5" aria-hidden="true" />;
+}
+
+function plannerEventTone(eventType: CalendarEventType) {
+  if (eventType === "work") return "border-[#2098D4]/25 bg-[#2098D4]/10 text-[#1775A5]";
+  if (eventType === "class") return "border-[#7045D8]/25 bg-[#7045D8]/10 text-[#5632B0]";
+  if (eventType === "meeting") return "border-[#FFC515]/35 bg-[#FFC515]/14 text-[#9A7200]";
+  if (eventType === "deadline") return "border-[#F04A2D]/30 bg-[#F04A2D]/12 text-[#B93822]";
+  if (eventType === "milestone") return "border-[#FF8A1F]/30 bg-[#FF8A1F]/12 text-[#B85C0B]";
+  if (eventType === "travel") return "border-[#43D4DC]/35 bg-[#43D4DC]/12 text-[#16858C]";
+  return "border-[#43C995]/30 bg-[#43C995]/12 text-[#1F805B]";
+}
+
+function PlannerEventTypeIcon({ eventType }: { eventType: CalendarEventType }) {
+  if (eventType === "work") return <BriefcaseBusiness className="h-3 w-3" aria-hidden="true" />;
+  if (eventType === "class") return <GraduationCap className="h-3 w-3" aria-hidden="true" />;
+  if (eventType === "meeting") return <Users className="h-3 w-3" aria-hidden="true" />;
+  if (eventType === "deadline") return <Flag className="h-3 w-3" aria-hidden="true" />;
+  if (eventType === "milestone") return <Diamond className="h-3 w-3" aria-hidden="true" />;
+  if (eventType === "travel") return <Plane className="h-3 w-3" aria-hidden="true" />;
+  return <UserRound className="h-3 w-3" aria-hidden="true" />;
 }
 
 function TaskMetaPill({
@@ -1274,6 +2677,7 @@ function SelectBox<T extends string>({
 export default function MinimalTaskTracker() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [timeLogs, setTimeLogs] = useState<TimeLog[]>([]);
+  const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
   const [hasMounted, setHasMounted] = useState(false);
   const [timeLogsLoaded, setTimeLogsLoaded] = useState(false);
   const [tasksLoaded, setTasksLoaded] = useState(false);
@@ -1287,10 +2691,24 @@ export default function MinimalTaskTracker() {
   const skipNextTimeLogSaveRef = useRef(false);
   const timeLogsRef = useRef(timeLogs);
   const [mode, setMode] = useState<ViewMode>("board");
+  const [plannerView, setPlannerView] = useState<PlannerView>("week");
+  const [plannerAnchorDate, setPlannerAnchorDate] = useState<string>("");
+  const [plannerEventModalOpen, setPlannerEventModalOpen] = useState(false);
+  const [plannerEventModalMode, setPlannerEventModalMode] = useState<PlannerEventModalMode>("create");
+  const [plannerEventDraft, setPlannerEventDraft] = useState<PlannerEventDraft | null>(null);
+  const [plannerEventSaving, setPlannerEventSaving] = useState(false);
+  const [plannerEventError, setPlannerEventError] = useState<string | null>(null);
+  const [plannerInteraction, setPlannerInteraction] = useState<PlannerWeekInteraction | null>(null);
+  const [plannerWorkActionSavingId, setPlannerWorkActionSavingId] = useState<string | null>(null);
+  const [plannerLogSourceEventId, setPlannerLogSourceEventId] = useState<string | null>(null);
+  const [smartImportOpen, setSmartImportOpen] = useState(false);
+  const [smartImportRaw, setSmartImportRaw] = useState("");
+  const [smartImportProposals, setSmartImportProposals] = useState<SmartImportProposal[]>([]);
+  const [smartImportSaving, setSmartImportSaving] = useState(false);
+  const [smartImportMessage, setSmartImportMessage] = useState<string | null>(null);
   const [backupStatus, setBackupStatus] = useState({ label: "—", count: 0 });
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
-  const [showWeights, setShowWeights] = useState(false);
   const [attentionCategoryMenuOpen, setAttentionCategoryMenuOpen] = useState(false);
   const [attentionCategoryExcludedIds, setAttentionCategoryExcludedIds] = useState<string[]>([]);
 
@@ -1352,6 +2770,8 @@ useEffect(() => {
   const [clientToday, setClientToday] = useState<string>("");
   const [clientNowMs, setClientNowMs] = useState<number>(0);
   const loggerGridScrollRef = useRef<HTMLDivElement | null>(null);
+  const plannerWeekScrollRef = useRef<HTMLDivElement | null>(null);
+  const suppressPlannerEventClickRef = useRef(false);
 
   // Edit modal state
   const [editOpen, setEditOpen] = useState(false);
@@ -1385,6 +2805,7 @@ useEffect(() => {
     const today = todayISO();
     setClientToday(today);
     setClientNowMs(Date.now());
+    setPlannerAnchorDate(today);
     setLoggerAnchorDate(today);
     setCustomStartDate(today);
     setCustomEndDate(today);
@@ -1429,6 +2850,17 @@ useEffect(() => {
         }
       }
       setTimeLogsLoaded(true);
+    })();
+
+    void (async () => {
+      const remoteEvents = await loadCalendarEvents(SYNC_CODE);
+
+      if (remoteEvents.ok) {
+        setCalendarEvents(remoteEvents.events);
+        return;
+      }
+
+      console.warn("Supabase calendar event load failed. Preserving current Planner event state.");
     })();
   });
 }, []);
@@ -1832,10 +3264,14 @@ useEffect(() => {
     const scored = filtered
       .filter((task) => task.status !== "frozen")
       .filter((task) => attentionIncludedCategoryIdSet.has(task.courseId))
-      .map((task) => ({
-        task,
-        total: urgencyScore(task, weights),
-      }));
+      .map((task) => {
+        const v2 = attentionScoreV2(task, timeLogs);
+        return {
+          task,
+          total: v2.rawScore,
+          reasons: getAttentionReasons(task, v2),
+        };
+      });
 
     scored.sort((a, b) => {
       if (b.total !== a.total) return b.total - a.total;
@@ -1847,8 +3283,12 @@ useEffect(() => {
       return (b.task.createdAt ?? 0) - (a.task.createdAt ?? 0);
     });
 
-    return scored;
-  }, [attentionIncludedCategoryIdSet, attentionIncludedCategoryIds.length, filtered, weights]);
+    const visualScores = visualAttentionScores(scored.map((item) => item.total));
+    return scored.map((item, index) => ({
+      ...item,
+      ...visualScores[index],
+    }));
+  }, [attentionIncludedCategoryIdSet, attentionIncludedCategoryIds.length, filtered, timeLogs]);
 
   useEffect(() => {
     const target = window as typeof window & {
@@ -1857,8 +3297,9 @@ useEffect(() => {
 
     target.yasmineCompareAttentionV2 = () => {
       const rows = scoredTasks
-        .map(({ task, total }) => {
+        .map(({ task, total, relativePosition, visualAttentionScore, visualLevel }) => {
           const v2 = attentionScoreV2(task, timeLogs);
+          const reasons = getAttentionReasons(task, v2);
           return {
             task: task.title,
             category: courseLabel(task.courseId),
@@ -1869,9 +3310,17 @@ useEffect(() => {
             currentScore: Math.round(total),
             v2RawScore: Number(v2.rawScore.toFixed(2)),
             v2DisplayedScore: v2.displayedScore,
+            relativePosition: Number(relativePosition.toFixed(3)),
+            visualAttentionScore: Number(visualAttentionScore.toFixed(2)),
+            visualLevel,
             deadlinePressure: Number(v2.deadlinePressure.toFixed(2)),
             deadlineContribution: Number(v2.deadlineContribution.toFixed(2)),
             intrinsicImportance: v2.intrinsicImportance,
+            explicitEffortLevel: v2.explicitEffortLevel ?? "none",
+            resolvedEffortLevel: v2.resolvedEffortLevel ?? "none",
+            effortSource: v2.effortSource,
+            legacyDurationHrs: v2.legacyDurationHrs,
+            effortFactor: Number(v2.effortFactor.toFixed(2)),
             startPressure: Number(v2.startPressure.toFixed(2)),
             startContribution: Number(v2.startContribution.toFixed(2)),
             horizonPressure: v2.horizonPressure,
@@ -1890,6 +3339,7 @@ useEffect(() => {
             cadencePressureBeforeActivity: Number(v2.cadencePressureBeforeActivity.toFixed(2)),
             cadencePressure: Number(v2.cadencePressure.toFixed(2)),
             cadenceContribution: Number(v2.cadenceContribution.toFixed(2)),
+            reasons: reasons.join(" · "),
           };
         })
         .sort((a, b) => Number(b.v2RawScore) - Number(a.v2RawScore));
@@ -1902,6 +3352,308 @@ useEffect(() => {
       delete target.yasmineCompareAttentionV2;
     };
   }, [courseLabel, scoredTasks, timeLogs]);
+
+  const plannerAnchor = isValidISODate(plannerAnchorDate)
+    ? plannerAnchorDate
+    : isValidISODate(clientToday)
+      ? clientToday
+      : "2026-08-23";
+  const plannerWeekDays = useMemo(() => plannerWeekDaysForAnchor(plannerAnchor), [plannerAnchor]);
+  const plannerWeekLabel = useMemo(() => formatPlannerWeekRange(plannerWeekDays), [plannerWeekDays]);
+  const plannerMonthDays = useMemo(() => plannerMonthDaysForAnchor(plannerAnchor), [plannerAnchor]);
+  const plannerMonthLabel = useMemo(() => formatPlannerMonthLabel(plannerAnchor), [plannerAnchor]);
+  const plannerYearMonths = useMemo(() => plannerYearMonthsForAnchor(plannerAnchor), [plannerAnchor]);
+  const plannerYearLabel = useMemo(() => formatPlannerYearLabel(plannerAnchor), [plannerAnchor]);
+  const plannerHours = useMemo(() => plannerHourLabels(), []);
+  const plannerWeekStart = plannerWeekDays[0] ?? plannerAnchor;
+  const plannerWeekEnd = plannerWeekDays[6] ?? plannerAnchor;
+  const plannerVisibleRange = useMemo(() => {
+    if (plannerView === "week") return { start: plannerWeekStart, end: plannerWeekEnd };
+    if (plannerView === "month") {
+      return {
+        start: plannerMonthDays[0]?.date ?? plannerAnchor,
+        end: plannerMonthDays[plannerMonthDays.length - 1]?.date ?? plannerAnchor,
+      };
+    }
+    return { start: `${plannerYearLabel}-01-01`, end: `${plannerYearLabel}-12-31` };
+  }, [plannerAnchor, plannerMonthDays, plannerView, plannerWeekEnd, plannerWeekStart, plannerYearLabel]);
+  const plannerCalendarBaseEventsForRender = useMemo(() => {
+    if (!plannerInteraction) return calendarEvents;
+    const hasRealEvent = calendarEvents.some((event) => event.id === plannerInteraction.eventId);
+    const mapped = calendarEvents.map((event) =>
+      event.id === plannerInteraction.eventId ? plannerInteraction.previewEvent : event
+    );
+    return hasRealEvent ? mapped : [...mapped, plannerInteraction.previewEvent];
+  }, [calendarEvents, plannerInteraction]);
+  const plannerCalendarEventsForRender = useMemo(() => {
+    return expandRecurringPlannerEvents(
+      plannerCalendarBaseEventsForRender,
+      plannerVisibleRange.start,
+      plannerVisibleRange.end
+    );
+  }, [plannerCalendarBaseEventsForRender, plannerVisibleRange]);
+  const plannerTaskDeadlinesByDate = useMemo(() => {
+    return tasks.reduce<Record<string, Task[]>>((groups, task) => {
+      const hasFixedDate =
+        task.deadlineMode === "date" || (!task.deadlineMode && Boolean(task.due));
+      if (
+        task.status === "completed" ||
+        !hasFixedDate ||
+        !task.due ||
+        !isValidISODate(task.due)
+      ) {
+        return groups;
+      }
+
+      groups[task.due] = [...(groups[task.due] ?? []), task];
+      return groups;
+    }, {});
+  }, [tasks]);
+  const plannerWeekEvents = useMemo(() => {
+    return plannerCalendarEventsForRender.filter((event) => calendarEventIntersectsWeek(event, plannerWeekStart, plannerWeekEnd));
+  }, [plannerCalendarEventsForRender, plannerWeekEnd, plannerWeekStart]);
+  const plannerTaskDeadlinesInWeekByDate = useMemo(() => {
+    return plannerWeekDays.reduce<Record<string, Task[]>>((groups, day) => {
+      groups[day] = plannerTaskDeadlinesByDate[day] ?? [];
+      return groups;
+    }, {});
+  }, [plannerTaskDeadlinesByDate, plannerWeekDays]);
+  const plannerWeekAllDaySpans = useMemo(() => {
+    const items: PlannerDateItem[] = [
+      ...plannerWeekEvents
+        .filter((event) => event.allDay && event.startDate)
+        .map((event) => ({ sourceType: "calendar_event" as const, event })),
+      ...plannerWeekDays.flatMap((day) =>
+        (plannerTaskDeadlinesInWeekByDate[day] ?? []).map((task) => ({
+          sourceType: "task_deadline" as const,
+          task,
+          date: day,
+        }))
+      ),
+    ];
+    return plannerAllDaySpansForDays(plannerWeekDays, items);
+  }, [plannerTaskDeadlinesInWeekByDate, plannerWeekDays, plannerWeekEvents]);
+  const plannerTimedLayoutsByDate = useMemo(() => {
+    return plannerWeekDays.reduce<
+      Record<string, Array<ReturnType<typeof layoutPlannerTimedEvents>[number]>>
+    >((groups, day) => {
+      const dayEvents = plannerWeekEvents.filter((event) => {
+        if (event.allDay || !event.startAt) return false;
+        const startDate = eventLocalDate(event.startAt);
+        const endDate = eventLocalDate(event.endAt) || startDate;
+        return Boolean(startDate && endDate && startDate <= day && endDate >= day);
+      });
+      groups[day] = layoutPlannerTimedEvents(dayEvents, day);
+      return groups;
+    }, {});
+  }, [plannerWeekDays, plannerWeekEvents]);
+  const plannerMonthEventsByDate = useMemo(() => {
+    return plannerMonthDays.reduce<Record<string, PlannerDateItem[]>>((groups, day) => {
+      groups[day.date] = plannerItemsForDate(
+        day.date,
+        plannerCalendarEventsForRender,
+        plannerTaskDeadlinesByDate
+      );
+      return groups;
+    }, {});
+  }, [plannerCalendarEventsForRender, plannerMonthDays, plannerTaskDeadlinesByDate]);
+  const plannerMonthWeeks = useMemo(() => {
+    const weeks: Array<typeof plannerMonthDays> = [];
+    for (let index = 0; index < plannerMonthDays.length; index += 7) {
+      weeks.push(plannerMonthDays.slice(index, index + 7));
+    }
+    return weeks;
+  }, [plannerMonthDays]);
+  const plannerMonthAllDaySpansByWeek = useMemo(() => {
+    return plannerMonthWeeks.map((week) => {
+      const days = week.map((day) => day.date);
+      const weekStart = days[0];
+      const weekEnd = days[days.length - 1];
+      const items: PlannerDateItem[] = plannerCalendarEventsForRender
+        .filter((event) => {
+          if (!event.allDay || !event.startDate || !weekStart || !weekEnd) return false;
+          const endDate = event.endDate || event.startDate;
+          return event.startDate <= weekEnd && endDate >= weekStart;
+        })
+        .map((event) => ({ sourceType: "calendar_event" as const, event }));
+
+      return plannerAllDaySpansForDays(days, items);
+    });
+  }, [plannerCalendarEventsForRender, plannerMonthWeeks]);
+  const plannerYearEventsByDate = useMemo(() => {
+    const yearStart = `${plannerYearLabel}-01-01`;
+    const yearEnd = `${plannerYearLabel}-12-31`;
+    const groups: Record<string, PlannerDateItem[]> = {};
+
+    plannerCalendarEventsForRender.forEach((event) => {
+      const span = eventDateSpan(event);
+      if (!span || span.end < yearStart || span.start > yearEnd) return;
+
+      let cursor = span.start < yearStart ? yearStart : span.start;
+      const end = span.end > yearEnd ? yearEnd : span.end;
+
+      while (cursor <= end) {
+        groups[cursor] = [...(groups[cursor] ?? []), { sourceType: "calendar_event", event }];
+        cursor = addDaysISO(cursor, 1);
+      }
+    });
+
+    Object.entries(plannerTaskDeadlinesByDate).forEach(([date, deadlineTasks]) => {
+      if (date < yearStart || date > yearEnd) return;
+      groups[date] = [
+        ...(groups[date] ?? []),
+        ...deadlineTasks.map((task) => ({ sourceType: "task_deadline" as const, task, date })),
+      ];
+    });
+
+    return groups;
+  }, [plannerCalendarEventsForRender, plannerTaskDeadlinesByDate, plannerYearLabel]);
+  const plannerTaskOptions = useMemo(() => {
+    const options = tasks
+      .filter((task) => task.status !== "completed")
+      .slice()
+      .sort((a, b) => a.title.localeCompare(b.title));
+    const selectedTask = plannerEventDraft?.taskId
+      ? tasks.find((task) => task.id === plannerEventDraft.taskId)
+      : null;
+
+    if (selectedTask && !options.some((task) => task.id === selectedTask.id)) {
+      return [selectedTask, ...options];
+    }
+
+    return options;
+  }, [plannerEventDraft?.taskId, tasks]);
+  const plannerIsCurrentWeek = Boolean(clientToday && plannerWeekDays.includes(clientToday));
+  const currentTimeTop =
+    plannerIsCurrentWeek && clientNowMs
+      ? (() => {
+          const now = new Date(clientNowMs);
+          const minutes = now.getHours() * 60 + now.getMinutes();
+          const startMinutes = PLANNER_START_HOUR * 60;
+          const endMinutes = PLANNER_END_HOUR * 60;
+          if (minutes < startMinutes || minutes > endMinutes) return null;
+          return ((minutes - startMinutes) / 60) * PLANNER_HOUR_HEIGHT;
+        })()
+      : null;
+
+  useEffect(() => {
+    if (mode !== "planner" || plannerView !== "week") return;
+
+    plannerWeekScrollRef.current?.scrollTo({
+      top: Math.max(0, (9 - PLANNER_START_HOUR) * PLANNER_HOUR_HEIGHT),
+    });
+  }, [mode, plannerView, plannerWeekDays[0]]);
+
+  useEffect(() => {
+    if (!plannerInteraction) return;
+
+    function updatePreview(clientX: number, clientY: number) {
+      setPlannerInteraction((current) => {
+        if (!current) return current;
+
+        const deltaX = clientX - current.pointerStartX;
+        const deltaY = clientY - current.pointerStartY;
+        const hasMoved = current.hasMoved || Math.abs(deltaX) > 4 || Math.abs(deltaY) > 4;
+        const visibleStartMinutes = PLANNER_START_HOUR * 60;
+        const visibleEndMinutes = PLANNER_END_HOUR * 60;
+        const originalStartDate = eventLocalDate(current.originalEvent.startAt) ?? plannerWeekDays[0];
+        let nextStartDate = originalStartDate;
+        let nextStartMinutes = current.originalStartMinutes;
+        let nextEndMinutes = current.originalEndMinutes;
+
+        if (current.kind === "move") {
+          const rawDayIndex = Math.floor((clientX - current.gridLeft - 64) / current.dayWidth);
+          const dayIndex = clamp(rawDayIndex, 0, plannerWeekDays.length - 1);
+          nextStartDate = plannerWeekDays[dayIndex] ?? originalStartDate;
+          nextStartMinutes = snapPlannerMinutes(
+            current.originalStartMinutes + (deltaY / PLANNER_HOUR_HEIGHT) * 60
+          );
+          nextStartMinutes = clamp(
+            nextStartMinutes,
+            visibleStartMinutes,
+            visibleEndMinutes - current.originalDurationMinutes
+          );
+          nextEndMinutes = nextStartMinutes + current.originalDurationMinutes;
+        } else {
+          nextStartDate = originalStartDate;
+          nextEndMinutes = snapPlannerMinutes(
+            current.originalEndMinutes + (deltaY / PLANNER_HOUR_HEIGHT) * 60
+          );
+          nextEndMinutes = clamp(
+            nextEndMinutes,
+            current.originalStartMinutes + PLANNER_SNAP_MINUTES,
+            visibleEndMinutes
+          );
+        }
+
+        const startAt =
+          current.kind === "move"
+            ? isoFromLocalDateMinutes(nextStartDate, nextStartMinutes)
+            : current.originalEvent.startAt;
+        const endAt = isoFromLocalDateMinutes(nextStartDate, nextEndMinutes);
+
+        if (!startAt || !endAt) return { ...current, hasMoved };
+
+        return {
+          ...current,
+          hasMoved,
+          previewEvent: {
+            ...current.previewEvent,
+            startAt,
+            endAt,
+          },
+        };
+      });
+    }
+
+    function onPointerMove(event: PointerEvent) {
+      updatePreview(event.clientX, event.clientY);
+    }
+
+    function onPointerUp() {
+      setPlannerInteraction((current) => {
+        if (!current) return current;
+
+        if (!current.hasMoved) {
+          return null;
+        }
+
+        suppressPlannerEventClickRef.current = true;
+        setTimeout(() => {
+          suppressPlannerEventClickRef.current = false;
+        }, 0);
+
+        void (async () => {
+          const eventToSave = exceptionEventForPlannerOccurrence(current.previewEvent);
+          const saved = await saveCalendarEvent(eventToSave, SYNC_CODE);
+
+          if (!saved) {
+            console.warn("Failed to save moved/resized calendar event. Reverting preview.", {
+              id: current.eventId,
+            });
+            return;
+          }
+
+          setCalendarEvents((prev) => {
+            const exists = prev.some((event) => event.id === eventToSave.id);
+            return exists
+              ? prev.map((event) => (event.id === eventToSave.id ? eventToSave : event))
+              : [...prev, eventToSave];
+          });
+        })();
+
+        return null;
+      });
+    }
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp, { once: true });
+
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+    };
+  }, [plannerInteraction, plannerWeekDays]);
 
   const loggerDateRange = useMemo(() => {
     return loggerDateRangeForMode(
@@ -1976,11 +3728,18 @@ useEffect(() => {
   }, [tasks]);
 
   const logTaskOptions = useMemo(() => {
-    return tasks
+    const options = tasks
       .filter((task) => task.status !== "completed")
       .slice()
       .sort((a, b) => a.title.localeCompare(b.title));
-  }, [tasks]);
+    const selectedTask = logTaskId ? tasks.find((task) => task.id === logTaskId) : null;
+
+    if (selectedTask && !options.some((task) => task.id === selectedTask.id)) {
+      return [selectedTask, ...options];
+    }
+
+    return options;
+  }, [logTaskId, tasks]);
 
   const logsByTaskDate = useMemo(() => {
     const map: Record<string, TimeLog[]> = {};
@@ -2289,7 +4048,6 @@ useEffect(() => {
     allowNextDestructiveSaveRef.current = true;
     allowNextEmptySaveRef.current = true;
     setTasks((prev) => prev.filter((t) => t.id !== id));
-    setTimeLogs((prev) => prev.filter((log) => log.taskId !== id));
   }
 
   function updateTaskStatus(id: string, status: Status) {
@@ -2305,6 +4063,408 @@ useEffect(() => {
 
   function restoreTask(id: string) {
     updateTaskStatus(id, "to_do");
+  }
+
+  function movePlannerWeek(direction: -1 | 1) {
+    setPlannerAnchorDate(addDaysISO(plannerAnchor, direction * 7));
+  }
+
+  function movePlannerMonth(direction: -1 | 1) {
+    setPlannerAnchorDate(addMonthsISO(plannerAnchor, direction));
+  }
+
+  function movePlannerYear(direction: -1 | 1) {
+    setPlannerAnchorDate(addYearsISO(plannerAnchor, direction));
+  }
+
+  function returnPlannerToToday() {
+    const today = todayISO();
+    setClientToday(today);
+    setClientNowMs(Date.now());
+    setPlannerAnchorDate(today);
+  }
+
+  function openPlannerEventTypeChooser() {
+    setPlannerEventModalMode("create");
+    setPlannerEventDraft(null);
+    setPlannerEventError(null);
+    setPlannerEventModalOpen(true);
+  }
+
+  function openSmartImport() {
+    setSmartImportOpen(true);
+    setSmartImportMessage(null);
+  }
+
+  function closeSmartImport() {
+    if (smartImportSaving) return;
+    setSmartImportOpen(false);
+    setSmartImportMessage(null);
+  }
+
+  function parseSmartImportInput() {
+    const contextYear = smartImportContextYear(plannerAnchor);
+    const proposals = parseSmartScheduleImport(smartImportRaw, contextYear);
+    setSmartImportProposals(proposals);
+    setSmartImportMessage(
+      proposals.length
+        ? `Parsed ${proposals.length} proposed event${proposals.length === 1 ? "" : "s"} using ${contextYear} where a year was not written.`
+        : "No schedule items were found."
+    );
+  }
+
+  function resetSmartImport() {
+    if (smartImportSaving) return;
+    setSmartImportRaw("");
+    setSmartImportProposals([]);
+    setSmartImportMessage(null);
+  }
+
+  function updateSmartImportProposal(id: string, patch: Partial<SmartImportProposal>) {
+    setSmartImportProposals((prev) =>
+      prev.map((proposal) => {
+        if (proposal.id !== id) return proposal;
+        const next = { ...proposal, ...patch };
+        return {
+          ...next,
+          warnings: validateSmartImportProposal(next),
+        };
+      })
+    );
+  }
+
+  async function confirmSmartImport() {
+    if (smartImportSaving) return;
+
+    const selected = smartImportProposals.filter((proposal) => proposal.include && !proposal.savedEventId);
+    const invalid = selected.filter((proposal) => validateSmartImportProposal(proposal).length > 0);
+    if (invalid.length) {
+      setSmartImportMessage("Some selected events still need missing fields before they can be added.");
+      return;
+    }
+
+    if (!selected.length) {
+      setSmartImportMessage("No unsaved selected events to add.");
+      return;
+    }
+
+    setSmartImportSaving(true);
+    let savedCount = 0;
+    const failedIds: string[] = [];
+    const timezone = browserTimezone();
+
+    for (const proposal of selected) {
+      const event = smartImportProposalToCalendarEvent(proposal, timezone);
+      if (!event) {
+        failedIds.push(proposal.id);
+        continue;
+      }
+
+      const saved = await saveCalendarEvent(event, SYNC_CODE);
+      if (!saved) {
+        failedIds.push(proposal.id);
+        continue;
+      }
+
+      savedCount += 1;
+      setCalendarEvents((prev) => [...prev, event]);
+      setSmartImportProposals((prev) =>
+        prev.map((item) =>
+          item.id === proposal.id
+            ? { ...item, savedEventId: event.id, include: false }
+            : item
+        )
+      );
+    }
+
+    setSmartImportSaving(false);
+    setSmartImportMessage(
+      failedIds.length
+        ? `Added ${savedCount}. ${failedIds.length} item${failedIds.length === 1 ? "" : "s"} failed and can be retried.`
+        : `Added ${savedCount} event${savedCount === 1 ? "" : "s"}.`
+    );
+  }
+
+  function startPlannerEventCreate(eventType: CalendarEventType) {
+    setPlannerEventModalMode("create");
+    setPlannerEventDraft(defaultPlannerEventDraft(eventType, clientToday || plannerWeekDays[0] || todayISO()));
+    setPlannerEventError(null);
+  }
+
+  function openPlannerEventEdit(event: CalendarEvent) {
+    const parentId = parentIdForPlannerOccurrence(event);
+    const parentEvent = parentId ? calendarEvents.find((item) => item.id === parentId) : null;
+    const parentRule = parseWeeklyRecurrenceRule(parentEvent?.recurrenceRule);
+    const draft = plannerDraftFromEvent(event);
+
+    setPlannerEventModalMode("edit");
+    setPlannerEventDraft(
+      parentRule
+        ? {
+            ...draft,
+            repeat: "weekly",
+            recurrenceWeekday: parentRule.weekday,
+            recurrenceStartDate: parentRule.startDate,
+            recurrenceEndDate: parentRule.endDate,
+          }
+        : draft
+    );
+    setPlannerEventError(null);
+    setPlannerEventModalOpen(true);
+  }
+
+  function closePlannerEventModal() {
+    if (plannerEventSaving) return;
+    setPlannerEventModalOpen(false);
+    setPlannerEventDraft(null);
+    setPlannerEventError(null);
+  }
+
+  async function submitPlannerEvent() {
+    if (!plannerEventDraft || plannerEventSaving) return;
+
+    const { event, error } = calendarEventFromDraft(plannerEventDraft);
+    if (!event || error) {
+      setPlannerEventError(error ?? "Could not save this event.");
+      return;
+    }
+
+    setPlannerEventSaving(true);
+    setPlannerEventError(null);
+
+    const parentEvent = plannerEventDraft.recurrenceParentId
+      ? calendarEvents.find((item) => item.id === plannerEventDraft.recurrenceParentId)
+      : null;
+    const parentRule = parseWeeklyRecurrenceRule(parentEvent?.recurrenceRule);
+
+    if (plannerEventDraft.recurrenceParentId && plannerEventDraft.recurrenceApplyScope === "all" && parentEvent) {
+      const nextRule = parentRule
+        ? stringifyWeeklyRecurrenceRule({
+            ...parentRule,
+            weekday: plannerEventDraft.recurrenceWeekday,
+            startDate: plannerEventDraft.recurrenceStartDate,
+            endDate: plannerEventDraft.recurrenceEndDate,
+            startTime: plannerEventDraft.startTime,
+            endTime: plannerEventDraft.endTime,
+            timezone: plannerEventDraft.timezone || parentRule.timezone,
+          })
+        : parentEvent.recurrenceRule;
+      const eventToSave: CalendarEvent = {
+        ...event,
+        id: parentEvent.id,
+        recurrenceParentId: null,
+        recurrenceExceptionDate: null,
+        recurrenceStatus: null,
+        recurrenceRule: nextRule,
+      };
+      const saved = await saveCalendarEvent(eventToSave, SYNC_CODE);
+      setPlannerEventSaving(false);
+
+      if (!saved) {
+        setPlannerEventError("Could not save series. Please check the console for details.");
+        return;
+      }
+
+      setCalendarEvents((prev) => prev.map((item) => (item.id === eventToSave.id ? eventToSave : item)));
+      setPlannerEventModalOpen(false);
+      setPlannerEventDraft(null);
+      return;
+    }
+
+    if (
+      plannerEventDraft.recurrenceParentId &&
+      plannerEventDraft.recurrenceApplyScope === "future" &&
+      parentEvent &&
+      parentRule &&
+      plannerEventDraft.recurrenceExceptionDate
+    ) {
+      const oldEndDate = addDaysISO(plannerEventDraft.recurrenceExceptionDate, -1);
+      if (oldEndDate < parentRule.startDate) {
+        setPlannerEventSaving(false);
+        setPlannerEventError("Cannot split before the series start.");
+        return;
+      }
+
+      const oldParent: CalendarEvent = {
+        ...parentEvent,
+        recurrenceRule: stringifyWeeklyRecurrenceRule({ ...parentRule, endDate: oldEndDate }),
+      };
+      const newParent: CalendarEvent = {
+        ...event,
+        id: createCalendarEventId(),
+        recurrenceParentId: null,
+        recurrenceExceptionDate: null,
+        recurrenceStatus: null,
+        recurrenceRule: stringifyWeeklyRecurrenceRule({
+          ...parentRule,
+          startDate: plannerEventDraft.recurrenceExceptionDate,
+          endDate: parentRule.endDate,
+          weekday: plannerEventDraft.recurrenceWeekday,
+          startTime: plannerEventDraft.startTime,
+          endTime: plannerEventDraft.endTime,
+          timezone: plannerEventDraft.timezone || parentRule.timezone,
+        }),
+      };
+
+      const savedNew = await saveCalendarEvent(newParent, SYNC_CODE);
+      const savedOld = savedNew ? await saveCalendarEvent(oldParent, SYNC_CODE) : false;
+      setPlannerEventSaving(false);
+
+      if (!savedNew || !savedOld) {
+        if (savedNew) {
+          await deleteCalendarEvent(newParent.id, SYNC_CODE);
+        }
+        setPlannerEventError("Could not split this series safely. Please try again.");
+        return;
+      }
+
+      setCalendarEvents((prev) => [
+        ...prev.map((item) => (item.id === oldParent.id ? oldParent : item)),
+        newParent,
+      ]);
+      setPlannerEventModalOpen(false);
+      setPlannerEventDraft(null);
+      return;
+    }
+
+    const eventToSave = plannerEventDraft.recurrenceParentId
+      ? exceptionEventForPlannerOccurrence(event)
+      : event;
+    const saved = await saveCalendarEvent(eventToSave, SYNC_CODE);
+    setPlannerEventSaving(false);
+
+    if (!saved) {
+      setPlannerEventError("Could not save event. Please check the console for details.");
+      return;
+    }
+
+    setCalendarEvents((prev) => {
+      const exists = prev.some((item) => item.id === eventToSave.id);
+      return exists
+        ? prev.map((item) => (item.id === eventToSave.id ? eventToSave : item))
+        : [...prev, eventToSave];
+    });
+    setPlannerEventModalOpen(false);
+    setPlannerEventDraft(null);
+  }
+
+  async function removePlannerEvent() {
+    if (!plannerEventDraft || plannerEventModalMode !== "edit" || plannerEventSaving) return;
+
+    setPlannerEventSaving(true);
+    setPlannerEventError(null);
+
+    const deleted = await deleteCalendarEvent(plannerEventDraft.id, SYNC_CODE);
+    setPlannerEventSaving(false);
+
+    if (!deleted) {
+      setPlannerEventError("Could not delete event. Please check the console for details.");
+      return;
+    }
+
+    setCalendarEvents((prev) => prev.filter((event) => event.id !== plannerEventDraft.id));
+    setPlannerEventModalOpen(false);
+    setPlannerEventDraft(null);
+  }
+
+  async function cancelPlannerRecurringOccurrence() {
+    if (
+      !plannerEventDraft ||
+      plannerEventModalMode !== "edit" ||
+      !plannerEventDraft.recurrenceParentId ||
+      !plannerEventDraft.recurrenceExceptionDate ||
+      plannerEventSaving
+    ) {
+      return;
+    }
+
+    const { event, error } = calendarEventFromDraft(plannerEventDraft);
+    if (!event || error) {
+      setPlannerEventError(error ?? "Could not cancel this occurrence.");
+      return;
+    }
+
+    const cancellation: CalendarEvent = {
+      ...event,
+      id: calendarEvents.some((item) => item.id === plannerEventDraft.id)
+        ? plannerEventDraft.id
+        : createCalendarEventId(),
+      recurrenceRule: null,
+      recurrenceParentId: plannerEventDraft.recurrenceParentId,
+      recurrenceExceptionDate: plannerEventDraft.recurrenceExceptionDate,
+      recurrenceStatus: "cancelled",
+      metadata: {},
+    };
+
+    setPlannerEventSaving(true);
+    setPlannerEventError(null);
+    const saved = await saveCalendarEvent(cancellation, SYNC_CODE);
+    setPlannerEventSaving(false);
+
+    if (!saved) {
+      setPlannerEventError("Could not cancel occurrence. Please check the console for details.");
+      return;
+    }
+
+    setCalendarEvents((prev) => {
+      const exists = prev.some((item) => item.id === cancellation.id);
+      return exists
+        ? prev.map((item) => (item.id === cancellation.id ? cancellation : item))
+        : [...prev, cancellation];
+    });
+    setPlannerEventModalOpen(false);
+    setPlannerEventDraft(null);
+  }
+
+  function beginPlannerEventInteraction(
+    event: React.PointerEvent<HTMLDivElement>,
+    calendarEvent: CalendarEvent,
+    kind: "move" | "resize"
+  ) {
+    if (event.button !== 0 || calendarEvent.allDay || !calendarEvent.startAt || !calendarEvent.endAt) return;
+
+    const startMinutes = localMinutesFromTimestamp(calendarEvent.startAt);
+    const endMinutes = localMinutesFromTimestamp(calendarEvent.endAt);
+    const startDate = eventLocalDate(calendarEvent.startAt);
+    const endDate = eventLocalDate(calendarEvent.endAt);
+    const grid = event.currentTarget.closest("[data-planner-week-grid='true']");
+
+    if (
+      startMinutes === null ||
+      endMinutes === null ||
+      !startDate ||
+      !endDate ||
+      startDate !== endDate ||
+      !grid
+    ) {
+      return;
+    }
+
+    const duration = endMinutes - startMinutes;
+    const visibleDuration = (PLANNER_END_HOUR - PLANNER_START_HOUR) * 60;
+    if (duration < PLANNER_SNAP_MINUTES || duration > visibleDuration) return;
+
+    const gridRect = grid.getBoundingClientRect();
+    const dayWidth = (gridRect.width - 64) / 7;
+    if (!Number.isFinite(dayWidth) || dayWidth <= 0) return;
+
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+
+    setPlannerInteraction({
+      kind,
+      eventId: calendarEvent.id,
+      originalEvent: calendarEvent,
+      previewEvent: calendarEvent,
+      pointerStartX: event.clientX,
+      pointerStartY: event.clientY,
+      gridLeft: gridRect.left,
+      dayWidth,
+      originalStartMinutes: startMinutes,
+      originalEndMinutes: endMinutes,
+      originalDurationMinutes: duration,
+      hasMoved: false,
+    });
   }
 
   function openEdit(t: Task) {
@@ -2332,6 +4492,7 @@ useEffect(() => {
     const existing = log ?? null;
     const existingHoursInput = existing ? formatHourInput(existing.hours) : "";
 
+    setPlannerLogSourceEventId(null);
     setEditingLogId(existing?.id ?? null);
     setLogTaskId(existing?.taskId ?? selectedTaskId);
     setLogDate(existing?.date ?? date);
@@ -2340,6 +4501,87 @@ useEffect(() => {
     setLogHoursInput(existingHoursInput);
     setLogNote(existing?.note ?? "");
     setLogOpen(true);
+  }
+
+  async function savePlannerWorkResolution(
+    event: CalendarEvent,
+    status: PlannerWorkResolutionStatus,
+    loggedTimeLogId: string | null = null
+  ) {
+    const resolvedEvent = withPlannerWorkResolution(event, status, loggedTimeLogId);
+    const saved = await saveCalendarEvent(resolvedEvent, SYNC_CODE);
+
+    if (!saved) {
+      console.warn("Failed to save Planner work resolution", {
+        eventId: event.id,
+        status,
+        loggedTimeLogId,
+      });
+      return false;
+    }
+
+    setCalendarEvents((prev) =>
+      prev.map((item) => (item.id === resolvedEvent.id ? resolvedEvent : item))
+    );
+    return true;
+  }
+
+  async function logPlannerWorkAsPlanned(event: CalendarEvent) {
+    if (plannerWorkActionSavingId || plannerWorkResolutionStatus(event)) return;
+    const log = plannedWorkTimeLogFromEvent(event);
+
+    if (!log || !event.taskId || !taskById[event.taskId]) {
+      console.warn("Cannot log planned work without a linked task and valid planned time", { eventId: event.id });
+      return;
+    }
+
+    setPlannerWorkActionSavingId(event.id);
+    const savedLog = await saveSupabaseTimeLog(SYNC_CODE, log);
+
+    if (!savedLog) {
+      console.warn("Failed to save TimeLog from planned work", { eventId: event.id, logId: log.id });
+      setPlannerWorkActionSavingId(null);
+      return;
+    }
+
+    const savedResolution = await savePlannerWorkResolution(event, "logged", log.id);
+
+    if (!savedResolution) {
+      await deleteSupabaseTimeLog(SYNC_CODE, log.id);
+      setPlannerWorkActionSavingId(null);
+      return;
+    }
+
+    setTimeLogs((prev) => [log, ...prev]);
+    setPlannerWorkActionSavingId(null);
+  }
+
+  function adjustPlannerWorkLog(event: CalendarEvent) {
+    if (plannerWorkResolutionStatus(event)) return;
+    const log = plannedWorkTimeLogFromEvent(event);
+
+    if (!log || !event.taskId || !taskById[event.taskId]) {
+      openPlannerEventEdit(event);
+      return;
+    }
+
+    setPlannerLogSourceEventId(event.id);
+    setEditingLogId(null);
+    setLogTaskId(log.taskId);
+    setLogDate(log.date);
+    setLogStartTime(log.startTime ?? "");
+    setLogEndTime(log.endTime ?? "");
+    setLogHoursInput(formatHourInput(log.hours));
+    setLogNote(log.note);
+    setLogOpen(true);
+  }
+
+  async function skipPlannerWorkEvent(event: CalendarEvent) {
+    if (plannerWorkActionSavingId || plannerWorkResolutionStatus(event)) return;
+
+    setPlannerWorkActionSavingId(event.id);
+    await savePlannerWorkResolution(event, "skipped");
+    setPlannerWorkActionSavingId(null);
   }
 
   function setLoggerAnchor(nextAnchor: string) {
@@ -2370,7 +4612,7 @@ useEffect(() => {
     setLoggerAnchor(today);
   }
 
-  function submitTimeLog() {
+  async function submitTimeLog() {
     const hours = resolveTimeLogHours(logHoursInput, calculatedLogHours);
     if (!logTaskId || hours === null) return;
 
@@ -2388,20 +4630,34 @@ useEffect(() => {
       note: logNote.trim(),
     };
 
+    const sourcePlannerEvent = plannerLogSourceEventId
+      ? calendarEvents.find((event) => event.id === plannerLogSourceEventId)
+      : null;
+    const saved = await saveSupabaseTimeLog(SYNC_CODE, next);
+
+    if (!saved) {
+      console.warn("Unexpected Supabase time log save failure:", {
+        operation: existing ? "edit" : "create",
+        id: next.id,
+      });
+      if (sourcePlannerEvent) return;
+    }
+
+    if (sourcePlannerEvent) {
+      const savedResolution = await savePlannerWorkResolution(sourcePlannerEvent, "logged", next.id);
+      if (!savedResolution) {
+        await deleteSupabaseTimeLog(SYNC_CODE, next.id);
+        return;
+      }
+    }
+
     setTimeLogs((prev) => {
       if (!existing) return [next, ...prev];
       return prev.map((entry) => (entry.id === existing.id ? next : entry));
     });
 
-    void saveSupabaseTimeLog(SYNC_CODE, next).catch((error) => {
-      console.warn("Unexpected Supabase time log save failure:", {
-        operation: existing ? "edit" : "create",
-        id: next.id,
-        error,
-      });
-    });
-
     setEditingLogId(null);
+    setPlannerLogSourceEventId(null);
     setLogOpen(false);
   }
 
@@ -2843,6 +5099,14 @@ useEffect(() => {
             </button>
             <button
               className={`rounded-full px-4 py-2 text-sm ${
+                mode === "planner" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"
+              }`}
+              onClick={() => setMode("planner")}
+            >
+              Planner
+            </button>
+            <button
+              className={`rounded-full px-4 py-2 text-sm ${
                 mode === "list" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"
               }`}
               onClick={() => setMode("list")}
@@ -2999,6 +5263,688 @@ useEffect(() => {
               </section>
             ) : null}
           </>
+        ) : mode === "planner" ? (
+          <div className="mt-5 rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="text-sm font-semibold">Planner</div>
+
+              <div className="flex items-center gap-2">
+                <div className="inline-flex rounded-full border border-slate-200 bg-white p-1">
+                  {([
+                    { id: "week", label: "Week" },
+                    { id: "month", label: "Month" },
+                    { id: "year", label: "Year" },
+                  ] as Array<{ id: PlannerView; label: string }>).map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => setPlannerView(option.id)}
+                      className={`rounded-full px-3 py-1.5 text-sm ${
+                        plannerView === option.id
+                          ? "bg-slate-900 text-white"
+                          : "text-slate-600 hover:bg-slate-50"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={openSmartImport}
+                  className="flex h-9 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 text-sm text-slate-600 hover:bg-slate-50"
+                >
+                  <WandSparkles className="h-3.5 w-3.5" aria-hidden="true" />
+                  Quick Add
+                </button>
+
+                <button
+                  type="button"
+                  onClick={openPlannerEventTypeChooser}
+                  className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-lg leading-none text-slate-700 hover:bg-slate-50"
+                  aria-label="Add calendar event"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
+            {plannerView === "week" ? (
+              <div className="p-4">
+                <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="text-xs font-medium text-slate-500">{plannerWeekLabel}</div>
+                  <div className="inline-flex w-fit rounded-full border border-slate-200 bg-white p-1">
+                    <button
+                      type="button"
+                      onClick={() => movePlannerWeek(-1)}
+                      className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                      aria-label="Previous week"
+                    >
+                      &lt;
+                    </button>
+                    <button
+                      type="button"
+                      onClick={returnPlannerToToday}
+                      className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                    >
+                      Today
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => movePlannerWeek(1)}
+                      className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                      aria-label="Next week"
+                    >
+                      &gt;
+                    </button>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <div className="min-w-[860px] overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                    <div className="grid grid-cols-[64px_repeat(7,minmax(96px,1fr))] border-b border-slate-100 bg-white">
+                      <div className="border-r border-slate-100" />
+                      {plannerWeekDays.map((day) => {
+                        const date = new Date(day + "T00:00:00");
+                        const isToday = day === clientToday;
+
+                        return (
+                          <div
+                            key={day}
+                            className={`border-r border-slate-100 px-2 py-3 text-center last:border-r-0 ${
+                              isToday ? "bg-slate-50" : ""
+                            }`}
+                          >
+                            <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                              {new Intl.DateTimeFormat("en", { weekday: "short" }).format(date)}
+                            </div>
+                            <div
+                              className={`mx-auto mt-1 flex h-7 w-7 items-center justify-center rounded-full text-sm font-semibold tabular-nums ${
+                                isToday ? "bg-slate-900 text-white" : "text-slate-700"
+                              }`}
+                            >
+                              {date.getDate()}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="grid grid-cols-[64px_1fr] border-b border-slate-100 bg-slate-50/40">
+                      <div className="border-r border-slate-100 px-3 py-3 text-xs font-medium text-slate-400">
+                        All day
+                      </div>
+                      <div
+                        className="relative grid grid-cols-7"
+                        style={{ minHeight: Math.max(48, 14 + plannerWeekAllDaySpans.length * 26) }}
+                      >
+                        {plannerWeekDays.map((day) => (
+                          <div
+                            key={`all-day-bg-${day}`}
+                            className={`border-r border-slate-100 px-2 py-2 text-center text-sm text-slate-300 last:border-r-0 ${
+                              day === clientToday ? "bg-slate-100/50" : ""
+                            }`}
+                          >
+                            {!plannerWeekAllDaySpans.length ? "·" : null}
+                          </div>
+                        ))}
+                        {plannerWeekAllDaySpans.length ? (
+                          <div
+                            className="absolute inset-x-0 top-1.5 grid grid-cols-7 gap-y-1 px-1.5"
+                            style={{
+                              gridTemplateRows: `repeat(${plannerWeekAllDaySpans.length}, 22px)`,
+                            }}
+                          >
+                            {plannerWeekAllDaySpans.map((span, index) => (
+                              <button
+                                key={plannerAllDaySpanKey(span, "week")}
+                                type="button"
+                                onClick={() =>
+                                  span.item.sourceType === "calendar_event"
+                                    ? openPlannerEventEdit(span.item.event)
+                                    : openEdit(span.item.task)
+                                }
+                                className={`flex min-w-0 items-center gap-1 border px-2 py-1 text-left text-[11px] font-medium ${
+                                  span.startsBefore ? "rounded-l-sm" : "rounded-l-lg"
+                                } ${span.endsAfter ? "rounded-r-sm" : "rounded-r-lg"} ${
+                                  span.item.sourceType === "calendar_event"
+                                    ? plannerEventTone(span.item.event.eventType)
+                                    : plannerDeadlineTone(span.item.task)
+                                }`}
+                                style={{
+                                  gridColumn: `${span.startIndex + 1} / span ${span.span}`,
+                                  gridRow: index + 1,
+                                }}
+                                title={plannerItemTitle(span.item)}
+                              >
+                                {span.item.sourceType === "calendar_event" ? (
+                                  <PlannerEventTypeIcon eventType={span.item.event.eventType} />
+                                ) : (
+                                  <Flag className="h-3 w-3 shrink-0" aria-hidden="true" />
+                                )}
+                                <span className="truncate">{plannerItemTitle(span.item)}</span>
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <div ref={plannerWeekScrollRef} className="max-h-[620px] overflow-y-auto">
+                      <div
+                        data-planner-week-grid="true"
+                        className="relative grid grid-cols-[64px_repeat(7,minmax(96px,1fr))]"
+                        style={{ height: (PLANNER_END_HOUR - PLANNER_START_HOUR) * PLANNER_HOUR_HEIGHT }}
+                      >
+                        <div className="relative border-r border-slate-100 bg-white">
+                          {plannerHours.slice(0, -1).map((hour, index) => (
+                            <div
+                              key={hour}
+                              className="absolute right-3 -translate-y-2 text-[10px] tabular-nums text-slate-400"
+                              style={{ top: index * PLANNER_HOUR_HEIGHT }}
+                            >
+                              {hour}
+                            </div>
+                          ))}
+                        </div>
+
+                        {plannerWeekDays.map((day) => (
+                          <div
+                            key={`timed-${day}`}
+                            className={`relative border-r border-slate-100 last:border-r-0 ${
+                              day === clientToday ? "bg-slate-50/50" : "bg-white"
+                            }`}
+                          >
+                            {plannerHours.slice(0, -1).map((hour, index) => (
+                              <div
+                                key={`${day}-${hour}`}
+                                className="absolute left-0 right-0 border-t border-slate-100"
+                                style={{ top: index * PLANNER_HOUR_HEIGHT }}
+                              />
+                            ))}
+                            {day === clientToday && currentTimeTop !== null ? (
+                              <div
+                                className="absolute left-2 right-2 z-10 border-t border-rose-300"
+                                style={{ top: currentTimeTop }}
+                              >
+                                <span className="absolute -left-1 -top-1.5 h-2.5 w-2.5 rounded-full bg-rose-300" />
+                              </div>
+                            ) : null}
+                            {(plannerTimedLayoutsByDate[day] ?? []).map((layout) => {
+                              const gutter = 8;
+                              const width = `calc(${100 / layout.columnCount}% - ${gutter}px)`;
+                              const left = `calc(${(layout.columnIndex * 100) / layout.columnCount}% + ${gutter / 2}px)`;
+                              const timeRange = `${formatPlannerEventTime(layout.event.startAt)}${
+                                layout.event.endAt ? `-${formatPlannerEventTime(layout.event.endAt)}` : ""
+                              }`;
+                              const workResolution = plannerWorkResolutionStatus(layout.event);
+                              const showWorkResolutionActions = isPastUnresolvedPlannerWorkEvent(
+                                layout.event,
+                                clientNowMs
+                              );
+                              const workActionSaving = plannerWorkActionSavingId === layout.event.id;
+
+                              return (
+                                <div
+                                  key={`${day}-${layout.event.id}`}
+                                  role="button"
+                                  tabIndex={0}
+                                  className={`absolute z-20 cursor-grab select-none overflow-hidden rounded-xl border px-2 py-1.5 text-[11px] shadow-sm active:cursor-grabbing ${
+                                    plannerInteraction?.eventId === layout.event.id ? "ring-2 ring-slate-300" : ""
+                                  } ${plannerEventTone(
+                                    layout.event.eventType
+                                  )}`}
+                                  style={{
+                                    top: layout.top,
+                                    height: layout.height,
+                                    left,
+                                    width,
+                                  }}
+                                  title={`${layout.event.title}${timeRange ? ` • ${timeRange}` : ""}`}
+                                  onPointerDown={(e) => beginPlannerEventInteraction(e, layout.event, "move")}
+                                  onClick={() => {
+                                    if (suppressPlannerEventClickRef.current) return;
+                                    openPlannerEventEdit(layout.event);
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") openPlannerEventEdit(layout.event);
+                                  }}
+                                >
+                                  <div className="flex min-w-0 items-center gap-1 font-medium leading-tight">
+                                    <PlannerEventTypeIcon eventType={layout.event.eventType} />
+                                    <span className="truncate">{layout.event.title}</span>
+                                  </div>
+                                  {layout.height >= 42 && timeRange ? (
+                                    <div className="mt-0.5 truncate text-[10px] opacity-70">{timeRange}</div>
+                                  ) : null}
+                                  {workResolution ? (
+                                    <div className="mt-1 inline-flex w-fit rounded-full bg-white/70 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">
+                                      {workResolution === "logged" ? "Logged" : "Skipped"}
+                                    </div>
+                                  ) : null}
+                                  {showWorkResolutionActions ? (
+                                    <div
+                                      className="mt-1 flex flex-wrap gap-1"
+                                      onPointerDown={(e) => e.stopPropagation()}
+                                      onClick={(e) => e.stopPropagation()}
+                                    >
+                                      {layout.event.taskId && taskById[layout.event.taskId] ? (
+                                        <>
+                                          <button
+                                            type="button"
+                                            disabled={workActionSaving}
+                                            onClick={() => logPlannerWorkAsPlanned(layout.event)}
+                                            className="rounded-full bg-white/80 px-1.5 py-0.5 text-[10px] font-medium text-slate-700 hover:bg-white disabled:opacity-50"
+                                          >
+                                            Log as planned
+                                          </button>
+                                          <button
+                                            type="button"
+                                            disabled={workActionSaving}
+                                            onClick={() => adjustPlannerWorkLog(layout.event)}
+                                            className="rounded-full bg-white/70 px-1.5 py-0.5 text-[10px] font-medium text-slate-600 hover:bg-white disabled:opacity-50"
+                                          >
+                                            Adjust
+                                          </button>
+                                        </>
+                                      ) : (
+                                        <button
+                                          type="button"
+                                          disabled={workActionSaving}
+                                          onClick={() => openPlannerEventEdit(layout.event)}
+                                          className="rounded-full bg-white/80 px-1.5 py-0.5 text-[10px] font-medium text-slate-700 hover:bg-white disabled:opacity-50"
+                                        >
+                                          Link task to log
+                                        </button>
+                                      )}
+                                      <button
+                                        type="button"
+                                        disabled={workActionSaving}
+                                        onClick={() => skipPlannerWorkEvent(layout.event)}
+                                        className="rounded-full bg-white/70 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 hover:bg-white disabled:opacity-50"
+                                      >
+                                        Skip
+                                      </button>
+                                    </div>
+                                  ) : null}
+                                  <div
+                                    className="absolute inset-x-2 bottom-0 h-2 cursor-ns-resize rounded-full"
+                                    onPointerDown={(e) => {
+                                      e.stopPropagation();
+                                      beginPlannerEventInteraction(e, layout.event, "resize");
+                                    }}
+                                    aria-hidden="true"
+                                  >
+                                    <span className="mx-auto mt-1 block h-0.5 w-6 rounded-full bg-current opacity-25" />
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : plannerView === "month" ? (
+              <div className="p-3">
+                <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="px-1 text-xs font-semibold text-slate-600">{plannerMonthLabel}</div>
+                  <div className="inline-flex w-fit rounded-full border border-slate-200 bg-white p-1">
+                    <button
+                      type="button"
+                      onClick={() => movePlannerMonth(-1)}
+                      className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                      aria-label="Previous month"
+                    >
+                      &lt;
+                    </button>
+                    <button
+                      type="button"
+                      onClick={returnPlannerToToday}
+                      className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                    >
+                      Today
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => movePlannerMonth(1)}
+                      className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                      aria-label="Next month"
+                    >
+                      &gt;
+                    </button>
+                  </div>
+                </div>
+
+                <div className="overflow-hidden rounded-2xl border border-slate-100 bg-white">
+                  <div className="grid grid-cols-7 border-b border-slate-100 bg-slate-50/50">
+                    {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((weekday) => (
+                      <div
+                        key={weekday}
+                        className="border-r border-slate-100/80 px-2 py-1.5 text-center text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400 last:border-r-0"
+                      >
+                        {weekday}
+                      </div>
+                    ))}
+                  </div>
+
+                  <div>
+                    {plannerMonthWeeks.map((week, weekIndex) => {
+                      const weekSpans = plannerMonthAllDaySpansByWeek[weekIndex] ?? [];
+                      return (
+                        <div key={`month-week-${week[0]?.date ?? weekIndex}`} className="relative grid grid-cols-7">
+                          {week.map((day) => {
+                            const events = (plannerMonthEventsByDate[day.date] ?? []).filter(
+                              (item) => !(item.sourceType === "calendar_event" && item.event.allDay)
+                            );
+                            const visibleEvents = events.slice(0, 4);
+                            const hiddenCount = Math.max(0, events.length - visibleEvents.length);
+                            const isToday = day.date === clientToday;
+
+                            return (
+                              <div
+                                key={day.date}
+                                className={`min-h-[104px] border-r border-b border-slate-100/80 px-1.5 py-1.5 [&:nth-child(7n)]:border-r-0 ${
+                                  day.isCurrentMonth ? "bg-white" : "bg-slate-50/40"
+                                }`}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setPlannerAnchorDate(day.date);
+                                    setPlannerView("week");
+                                  }}
+                                  className={`flex h-5 w-5 items-center justify-center rounded-full text-[11px] font-semibold tabular-nums hover:bg-slate-100 ${
+                                    isToday
+                                      ? "bg-slate-900 text-white hover:bg-slate-800"
+                                      : day.isCurrentMonth
+                                        ? "text-slate-700"
+                                        : "text-slate-300"
+                                  }`}
+                                  aria-label={`Open week containing ${day.date}`}
+                                >
+                                  {Number(day.date.slice(8, 10))}
+                                </button>
+
+                                <div
+                                  className="space-y-0.5"
+                                  style={{ marginTop: weekSpans.length ? weekSpans.length * 18 + 6 : 4 }}
+                                >
+                                  {visibleEvents.map((item) => {
+                                    const prefix = plannerItemPrefix(item, day.date);
+                                    return (
+                                      <button
+                                        key={`${day.date}-${item.sourceType === "calendar_event" ? item.event.id : item.task.id}`}
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          if (item.sourceType === "calendar_event") openPlannerEventEdit(item.event);
+                                          else openEdit(item.task);
+                                        }}
+                                        className={`flex w-full min-w-0 items-center gap-1 rounded-md border px-1.5 py-0.5 text-left text-[10px] font-medium leading-4 ${
+                                          item.sourceType === "calendar_event"
+                                            ? plannerEventTone(item.event.eventType)
+                                            : plannerDeadlineTone(item.task)
+                                        }`}
+                                        title={plannerItemTitle(item)}
+                                      >
+                                        {prefix ? (
+                                          <span className="shrink-0 tabular-nums opacity-65">{prefix}</span>
+                                        ) : item.sourceType === "task_deadline" ? (
+                                          <Flag className="h-3 w-3 shrink-0" aria-hidden="true" />
+                                        ) : (
+                                          <PlannerEventTypeIcon eventType={item.event.eventType} />
+                                        )}
+                                        <span className="truncate">{plannerItemTitle(item)}</span>
+                                      </button>
+                                    );
+                                  })}
+                                  {hiddenCount ? (
+                                    <div className="px-1 pt-0.5 text-[10px] font-medium text-slate-400">
+                                      +{hiddenCount} more
+                                    </div>
+                                  ) : null}
+                                </div>
+                              </div>
+                            );
+                          })}
+                          {weekSpans.length ? (
+                            <div
+                              className="pointer-events-none absolute inset-x-0 top-7 grid grid-cols-7 gap-y-0.5 px-1.5"
+                              style={{ gridTemplateRows: `repeat(${weekSpans.length}, 16px)` }}
+                            >
+                              {weekSpans.map((span, index) => (
+                                <button
+                                  key={plannerAllDaySpanKey(span, `month-${weekIndex}`)}
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (span.item.sourceType === "calendar_event") openPlannerEventEdit(span.item.event);
+                                    else openEdit(span.item.task);
+                                  }}
+                                  className={`pointer-events-auto flex min-w-0 items-center gap-1 border px-1.5 py-0.5 text-left text-[10px] font-medium leading-4 ${
+                                    span.startsBefore ? "rounded-l-sm" : "rounded-l-md"
+                                  } ${span.endsAfter ? "rounded-r-sm" : "rounded-r-md"} ${
+                                    span.item.sourceType === "calendar_event"
+                                      ? plannerEventTone(span.item.event.eventType)
+                                      : plannerDeadlineTone(span.item.task)
+                                  }`}
+                                  style={{
+                                    gridColumn: `${span.startIndex + 1} / span ${span.span}`,
+                                    gridRow: index + 1,
+                                  }}
+                                  title={plannerItemTitle(span.item)}
+                                >
+                                  {span.item.sourceType === "calendar_event" ? (
+                                    <PlannerEventTypeIcon eventType={span.item.event.eventType} />
+                                  ) : (
+                                    <Flag className="h-3 w-3 shrink-0" aria-hidden="true" />
+                                  )}
+                                  <span className="truncate">{plannerItemTitle(span.item)}</span>
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="p-4">
+                <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="text-xs font-medium text-slate-500">{plannerYearLabel}</div>
+                  <div className="inline-flex w-fit rounded-full border border-slate-200 bg-white p-1">
+                    <button
+                      type="button"
+                      onClick={() => movePlannerYear(-1)}
+                      className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                      aria-label="Previous year"
+                    >
+                      &lt;
+                    </button>
+                    <button
+                      type="button"
+                      onClick={returnPlannerToToday}
+                      className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                    >
+                      Today
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => movePlannerYear(1)}
+                      className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                      aria-label="Next year"
+                    >
+                      &gt;
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-[10px] font-medium text-slate-500">
+                  {PLANNER_EVENT_TYPES.map((option) => (
+                    <div key={option.id} className="inline-flex items-center gap-1.5">
+                      <span
+                        className={`flex h-4 w-4 items-center justify-center rounded-full ${plannerYearMarkerTone(
+                          option.id
+                        )}`}
+                      >
+                        <PlannerYearMarkerIcon eventType={option.id} />
+                      </span>
+                      <span>{option.label}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                  {plannerYearMonths.map((month) => (
+                    <div key={month.id} className="rounded-2xl border border-slate-200 bg-white p-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPlannerAnchorDate(month.anchorDate);
+                          setPlannerView("month");
+                        }}
+                        className="text-sm font-semibold text-slate-700 hover:text-slate-950"
+                      >
+                        {month.label}
+                      </button>
+
+                      <div className="mt-2 grid grid-cols-7 gap-y-1">
+                        {["M", "T", "W", "T", "F", "S", "S"].map((weekday, index) => (
+                          <div
+                            key={`${month.id}-${weekday}-${index}`}
+                            className="text-center text-[9px] font-semibold uppercase tracking-[0.08em] text-slate-300"
+                          >
+                            {weekday}
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="mt-1">
+                        {Array.from({ length: Math.ceil(month.days.length / 7) }, (_, weekIndex) => {
+                          const week = month.days.slice(weekIndex * 7, weekIndex * 7 + 7);
+                          const currentMonthDays = week.filter((day) => day.isCurrentMonth);
+                          const firstCurrentMonthIndex = week.findIndex((day) => day.isCurrentMonth);
+                          const currentMonthDates = currentMonthDays.map((day) => day.date);
+                          const monthItems: PlannerDateItem[] = currentMonthDates.flatMap((date) =>
+                            (plannerYearEventsByDate[date] ?? []).filter((item) => {
+                              const span = plannerItemDateSpan(item);
+                              return Boolean(span && span.start < span.end);
+                            })
+                          );
+                          const uniqueSpanItems = Array.from(
+                            new Map(
+                              monthItems.map((item) => [
+                                item.sourceType === "calendar_event" ? item.event.id : item.task.id,
+                                item,
+                              ])
+                            ).values()
+                          );
+                          const spanItems = plannerAllDaySpansForDays(currentMonthDates, uniqueSpanItems)
+                            .filter((span) => span.item.sourceType === "calendar_event")
+                            .map((span) => ({
+                              ...span,
+                              startIndex: firstCurrentMonthIndex + span.startIndex,
+                            }));
+                          const visibleSpanItems = spanItems.slice(0, 2);
+
+                          return (
+                            <div
+                              key={`${month.id}-week-${weekIndex}`}
+                              className="relative grid grid-cols-7"
+                              style={{ minHeight: Math.max(30, 24 + visibleSpanItems.length * 13) }}
+                            >
+                              {week.map((day) => {
+                                const items = (plannerYearEventsByDate[day.date] ?? []).filter((item) => {
+                                  const span = plannerItemDateSpan(item);
+                                  return !span || span.start === span.end;
+                                });
+                                const markerTypes = Array.from(new Set(items.map(plannerYearItemEventType))).slice(0, 3);
+                                const isToday = day.date === clientToday;
+
+                                if (!day.isCurrentMonth) {
+                                  return (
+                                    <div
+                                      key={`${month.id}-${day.date}`}
+                                      className="mx-auto h-7 w-7"
+                                      aria-hidden="true"
+                                    />
+                                  );
+                                }
+
+                                return (
+                                  <button
+                                    key={`${month.id}-${day.date}`}
+                                    type="button"
+                                    onClick={() => {
+                                      setPlannerAnchorDate(day.date);
+                                      setPlannerView("week");
+                                    }}
+                                    className={`group relative mx-auto flex h-7 w-7 items-center justify-center rounded-full text-[10px] tabular-nums hover:bg-slate-100 ${
+                                      isToday
+                                        ? "bg-slate-900 text-white hover:bg-slate-800"
+                                        : "text-slate-600"
+                                    }`}
+                                    title={
+                                      items.length
+                                        ? `${day.date}: ${items.length} item${items.length === 1 ? "" : "s"}`
+                                        : day.date
+                                    }
+                                    aria-label={`Open week containing ${day.date}`}
+                                  >
+                                    {Number(day.date.slice(8, 10))}
+                                    {markerTypes.length ? (
+                                      <span className="absolute -bottom-1 left-1/2 flex -translate-x-1/2 gap-0.5">
+                                        {markerTypes.map((eventType) => (
+                                          <span
+                                            key={eventType}
+                                            className={`flex h-3 w-3 items-center justify-center rounded-full ${plannerYearMarkerTone(
+                                              eventType
+                                            )}`}
+                                          >
+                                            <PlannerYearMarkerIcon eventType={eventType} />
+                                          </span>
+                                        ))}
+                                      </span>
+                                    ) : null}
+                                  </button>
+                                );
+                              })}
+                              {visibleSpanItems.map((span, spanIndex) => {
+                                const eventType = plannerYearItemEventType(span.item);
+                                return (
+                                  <div
+                                    key={plannerAllDaySpanKey(span, `${month.id}-year-${weekIndex}`)}
+                                    className={`absolute grid h-3.5 min-w-0 grid-cols-[auto_1fr] items-center gap-0.5 overflow-hidden border px-1 text-[8px] font-medium leading-none ${
+                                      span.startsBefore ? "rounded-l-sm" : "rounded-l-full"
+                                    } ${span.endsAfter ? "rounded-r-sm" : "rounded-r-full"} ${plannerYearPillTone(eventType)}`}
+                                    style={{
+                                      left: `calc(${(span.startIndex / 7) * 100}% + 2px)`,
+                                      right: `calc(${((7 - span.startIndex - span.span) / 7) * 100}% + 2px)`,
+                                      top: 25 + spanIndex * 13,
+                                    }}
+                                    title={plannerItemTitle(span.item)}
+                                  >
+                                    <PlannerYearMarkerIcon eventType={eventType} />
+                                    {span.span >= 3 ? <span className="truncate">{plannerItemTitle(span.item)}</span> : null}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         ) : mode === "logger" ? (
           <div className="mt-5 rounded-2xl border border-slate-200 bg-white shadow-sm">
             <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
@@ -3711,9 +6657,7 @@ useEffect(() => {
                       No categories selected
                     </div>
                   ) : null}
-                  {attentionIncludedCategoryIds.length > 0 ? scoredTasks.map(({ task }) => {
-                    const score = urgencyScore(task, weights);
-
+                  {attentionIncludedCategoryIds.length > 0 ? scoredTasks.map(({ task, total: score, reasons, visualAttentionScore }) => {
                     return (
                       <div
                         key={task.id}
@@ -3729,6 +6673,11 @@ useEffect(() => {
                           <div className="min-w-0">
                             <div className="line-clamp-2 text-sm font-medium leading-snug">{task.title}</div>
                             <div className="mt-1 text-[11px] text-slate-500">{courseLabel(task.courseId)}</div>
+                            {reasons.length ? (
+                              <div className="mt-1 line-clamp-2 text-[11px] leading-snug text-slate-400">
+                                {reasons.join(" · ")}
+                              </div>
+                            ) : null}
                           </div>
 
                           <div className="shrink-0 text-xs font-semibold tabular-nums text-slate-700">{Math.round(score)}</div>
@@ -3736,97 +6685,14 @@ useEffect(() => {
 
                         <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-100">
                           <div
-                            className={`h-2 rounded-full transition-all duration-500 ${urgencyColour(score)}`}
-                            style={{ width: `${score}%` }}
+                            className={`h-2 rounded-full transition-all duration-500 ${urgencyColour(visualAttentionScore)}`}
+                            style={{ width: `${visualAttentionScore}%` }}
                           />
                         </div>
                       </div>
                     );
                   }) : null}
                 </div>
-              </div>
-
-              {showWeights ? (
-                <div className="space-y-6 border-y border-slate-100 bg-slate-50/40 px-4 py-5 text-xs">
-                  <div>
-                    <label className="flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500">
-                      <span>Time</span>
-                      <span className="tabular-nums text-slate-900">{weights.time}</span>
-                    </label>
-                    <div className="editorial-slider-wrap mt-3">
-                      <span className="editorial-slider-marker left-1/4" />
-                      <span className="editorial-slider-marker left-1/2" />
-                      <span className="editorial-slider-marker left-3/4" />
-                      <input
-                        type="range"
-                        min="0"
-                        max="100"
-                        value={weights.time}
-                        onChange={(e) => setWeights({ ...weights, time: Number(e.target.value) })}
-                        className="editorial-slider"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500">
-                      <span>Duration</span>
-                      <span className="tabular-nums text-slate-900">{weights.duration}</span>
-                    </label>
-                    <div className="editorial-slider-wrap mt-3">
-                      <span className="editorial-slider-marker left-1/4" />
-                      <span className="editorial-slider-marker left-1/2" />
-                      <span className="editorial-slider-marker left-3/4" />
-                      <input
-                        type="range"
-                        min="0"
-                        max="100"
-                        value={weights.duration}
-                        onChange={(e) => setWeights({ ...weights, duration: Number(e.target.value) })}
-                        className="editorial-slider"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500">
-                      <span>Difficulty</span>
-                      <span className="tabular-nums text-slate-900">{weights.difficulty}</span>
-                    </label>
-                    <div className="editorial-slider-wrap mt-3">
-                      <span className="editorial-slider-marker left-1/4" />
-                      <span className="editorial-slider-marker left-1/2" />
-                      <span className="editorial-slider-marker left-3/4" />
-                      <input
-                        type="range"
-                        min="0"
-                        max="100"
-                        value={weights.difficulty}
-                        onChange={(e) => setWeights({ ...weights, difficulty: Number(e.target.value) })}
-                        className="editorial-slider"
-                      />
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={() =>
-                      setWeights(DEFAULT_ATTENTION_WEIGHTS)
-                    }
-                    className="w-full rounded-xl border border-slate-300 px-2 py-1 text-xs text-slate-600"
-                  >
-                    Reset to Default
-                  </button>
-                </div>
-              ) : null}
-
-              <div className="px-4 py-3">
-                <button
-                  onClick={() => setShowWeights(!showWeights)}
-                  className="w-full rounded-xl border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
-                  type="button"
-                >
-                  Adjust Weights
-                </button>
               </div>
             </div>
           </div>
@@ -3877,6 +6743,707 @@ useEffect(() => {
           </div>
         </div>
       </div>
+
+      {/* Smart schedule import modal */}
+      <Modal open={smartImportOpen} title="Smart schedule import" onClose={closeSmartImport}>
+        <div className="grid gap-4">
+          <Field label="Paste schedule">
+            <textarea
+              value={smartImportRaw}
+              onChange={(e) => setSmartImportRaw(e.target.value)}
+              className="min-h-[150px] w-full rounded-[18px] border border-slate-200 bg-white p-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+              placeholder="Thesis meeting every Tuesday 11-1pm room 103 between October 1 and December 12"
+            />
+          </Field>
+
+          <div className="flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={parseSmartImportInput}
+              disabled={!smartImportRaw.trim() || smartImportSaving}
+              className="rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              Parse schedule
+            </button>
+            {smartImportMessage ? (
+              <div className="text-right text-xs text-slate-500">{smartImportMessage}</div>
+            ) : null}
+          </div>
+
+          {smartImportProposals.length || smartImportRaw.trim() ? (
+            <div className="flex flex-wrap items-center gap-2">
+              {smartImportProposals.length ? (
+                <button
+                  type="button"
+                  onClick={parseSmartImportInput}
+                  disabled={!smartImportRaw.trim() || smartImportSaving}
+                  className="rounded-full border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                >
+                  Retry parse
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={resetSmartImport}
+                disabled={smartImportSaving}
+                className="rounded-full border border-slate-200 px-3 py-1.5 text-xs text-slate-500 hover:bg-slate-50 disabled:opacity-50"
+              >
+                Start over
+              </button>
+            </div>
+          ) : null}
+
+          {smartImportProposals.length ? (
+            <div className="grid max-h-[48vh] gap-3 overflow-y-auto pr-1">
+              {smartImportProposals.map((proposal) => {
+                const warnings = validateSmartImportProposal(proposal);
+                const possibleDuplicate = smartImportDuplicateWarning(proposal, calendarEvents);
+                return (
+                  <div
+                    key={proposal.id}
+                    className={`rounded-2xl border p-3 ${
+                      proposal.savedEventId
+                        ? "border-green-100 bg-green-50/60"
+                        : warnings.length
+                          ? "border-amber-100 bg-amber-50/40"
+                          : "border-slate-200 bg-white"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <label className="flex min-w-0 items-center gap-2 text-sm font-medium text-slate-800">
+                        <input
+                          type="checkbox"
+                          checked={proposal.include}
+                          disabled={Boolean(proposal.savedEventId)}
+                          onChange={(e) => updateSmartImportProposal(proposal.id, { include: e.target.checked })}
+                          className="h-4 w-4 rounded border-slate-300"
+                        />
+                        <span className="truncate">{proposal.title || "Untitled event"}</span>
+                      </label>
+                      <div className="flex shrink-0 items-center gap-1">
+                        {proposal.savedEventId ? (
+                          <span className="rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-medium text-green-700">
+                            Added
+                          </span>
+                        ) : null}
+                        {possibleDuplicate && !proposal.savedEventId ? (
+                          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+                            Possible duplicate
+                          </span>
+                        ) : null}
+                        {warnings.length ? (
+                          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+                            Needs review
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      <Field label="Title">
+                        <input
+                          value={proposal.title}
+                          onChange={(e) => updateSmartImportProposal(proposal.id, { title: e.target.value })}
+                          className="h-9 w-full rounded-[14px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                        />
+                      </Field>
+                      <Field label="Type">
+                        <select
+                          value={proposal.eventType}
+                          onChange={(e) =>
+                            updateSmartImportProposal(proposal.id, {
+                              eventType: e.target.value as CalendarEventType,
+                              allDay:
+                                (e.target.value === "travel" && !proposal.startTime) ||
+                                e.target.value === "milestone" ||
+                                proposal.allDay,
+                            })
+                          }
+                          className="h-9 w-full rounded-[14px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                        >
+                          {PLANNER_EVENT_TYPES.map((option) => (
+                            <option key={option.id} value={option.id}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </Field>
+                    </div>
+
+                    <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                      <Field label="Recurrence">
+                        <select
+                          value={proposal.recurrence}
+                          onChange={(e) =>
+                            updateSmartImportProposal(proposal.id, {
+                              recurrence: e.target.value as SmartImportRecurrence,
+                            })
+                          }
+                          className="h-9 w-full rounded-[14px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                        >
+                          <option value="none">One-off</option>
+                          <option value="weekly">Weekly</option>
+                        </select>
+                      </Field>
+                      <Field label={proposal.recurrence === "weekly" ? "Start date" : "Date"}>
+                        <input
+                          type="date"
+                          value={proposal.date}
+                          onChange={(e) =>
+                            updateSmartImportProposal(proposal.id, {
+                              date: e.target.value,
+                              endDate: proposal.endDate < e.target.value ? e.target.value : proposal.endDate,
+                              weekday:
+                                proposal.recurrence === "weekly" && isValidISODate(e.target.value)
+                                  ? isoWeekday(e.target.value)
+                                  : proposal.weekday,
+                            })
+                          }
+                          className="h-9 w-full rounded-[14px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                        />
+                      </Field>
+                      <Field label={proposal.recurrence === "weekly" || proposal.allDay ? "End date" : "End date"}>
+                        <input
+                          type="date"
+                          value={proposal.endDate}
+                          min={proposal.date}
+                          onChange={(e) =>
+                            updateSmartImportProposal(proposal.id, {
+                              endDate: e.target.value < proposal.date ? proposal.date : e.target.value,
+                            })
+                          }
+                          className="h-9 w-full rounded-[14px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                        />
+                      </Field>
+                    </div>
+
+                    {proposal.recurrence === "weekly" ? (
+                      <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                        <Field label="Weekday">
+                          <select
+                            value={proposal.weekday}
+                            onChange={(e) => updateSmartImportProposal(proposal.id, { weekday: Number(e.target.value) })}
+                            className="h-9 w-full rounded-[14px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                          >
+                            {PLANNER_WEEKDAY_OPTIONS.map((option) => (
+                              <option key={option.id} value={option.id}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </Field>
+                      </div>
+                    ) : null}
+
+                    <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                      <label className="flex items-center gap-2 self-end pb-2 text-sm text-slate-600">
+                        <input
+                          type="checkbox"
+                          checked={proposal.allDay}
+                          onChange={(e) => updateSmartImportProposal(proposal.id, { allDay: e.target.checked })}
+                          className="h-4 w-4 rounded border-slate-300"
+                        />
+                        All day
+                      </label>
+                      <Field label="Start time">
+                        <input
+                          type="time"
+                          value={proposal.startTime}
+                          disabled={proposal.allDay}
+                          onChange={(e) => updateSmartImportProposal(proposal.id, { startTime: e.target.value })}
+                          className="h-9 w-full rounded-[14px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
+                        />
+                      </Field>
+                      <Field label="End time">
+                        <input
+                          type="time"
+                          value={proposal.endTime}
+                          disabled={proposal.allDay}
+                          onChange={(e) => updateSmartImportProposal(proposal.id, { endTime: e.target.value })}
+                          className="h-9 w-full rounded-[14px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
+                        />
+                      </Field>
+                    </div>
+
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      <Field label="Location">
+                        <input
+                          value={proposal.location}
+                          onChange={(e) => updateSmartImportProposal(proposal.id, { location: e.target.value })}
+                          className="h-9 w-full rounded-[14px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                        />
+                      </Field>
+                      <Field label="Notes">
+                        <input
+                          value={proposal.notes}
+                          onChange={(e) => updateSmartImportProposal(proposal.id, { notes: e.target.value })}
+                          className="h-9 w-full rounded-[14px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                        />
+                      </Field>
+                    </div>
+
+                    {proposal.eventType === "travel" ? (
+                      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                        <Field label="Origin">
+                          <input
+                            value={proposal.origin}
+                            onChange={(e) => updateSmartImportProposal(proposal.id, { origin: e.target.value })}
+                            className="h-9 w-full rounded-[14px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                          />
+                        </Field>
+                        <Field label="Destination">
+                          <input
+                            value={proposal.destination}
+                            onChange={(e) => updateSmartImportProposal(proposal.id, { destination: e.target.value })}
+                            className="h-9 w-full rounded-[14px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                          />
+                        </Field>
+                      </div>
+                    ) : null}
+
+                    <div className="mt-2 text-[11px] text-slate-400">
+                      Source: {proposal.sourceText}
+                    </div>
+                    {warnings.length ? (
+                      <div className="mt-2 text-xs text-amber-700">
+                        {warnings.join(" · ")}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
+
+          <div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-3">
+            <button
+              type="button"
+              onClick={closeSmartImport}
+              disabled={smartImportSaving}
+              className="rounded-full border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+            >
+              Close
+            </button>
+            <button
+              type="button"
+              onClick={confirmSmartImport}
+              disabled={
+                smartImportSaving ||
+                !smartImportProposals.some((proposal) => proposal.include && !proposal.savedEventId) ||
+                smartImportProposals.some(
+                  (proposal) =>
+                    proposal.include &&
+                    !proposal.savedEventId &&
+                    validateSmartImportProposal(proposal).length > 0
+                )
+              }
+              className="rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              {smartImportSaving ? "Adding" : "Add selected events"}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Planner event modal */}
+      <Modal
+        open={plannerEventModalOpen}
+        title={plannerEventDraft ? (plannerEventModalMode === "edit" ? "Edit event" : "New event") : "New event"}
+        onClose={closePlannerEventModal}
+      >
+        {!plannerEventDraft ? (
+          <div className="grid gap-2 sm:grid-cols-2">
+            {PLANNER_EVENT_TYPES.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => startPlannerEventCreate(option.id)}
+                className={`flex items-center gap-2 rounded-2xl border px-3 py-3 text-left text-sm font-medium transition-colors hover:bg-slate-50 ${plannerEventTone(
+                  option.id
+                )}`}
+              >
+                <PlannerEventTypeIcon eventType={option.id} />
+                {option.label}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="grid gap-3">
+            <Field label="Type">
+              <select
+                value={plannerEventDraft.eventType}
+                onChange={(e) => {
+                  const eventType = e.target.value as CalendarEventType;
+                  setPlannerEventDraft({
+                    ...plannerEventDraft,
+                    eventType,
+                    allDay: eventType === "milestone" ? true : plannerEventDraft.allDay,
+                    repeat: eventType === "class" ? plannerEventDraft.repeat : "none",
+                  });
+                }}
+                className={`h-10 w-full rounded-[16px] border bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200 ${plannerEventTone(
+                  plannerEventDraft.eventType
+                )}`}
+              >
+                {PLANNER_EVENT_TYPES.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+
+            {plannerEventDraft.recurrenceParentId ? (
+              <Field label="Apply changes to">
+                <div className="inline-flex rounded-full border border-slate-200 bg-slate-50 p-1">
+                  {[
+                    { id: "this", label: "This event" },
+                    { id: "future", label: "This and future" },
+                    { id: "all", label: "All events" },
+                  ].map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() =>
+                        setPlannerEventDraft({
+                          ...plannerEventDraft,
+                          recurrenceApplyScope: option.id as PlannerEventDraft["recurrenceApplyScope"],
+                        })
+                      }
+                      className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+                        plannerEventDraft.recurrenceApplyScope === option.id
+                          ? "bg-white text-slate-900 shadow-sm"
+                          : "text-slate-500 hover:text-slate-800"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </Field>
+            ) : null}
+
+            {plannerEventError ? (
+              <div className="rounded-2xl border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                {plannerEventError}
+              </div>
+            ) : null}
+
+            <Field label="Title">
+              <input
+                value={plannerEventDraft.title}
+                onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, title: e.target.value })}
+                className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                placeholder="Event title"
+              />
+            </Field>
+
+            {plannerEventDraft.eventType === "work" ? (
+              <>
+                <Field label="Tracker task">
+                  <select
+                    value={plannerEventDraft.taskId}
+                    onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, taskId: e.target.value })}
+                    className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                  >
+                    <option value="">No linked task</option>
+                    {plannerTaskOptions.map((task) => (
+                      <option key={task.id} value={task.id}>
+                        {task.title}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+
+                <Field label="Focus">
+                  <input
+                    value={plannerEventDraft.description}
+                    onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, description: e.target.value })}
+                    className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                    placeholder="Optional focus"
+                  />
+                </Field>
+              </>
+            ) : null}
+
+            {plannerEventDraft.eventType === "meeting" ? (
+              <Field label="Who">
+                <input
+                  value={plannerEventDraft.who}
+                  onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, who: e.target.value })}
+                  className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                />
+              </Field>
+            ) : null}
+
+            {plannerEventDraft.eventType === "deadline" || plannerEventDraft.eventType === "personal" ? (
+              <label className="flex w-fit items-center gap-2 text-sm text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={plannerEventDraft.allDay}
+                  onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, allDay: e.target.checked })}
+                  className="h-4 w-4 rounded border-slate-300"
+                />
+                All day
+              </label>
+            ) : null}
+
+            {plannerEventDraft.eventType === "travel" ? (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Start date">
+                  <input
+                    type="date"
+                    value={plannerEventDraft.date}
+                    onChange={(e) => {
+                      const date = e.target.value;
+                      setPlannerEventDraft({
+                        ...plannerEventDraft,
+                        date,
+                        endDate: plannerEventDraft.endDate < date ? date : plannerEventDraft.endDate,
+                      });
+                    }}
+                    className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </Field>
+                <Field label="End date">
+                  <input
+                    type="date"
+                    value={plannerEventDraft.endDate}
+                    min={plannerEventDraft.date}
+                    onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, endDate: e.target.value })}
+                    className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </Field>
+              </div>
+            ) : (
+              <Field label={plannerEventDraft.allDay ? "Date" : "Date"}>
+                <input
+                  type="date"
+                  value={plannerEventDraft.date}
+                  onChange={(e) => {
+                    const date = e.target.value;
+                    setPlannerEventDraft({
+                      ...plannerEventDraft,
+                      date,
+                      endDate: date,
+                      recurrenceStartDate:
+                        plannerEventDraft.eventType === "class" && plannerEventDraft.repeat === "weekly"
+                          ? date
+                          : plannerEventDraft.recurrenceStartDate,
+                      recurrenceEndDate:
+                        plannerEventDraft.eventType === "class" &&
+                        plannerEventDraft.repeat === "weekly" &&
+                        plannerEventDraft.recurrenceEndDate < date
+                          ? date
+                          : plannerEventDraft.recurrenceEndDate,
+                      recurrenceWeekday:
+                        plannerEventDraft.eventType === "class" && isValidISODate(date)
+                          ? isoWeekday(date)
+                          : plannerEventDraft.recurrenceWeekday,
+                    });
+                  }}
+                  className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                />
+              </Field>
+            )}
+
+            {!plannerEventDraft.allDay ? (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label={plannerEventDraft.eventType === "deadline" ? "Time" : "Start time"}>
+                  <input
+                    type="time"
+                    value={plannerEventDraft.startTime}
+                    onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, startTime: e.target.value })}
+                    className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </Field>
+                {plannerEventDraft.eventType !== "deadline" ? (
+                  <Field label="End time">
+                    <input
+                      type="time"
+                      value={plannerEventDraft.endTime}
+                      onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, endTime: e.target.value })}
+                      className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                    />
+                  </Field>
+                ) : null}
+              </div>
+            ) : null}
+
+            {plannerEventDraft.eventType === "class" ? (
+              <div className="grid gap-3 rounded-[18px] border border-slate-100 bg-slate-50/60 p-3">
+                <Field label="Repeat">
+                  <select
+                    value={plannerEventDraft.repeat}
+                    onChange={(e) => {
+                      const repeat = e.target.value as PlannerEventDraft["repeat"];
+                      setPlannerEventDraft({
+                        ...plannerEventDraft,
+                        repeat,
+                        recurrenceWeekday: isoWeekday(plannerEventDraft.date),
+                        recurrenceStartDate: plannerEventDraft.date,
+                        recurrenceEndDate:
+                          plannerEventDraft.recurrenceEndDate < plannerEventDraft.date
+                            ? plannerEventDraft.date
+                            : plannerEventDraft.recurrenceEndDate,
+                      });
+                    }}
+                    className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                  >
+                    <option value="none">Does not repeat</option>
+                    <option value="weekly">Weekly</option>
+                  </select>
+                </Field>
+
+                {plannerEventDraft.repeat === "weekly" ? (
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <Field label="Weekday">
+                      <select
+                        value={plannerEventDraft.recurrenceWeekday}
+                        onChange={(e) =>
+                          setPlannerEventDraft({
+                            ...plannerEventDraft,
+                            recurrenceWeekday: Number(e.target.value),
+                          })
+                        }
+                        className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                      >
+                        {PLANNER_WEEKDAY_OPTIONS.map((option) => (
+                          <option key={option.id} value={option.id}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="Series start">
+                      <input
+                        type="date"
+                        value={plannerEventDraft.recurrenceStartDate}
+                        onChange={(e) => {
+                          const recurrenceStartDate = e.target.value;
+                          setPlannerEventDraft({
+                            ...plannerEventDraft,
+                            recurrenceStartDate,
+                            recurrenceEndDate:
+                              plannerEventDraft.recurrenceEndDate < recurrenceStartDate
+                                ? recurrenceStartDate
+                                : plannerEventDraft.recurrenceEndDate,
+                          });
+                        }}
+                        className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                      />
+                    </Field>
+                    <Field label="Series end">
+                      <input
+                        type="date"
+                        value={plannerEventDraft.recurrenceEndDate}
+                        min={plannerEventDraft.recurrenceStartDate}
+                        onChange={(e) =>
+                          setPlannerEventDraft({
+                            ...plannerEventDraft,
+                            recurrenceEndDate:
+                              e.target.value < plannerEventDraft.recurrenceStartDate
+                                ? plannerEventDraft.recurrenceStartDate
+                                : e.target.value,
+                          })
+                        }
+                        className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                      />
+                    </Field>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {plannerEventDraft.eventType === "travel" ? (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Origin">
+                  <input
+                    value={plannerEventDraft.origin}
+                    onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, origin: e.target.value })}
+                    className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </Field>
+                <Field label="Destination">
+                  <input
+                    value={plannerEventDraft.destination}
+                    onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, destination: e.target.value })}
+                    className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </Field>
+              </div>
+            ) : null}
+
+            {plannerEventDraft.eventType === "class" ||
+            plannerEventDraft.eventType === "meeting" ||
+            plannerEventDraft.eventType === "personal" ? (
+              <Field label="Location">
+                <input
+                  value={plannerEventDraft.location}
+                  onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, location: e.target.value })}
+                  className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                />
+              </Field>
+            ) : null}
+
+            {plannerEventDraft.eventType === "meeting" ? (
+              <Field label="Video link">
+                <input
+                  value={plannerEventDraft.videoUrl}
+                  onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, videoUrl: e.target.value })}
+                  className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                />
+              </Field>
+            ) : null}
+
+            <Field label="Notes">
+              <textarea
+                value={plannerEventDraft.notes}
+                onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, notes: e.target.value })}
+                className="min-h-[72px] w-full rounded-[18px] border border-slate-200 bg-white p-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+              />
+            </Field>
+
+            <div className="flex items-center justify-between pt-2">
+              {plannerEventModalMode === "edit" ? (
+                <button
+                  type="button"
+                  onClick={
+                    plannerEventDraft.recurrenceParentId
+                      ? cancelPlannerRecurringOccurrence
+                      : removePlannerEvent
+                  }
+                  disabled={plannerEventSaving}
+                  className="rounded-full border border-slate-200 px-4 py-2 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50"
+                >
+                  {plannerEventDraft.recurrenceParentId ? "Cancel occurrence" : "Delete"}
+                </button>
+              ) : (
+                <span />
+              )}
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={closePlannerEventModal}
+                  disabled={plannerEventSaving}
+                  className="rounded-full border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={submitPlannerEvent}
+                  disabled={plannerEventSaving}
+                  className="rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+                >
+                  {plannerEventSaving ? "Saving" : "Save"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       {/* New Task modal */}
       <Modal
@@ -4100,6 +7667,7 @@ useEffect(() => {
         title={editingLogId ? "Edit time log" : "Log time"}
         onClose={() => {
           setEditingLogId(null);
+          setPlannerLogSourceEventId(null);
           setLogOpen(false);
         }}
       >
@@ -4223,6 +7791,7 @@ useEffect(() => {
                 className="rounded-full border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
                 onClick={() => {
                   setEditingLogId(null);
+                  setPlannerLogSourceEventId(null);
                   setLogOpen(false);
                 }}
               >
