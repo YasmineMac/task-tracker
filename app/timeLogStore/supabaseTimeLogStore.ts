@@ -1,10 +1,25 @@
 import { supabase } from "@/lib/supabase";
-import type { TimeLog } from "../taskStore/taskTypes";
+import {
+  isClosedTimeLog,
+  isOpenTimeLog,
+  isTimeLogISODate,
+  type TimeLog,
+} from "../taskStore/taskTypes";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function normalizeTimeValue(value: unknown) {
   return typeof value === "string" && value ? value.slice(0, 5) : undefined;
+}
+
+function normalizeDateValue(value: unknown) {
+  return typeof value === "string" && isTimeLogISODate(value) ? value : null;
+}
+
+function normalizeHoursValue(value: unknown) {
+  if (value === null || value === undefined) return null;
+  const hours = Number(value);
+  return Number.isFinite(hours) ? hours : null;
 }
 
 function timeLogFromRow(row: Record<string, unknown>): TimeLog {
@@ -13,8 +28,9 @@ function timeLogFromRow(row: Record<string, unknown>): TimeLog {
     taskId: String(row.task_id ?? ""),
     date: String(row.date ?? ""),
     startTime: normalizeTimeValue(row.start_time),
+    endDate: normalizeDateValue(row.end_date),
     endTime: normalizeTimeValue(row.end_time),
-    hours: Number(row.hours ?? 0),
+    hours: normalizeHoursValue(row.hours),
     note: typeof row.note === "string" ? row.note : "",
   };
 }
@@ -26,6 +42,7 @@ function timeLogPayload(log: TimeLog, syncCode: string) {
     task_id: log.taskId || null,
     date: log.date,
     start_time: log.startTime || null,
+    end_date: log.endDate || null,
     end_time: log.endTime || null,
     hours: log.hours,
     note: log.note ?? "",
@@ -44,7 +61,7 @@ export async function loadTimeLogs(syncCode: string) {
 
   const { data, error } = await supabase
     .from("time_logs")
-    .select("id,task_id,date,start_time,end_time,hours,note")
+    .select("id,task_id,date,start_time,end_date,end_time,hours,note")
     .eq("sync_code", syncCode)
     .order("date", { ascending: false })
     .order("created_at", { ascending: false });
@@ -58,7 +75,7 @@ export async function loadTimeLogs(syncCode: string) {
     ok: true,
     logs: (data || [])
       .map((row: Record<string, unknown>) => timeLogFromRow(row))
-      .filter((log) => log.id && log.date && Number.isFinite(log.hours) && log.hours > 0),
+      .filter((log) => log.id && (isClosedTimeLog(log) || isOpenTimeLog(log))),
   };
 }
 

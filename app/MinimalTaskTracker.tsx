@@ -11,13 +11,19 @@ import {
   CircleCheck,
   Diamond,
   Clock,
+  Clock3,
+  CalendarDays,
   Flag,
   Gauge,
   GraduationCap,
   Layers,
+  LayoutDashboard,
+  ListChecks,
   LoaderCircle,
   Mail,
   Minus,
+  PanelLeftClose,
+  PanelLeftOpen,
   Plane,
   Snowflake,
   UserRound,
@@ -51,6 +57,13 @@ import {
   type CalendarEvent,
   type CalendarEventType,
 } from "./calendarEventStore/calendarEventTypes";
+import {
+  calculateTimeLogDurationHours,
+  isClosedTimeLog,
+  isOpenTimeLog,
+  isTimeLogISODate,
+  timeLogTimeToMinutes,
+} from "./taskStore/taskTypes";
 import type {
   ActivityType,
   BackupSnapshot,
@@ -68,6 +81,9 @@ const TIME_LOGS_STORAGE_KEY = isDemoMode ? "task_tracker_demo_time_logs_v1" : "y
 const TASKS_LOCAL_CACHE_KEY = isDemoMode ? "task_tracker_demo_tasks_cache_v1" : "yasmine_tasks_local_cache_v1";
 const BACKUP_KEY_PREFIX = isDemoMode ? "task_tracker_demo_backup_" : "yasmine_backup_";
 const ACTIVE_TAB_STORAGE_KEY = isDemoMode ? "task_tracker_demo_active_tab" : "yasmine_active_tab";
+const SIDEBAR_COLLAPSED_STORAGE_KEY = isDemoMode
+  ? "task_tracker_demo_sidebar_collapsed"
+  : "yasmine_sidebar_collapsed";
 const ATTENTION_CATEGORY_SCOPE_KEY = isDemoMode
   ? "task_tracker_demo_attention_category_scope_v1"
   : "yasmine_attention_category_scope_v1";
@@ -151,6 +167,11 @@ type SmartImportProposal = {
 type LoggerValueMode = "hours" | "times";
 type LoggerRangeMode = "week" | "month" | "year" | "custom";
 type ListFilterMenu = "status" | "priority" | "difficulty" | "timeLeft" | "duration";
+type AppNavItem = {
+  id: ViewMode;
+  label: string;
+  icon: React.ComponentType<{ className?: string; "aria-hidden"?: boolean }>;
+};
 type AttentionWeights = {
   time: number;
   duration: number;
@@ -236,6 +257,12 @@ const PLANNER_WEEKDAY_OPTIONS = [
   { id: 5, label: "Friday" },
   { id: 6, label: "Saturday" },
   { id: 7, label: "Sunday" },
+];
+const APP_NAV_ITEMS: AppNavItem[] = [
+  { id: "board", label: "Dashboard", icon: LayoutDashboard },
+  { id: "planner", label: "Planner", icon: CalendarDays },
+  { id: "list", label: "Tasks", icon: ListChecks },
+  { id: "logger", label: "Logger", icon: Clock3 },
 ];
 
 function statusLabel(id: Status) {
@@ -410,6 +437,11 @@ function parseTimeLogHours(raw: string) {
 
 function resolveTimeLogHours(raw: string, calculatedHours: number | null) {
   return calculatedHours !== null ? calculatedHours : parseTimeLogHours(raw);
+}
+
+function resolveClosedTimeLogHours(raw: string, calculatedHours: number | null, startTime: string, endTime: string) {
+  if (startTime && endTime) return calculatedHours;
+  return resolveTimeLogHours(raw, calculatedHours);
 }
 
 function todayISO() {
@@ -1708,10 +1740,7 @@ function timeToMinutes(time: string) {
 }
 
 function durationHoursFromTimes(startTime: string, endTime: string) {
-  const start = timeToMinutes(startTime);
-  const end = timeToMinutes(endTime);
-  if (start === null || end === null || end <= start) return null;
-  return (end - start) / 60;
+  return calculateTimeLogDurationHours("2000-01-01", startTime, "2000-01-01", endTime);
 }
 
 function formatDuration(hours: number) {
@@ -1740,20 +1769,25 @@ function formatLoggerWeekday(iso: string) {
   return new Intl.DateTimeFormat("en", { weekday: "short" }).format(new Date(iso + "T00:00:00"));
 }
 
+function formatOpenSessionStarted(log: TimeLog) {
+  const weekday = formatLoggerWeekday(log.date);
+  return `Started ${weekday} ${log.startTime ?? ""}`.trim();
+}
+
 function loggerCellTone(hours: number) {
-  if (hours <= 0) return "border border-slate-100 bg-white text-transparent";
-  if (hours < 1) return "bg-violet-50 text-violet-700";
-  if (hours < 2) return "bg-violet-100 text-violet-800";
-  if (hours < 4) return "bg-violet-200 text-violet-900";
-  return "bg-violet-300 text-violet-950";
+  if (hours <= 0) return "bg-transparent text-transparent";
+  if (hours < 1) return "bg-violet-50/70 text-violet-700";
+  if (hours < 2) return "bg-violet-100/80 text-violet-800";
+  if (hours < 4) return "bg-violet-200/80 text-violet-900";
+  return "bg-violet-300/80 text-violet-950";
 }
 
 function loggerCountCellTone(count: number) {
-  if (count <= 0) return "border border-slate-100 bg-white text-transparent";
-  if (count === 1) return "bg-violet-50 text-violet-700";
-  if (count === 2) return "bg-violet-100 text-violet-800";
-  if (count <= 4) return "bg-violet-200 text-violet-900";
-  return "bg-violet-300 text-violet-950";
+  if (count <= 0) return "bg-transparent text-transparent";
+  if (count === 1) return "bg-violet-50/70 text-violet-700";
+  if (count === 2) return "bg-violet-100/80 text-violet-800";
+  if (count <= 4) return "bg-violet-200/80 text-violet-900";
+  return "bg-violet-300/80 text-violet-950";
 }
 
 function formatGridHours(hours: number) {
@@ -1803,22 +1837,37 @@ function normalizeTimeLogs(value: unknown): TimeLog[] {
     const raw = item as Partial<TimeLog>;
     const taskId = String(raw.taskId ?? "");
     const date = typeof raw.date === "string" ? raw.date : "";
-    const startTime = typeof raw.startTime === "string" ? raw.startTime : undefined;
-    const endTime = typeof raw.endTime === "string" ? raw.endTime : undefined;
-    const hours = Number(raw.hours ?? 0);
-    if (!taskId || taskId.startsWith("logger-") || !date || !Number.isFinite(hours) || hours <= 0) {
+    const startTime = timeLogTimeToMinutes(raw.startTime) !== null ? raw.startTime : undefined;
+    const endDate = typeof raw.endDate === "string" && isTimeLogISODate(raw.endDate) ? raw.endDate : null;
+    const endTime = timeLogTimeToMinutes(raw.endTime) !== null ? raw.endTime : undefined;
+    const hours = raw.hours === null ? null : Number(raw.hours ?? 0);
+
+    if (!taskId || taskId.startsWith("logger-") || !isTimeLogISODate(date)) {
       continue;
     }
 
-    logs.push({
+    const next: TimeLog = {
       id: String(raw.id ?? uid()),
       taskId,
       date,
       startTime,
+      endDate,
       endTime,
       hours,
       note: typeof raw.note === "string" ? raw.note : "",
-    });
+    };
+
+    const hasAnyTime = Boolean(next.startTime || next.endTime);
+    const isValidTimedClosedLog =
+      isClosedTimeLog(next) &&
+      (!hasAnyTime ||
+        (Boolean(next.startTime) &&
+          Boolean(next.endTime) &&
+          calculateTimeLogDurationHours(next.date, next.startTime ?? "", endDate ?? next.date, next.endTime ?? "") !== null));
+
+    if (isValidTimedClosedLog || isOpenTimeLog(next)) {
+      logs.push(next);
+    }
   }
 
   return logs;
@@ -1899,6 +1948,17 @@ function modeToStoredTab(mode: ViewMode) {
 function storedTabToMode(value: string | null): ViewMode {
   if (value === "planner" || value === "list" || value === "logger") return value;
   return "board";
+}
+
+function modeLabel(mode: ViewMode) {
+  return APP_NAV_ITEMS.find((item) => item.id === mode)?.label ?? "Dashboard";
+}
+
+function modeSubtitle(mode: ViewMode) {
+  if (mode === "board") return "What needs attention, then everything by category.";
+  if (mode === "planner") return "Calendar structure and scheduled blocks.";
+  if (mode === "logger") return "Actual time spent and working cadence.";
+  return "Search, filter and maintain task details.";
 }
 
 function daysUntil(dueISO?: string | null) {
@@ -2016,7 +2076,7 @@ function cadenceStatsForTask(task: Task, timeLogs: TimeLog[]) {
       )).toISOString().slice(0, 10)
     : null;
   const daysSinceTaskCreated = taskCreatedDate ? daysBetweenISODates(taskCreatedDate, today) : null;
-  const taskLogs = timeLogs.filter((log) => log.taskId === task.id && isValidISODate(log.date));
+  const taskLogs = timeLogs.filter((log) => log.taskId === task.id && isValidISODate(log.date) && isClosedTimeLog(log));
   const lastWorkedDate = taskLogs.reduce<string | null>(
     (latest, log) => (!latest || log.date > latest ? log.date : latest),
     null
@@ -2027,7 +2087,7 @@ function cadenceStatsForTask(task: Task, timeLogs: TimeLog[]) {
     const start = addDaysISO(today, -(days - 1));
     return taskLogs
       .filter((log) => log.date >= start && log.date <= today)
-      .reduce((sum, log) => sum + log.hours, 0);
+      .reduce((sum, log) => sum + (log.hours ?? 0), 0);
   }
 
   const hoursLast7Days = hoursSince(7);
@@ -2425,20 +2485,31 @@ function Modal({
   children: React.ReactNode;
   onClose: () => void;
 }) {
+  useEffect(() => {
+    if (!open) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, onClose]);
+
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto px-4 py-4">
       <div
         className="absolute inset-0 bg-black/30"
         onClick={onClose}
         aria-hidden="true"
       />
-      <div className="relative w-full max-w-[560px] rounded-2xl border border-slate-200 bg-white shadow-xl">
-        <div className="border-b border-slate-100 px-5 py-4">
+      <div className="relative flex max-h-[calc(100vh-2rem)] w-full max-w-[560px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl">
+        <div className="shrink-0 border-b border-slate-100 px-5 py-4">
           <div className="text-sm font-semibold text-slate-900">{title}</div>
         </div>
-        <div className="px-5 py-4">{children}</div>
+        <div className="overflow-y-auto px-5 py-4">{children}</div>
       </div>
     </div>
   );
@@ -2691,8 +2762,11 @@ export default function MinimalTaskTracker() {
   const skipNextTimeLogSaveRef = useRef(false);
   const timeLogsRef = useRef(timeLogs);
   const [mode, setMode] = useState<ViewMode>("board");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarPreferenceLoaded, setSidebarPreferenceLoaded] = useState(false);
   const [plannerView, setPlannerView] = useState<PlannerView>("week");
   const [plannerAnchorDate, setPlannerAnchorDate] = useState<string>("");
+  const [plannerMobileSelectedDate, setPlannerMobileSelectedDate] = useState<string>("");
   const [plannerEventModalOpen, setPlannerEventModalOpen] = useState(false);
   const [plannerEventModalMode, setPlannerEventModalMode] = useState<PlannerEventModalMode>("create");
   const [plannerEventDraft, setPlannerEventDraft] = useState<PlannerEventDraft | null>(null);
@@ -2711,6 +2785,7 @@ export default function MinimalTaskTracker() {
 
   const [attentionCategoryMenuOpen, setAttentionCategoryMenuOpen] = useState(false);
   const [attentionCategoryExcludedIds, setAttentionCategoryExcludedIds] = useState<string[]>([]);
+  const [expandedDashboardCategoryIds, setExpandedDashboardCategoryIds] = useState<string[]>([]);
 
 const [weights, setWeights] = useState(() => {
   if (typeof window === "undefined") {
@@ -2758,13 +2833,16 @@ useEffect(() => {
   const [logTaskId, setLogTaskId] = useState<string>("");
   const [logDate, setLogDate] = useState<string>("");
   const [logStartTime, setLogStartTime] = useState<string>("");
+  const [logEndDate, setLogEndDate] = useState<string>("");
   const [logEndTime, setLogEndTime] = useState<string>("");
   const [logHoursInput, setLogHoursInput] = useState<string>("");
   const [logNote, setLogNote] = useState<string>("");
+  const [logSaving, setLogSaving] = useState(false);
   const [loggerTaskFilter, setLoggerTaskFilter] = useState<string>("all");
   const [loggerValueMode, setLoggerValueMode] = useState<LoggerValueMode>("hours");
   const [loggerRangeMode, setLoggerRangeMode] = useState<LoggerRangeMode>("month");
   const [loggerAnchorDate, setLoggerAnchorDate] = useState<string>("");
+  const [loggerMobileSelectedDate, setLoggerMobileSelectedDate] = useState<string>("");
   const [customStartDate, setCustomStartDate] = useState<string>("");
   const [customEndDate, setCustomEndDate] = useState<string>("");
   const [clientToday, setClientToday] = useState<string>("");
@@ -2784,6 +2862,7 @@ useEffect(() => {
   const [listSortDir, setListSortDir] = useState<"asc" | "desc">("asc");
   const [openStatusTaskId, setOpenStatusTaskId] = useState<string | null>(null);
   const [openListFilter, setOpenListFilter] = useState<ListFilterMenu | null>(null);
+  const [mobileTaskFiltersOpen, setMobileTaskFiltersOpen] = useState(false);
   const [statusFilters, setStatusFilters] = useState<Status[]>([]);
   const [priorityFilters, setPriorityFilters] = useState<Priority[]>([]);
   const [difficultyFilters, setDifficultyFilters] = useState<string[]>([]);
@@ -2810,7 +2889,10 @@ useEffect(() => {
     setCustomStartDate(today);
     setCustomEndDate(today);
     setLogDate(today);
+    setLogEndDate(today);
     setMode(storedTabToMode(localStorage.getItem(ACTIVE_TAB_STORAGE_KEY)));
+    setSidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "true");
+    setSidebarPreferenceLoaded(true);
     setBackupStatus(getLatestLocalBackupLabel());
 
     const savedAttentionCategoryScope = localStorage.getItem(ATTENTION_CATEGORY_SCOPE_KEY);
@@ -2871,6 +2953,11 @@ useEffect(() => {
 }, [hasMounted, mode]);
 
 useEffect(() => {
+  if (!hasMounted || !sidebarPreferenceLoaded) return;
+  localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, sidebarCollapsed ? "true" : "false");
+}, [hasMounted, sidebarCollapsed, sidebarPreferenceLoaded]);
+
+useEffect(() => {
   if (!hasMounted) return;
   localStorage.setItem(ATTENTION_CATEGORY_SCOPE_KEY, JSON.stringify(attentionCategoryExcludedIds));
 }, [attentionCategoryExcludedIds, hasMounted]);
@@ -2892,6 +2979,7 @@ useEffect(() => {
 
 useEffect(() => {
   if (mode !== "list") setOpenListFilter(null);
+  if (mode !== "list") setMobileTaskFiltersOpen(false);
 }, [mode]);
 
 useEffect(() => {
@@ -3226,6 +3314,16 @@ useEffect(() => {
     return rows;
   }, [difficultyFilters, durationFilter, filtered, listSortKey, listSortDir, priorityFilters, statusFilters, timeLeftFilter]);
 
+  const activeTaskFilterCount =
+    (courseFilter === "all" ? 0 : 1) +
+    statusFilters.length +
+    priorityFilters.length +
+    difficultyFilters.length +
+    (timeLeftFilter ? 1 : 0) +
+    (durationFilter ? 1 : 0);
+
+  const closedTimeLogs = useMemo(() => timeLogs.filter(isClosedTimeLog), [timeLogs]);
+
   const byCourse = useMemo(() => {
     const map: Record<string, Task[]> = Object.fromEntries(activeCategories.map((c) => [c.id, []]));
     for (const t of filtered.filter((task) => task.status !== "completed")) {
@@ -3265,7 +3363,7 @@ useEffect(() => {
       .filter((task) => task.status !== "frozen")
       .filter((task) => attentionIncludedCategoryIdSet.has(task.courseId))
       .map((task) => {
-        const v2 = attentionScoreV2(task, timeLogs);
+        const v2 = attentionScoreV2(task, closedTimeLogs);
         return {
           task,
           total: v2.rawScore,
@@ -3288,7 +3386,7 @@ useEffect(() => {
       ...item,
       ...visualScores[index],
     }));
-  }, [attentionIncludedCategoryIdSet, attentionIncludedCategoryIds.length, filtered, timeLogs]);
+  }, [attentionIncludedCategoryIdSet, attentionIncludedCategoryIds.length, closedTimeLogs, filtered]);
 
   useEffect(() => {
     const target = window as typeof window & {
@@ -3298,7 +3396,7 @@ useEffect(() => {
     target.yasmineCompareAttentionV2 = () => {
       const rows = scoredTasks
         .map(({ task, total, relativePosition, visualAttentionScore, visualLevel }) => {
-          const v2 = attentionScoreV2(task, timeLogs);
+          const v2 = attentionScoreV2(task, closedTimeLogs);
           const reasons = getAttentionReasons(task, v2);
           return {
             task: task.title,
@@ -3351,7 +3449,7 @@ useEffect(() => {
     return () => {
       delete target.yasmineCompareAttentionV2;
     };
-  }, [courseLabel, scoredTasks, timeLogs]);
+  }, [closedTimeLogs, courseLabel, scoredTasks]);
 
   const plannerAnchor = isValidISODate(plannerAnchorDate)
     ? plannerAnchorDate
@@ -3447,6 +3545,25 @@ useEffect(() => {
       return groups;
     }, {});
   }, [plannerWeekDays, plannerWeekEvents]);
+  const plannerMobileWeekDate = plannerWeekDays.includes(plannerMobileSelectedDate)
+    ? plannerMobileSelectedDate
+    : plannerWeekDays.includes(clientToday)
+      ? clientToday
+      : plannerWeekDays[0] ?? plannerAnchor;
+  const plannerMobileWeekItems = useMemo(() => {
+    return plannerItemsForDate(
+      plannerMobileWeekDate,
+      plannerCalendarEventsForRender,
+      plannerTaskDeadlinesByDate
+    );
+  }, [plannerCalendarEventsForRender, plannerMobileWeekDate, plannerTaskDeadlinesByDate]);
+  const plannerMobileAllDayItems = useMemo(() => {
+    return plannerMobileWeekItems.filter((item) => {
+      if (item.sourceType === "task_deadline") return true;
+      return item.event.allDay || !item.event.startAt;
+    });
+  }, [plannerMobileWeekItems]);
+  const plannerMobileTimedLayouts = plannerTimedLayoutsByDate[plannerMobileWeekDate] ?? [];
   const plannerMonthEventsByDate = useMemo(() => {
     return plannerMonthDays.reduce<Record<string, PlannerDateItem[]>>((groups, day) => {
       groups[day.date] = plannerItemsForDate(
@@ -3672,6 +3789,11 @@ useEffect(() => {
     if (loggerRangeMode === "year") return [];
     return loggerDaysForRange(loggerDateRange);
   }, [loggerDateRange, loggerRangeMode]);
+  const loggerMobileDate = loggerDays.includes(loggerMobileSelectedDate)
+    ? loggerMobileSelectedDate
+    : loggerDays.includes(clientToday)
+      ? clientToday
+      : loggerDays[0] ?? loggerDateRange.start;
   const useCompactLoggerGrid =
     loggerRangeMode === "month" || (loggerRangeMode === "custom" && loggerDays.length > 7);
 
@@ -3682,12 +3804,23 @@ useEffect(() => {
   }, [loggerDateRange.end, loggerDateRange.start, loggerRangeMode]);
 
   const logsInRange = useMemo(() => {
-    return timeLogs.filter((log) => log.date >= loggerDateRange.start && log.date <= loggerDateRange.end);
-  }, [loggerDateRange, timeLogs]);
+    return closedTimeLogs.filter((log) => log.date >= loggerDateRange.start && log.date <= loggerDateRange.end);
+  }, [closedTimeLogs, loggerDateRange]);
+
+  const openTimeLogs = useMemo(() => {
+    return timeLogs
+      .filter(isOpenTimeLog)
+      .slice()
+      .sort((a, b) => {
+        const dateCompare = b.date.localeCompare(a.date);
+        if (dateCompare !== 0) return dateCompare;
+        return (b.startTime ?? "").localeCompare(a.startTime ?? "");
+      });
+  }, [timeLogs]);
 
   const calculatedLogHours = useMemo(() => {
-    return durationHoursFromTimes(logStartTime, logEndTime);
-  }, [logEndTime, logStartTime]);
+    return calculateTimeLogDurationHours(logDate, logStartTime, logEndDate || logDate, logEndTime);
+  }, [logDate, logEndDate, logEndTime, logStartTime]);
   const isCalculatedLogDuration = calculatedLogHours !== null;
   const displayedLogHoursInput = isCalculatedLogDuration
     ? formatHourInput(calculatedLogHours)
@@ -3700,24 +3833,24 @@ useEffect(() => {
   }, [calculatedLogHours]);
 
   const loggerTasks = useMemo(() => {
-    const taskIdsWithLogs = new Set(timeLogs.map((log) => log.taskId));
+    const taskIdsWithLogs = new Set(closedTimeLogs.map((log) => log.taskId));
 
     return filtered
       .filter((task) => loggerTaskFilter === "all" || task.id === loggerTaskFilter)
       .filter((task) => taskIdsWithLogs.has(task.id))
       .slice()
       .sort((a, b) => {
-        const aHours = timeLogs
+        const aHours = closedTimeLogs
             .filter((log) => log.taskId === a.id)
-            .reduce((sum, log) => sum + log.hours, 0);
-        const bHours = timeLogs
+            .reduce((sum, log) => sum + (log.hours ?? 0), 0);
+        const bHours = closedTimeLogs
             .filter((log) => log.taskId === b.id)
-            .reduce((sum, log) => sum + log.hours, 0);
+            .reduce((sum, log) => sum + (log.hours ?? 0), 0);
 
         if (bHours !== aHours) return bHours - aHours;
         return a.title.localeCompare(b.title);
       });
-  }, [filtered, loggerTaskFilter, timeLogs]);
+  }, [closedTimeLogs, filtered, loggerTaskFilter]);
 
   const taskNameById = useMemo(() => {
     return Object.fromEntries(tasks.map((task) => [task.id, task.title]));
@@ -3743,26 +3876,44 @@ useEffect(() => {
 
   const logsByTaskDate = useMemo(() => {
     const map: Record<string, TimeLog[]> = {};
-    for (const log of timeLogs) {
+    for (const log of closedTimeLogs) {
       const key = `${log.taskId}:${log.date}`;
       map[key] = [...(map[key] ?? []), log];
     }
     return map;
-  }, [timeLogs]);
+  }, [closedTimeLogs]);
+
+  const openLogsByTaskDate = useMemo(() => {
+    const map: Record<string, TimeLog[]> = {};
+    for (const log of openTimeLogs) {
+      const key = `${log.taskId}:${log.date}`;
+      map[key] = [...(map[key] ?? []), log];
+    }
+    return map;
+  }, [openTimeLogs]);
+
+  const editingTimeLog = useMemo(() => {
+    return editingLogId ? timeLogs.find((log) => log.id === editingLogId) ?? null : null;
+  }, [editingLogId, timeLogs]);
+  const logModalTitle = editingTimeLog && isOpenTimeLog(editingTimeLog)
+    ? "Add end time"
+    : editingLogId
+      ? "Edit time log"
+      : "Log time";
 
   const loggerRows = useMemo(() => {
     const visibleDates = new Set(loggerDays);
     return loggerTasks.map((task) => {
-      const logs = timeLogs.filter((log) => log.taskId === task.id && visibleDates.has(log.date));
+      const logs = closedTimeLogs.filter((log) => log.taskId === task.id && visibleDates.has(log.date));
       return {
         task,
-        total: logs.reduce((sum, log) => sum + log.hours, 0),
+        total: logs.reduce((sum, log) => sum + (log.hours ?? 0), 0),
       };
     });
-  }, [loggerDays, loggerTasks, timeLogs]);
+  }, [closedTimeLogs, loggerDays, loggerTasks]);
 
   const loggerRangeSummary = useMemo(() => {
-    const totalHours = logsInRange.reduce((sum, log) => sum + log.hours, 0);
+    const totalHours = logsInRange.reduce((sum, log) => sum + (log.hours ?? 0), 0);
     const activeDates = new Set(logsInRange.map((log) => log.date));
     const averageHoursPerActiveDay = activeDates.size ? totalHours / activeDates.size : 0;
     const taskTotals = new Map<string, number>();
@@ -3770,11 +3921,11 @@ useEffect(() => {
 
     for (const log of logsInRange) {
       const taskKey = log.taskId || "archived";
-      taskTotals.set(taskKey, (taskTotals.get(taskKey) ?? 0) + log.hours);
+      taskTotals.set(taskKey, (taskTotals.get(taskKey) ?? 0) + (log.hours ?? 0));
 
       const task = log.taskId ? taskById[log.taskId] : null;
       const categoryKey = task?.courseId ?? "archived";
-      categoryTotals.set(categoryKey, (categoryTotals.get(categoryKey) ?? 0) + log.hours);
+      categoryTotals.set(categoryKey, (categoryTotals.get(categoryKey) ?? 0) + (log.hours ?? 0));
     }
 
     const mostWorkedTaskEntry = Array.from(taskTotals.entries()).sort((a, b) => b[1] - a[1])[0] ?? null;
@@ -3806,7 +3957,7 @@ useEffect(() => {
   const workCalendar = useMemo(() => {
     const totals = new Map<string, number>();
     for (const log of logsInRange) {
-      totals.set(log.date, (totals.get(log.date) ?? 0) + log.hours);
+      totals.set(log.date, (totals.get(log.date) ?? 0) + (log.hours ?? 0));
     }
 
     const rawStart = loggerDateRange.start;
@@ -3842,7 +3993,7 @@ useEffect(() => {
     const totals = new Map<string, number>();
     for (const log of logsInRange) {
       const taskKey = log.taskId || "archived";
-      totals.set(taskKey, (totals.get(taskKey) ?? 0) + log.hours);
+      totals.set(taskKey, (totals.get(taskKey) ?? 0) + (log.hours ?? 0));
     }
 
     const rows = Array.from(totals.entries())
@@ -4490,13 +4641,15 @@ useEffect(() => {
   function openLogTime(taskId?: string, date = clientToday || todayISO(), log?: TimeLog) {
     const selectedTaskId = taskId ?? loggerTasks[0]?.id ?? logTaskOptions[0]?.id ?? "";
     const existing = log ?? null;
-    const existingHoursInput = existing ? formatHourInput(existing.hours) : "";
+    const existingHoursInput = existing && isClosedTimeLog(existing) ? formatHourInput(existing.hours) : "";
+    const startDate = existing?.date ?? date;
 
     setPlannerLogSourceEventId(null);
     setEditingLogId(existing?.id ?? null);
     setLogTaskId(existing?.taskId ?? selectedTaskId);
-    setLogDate(existing?.date ?? date);
+    setLogDate(startDate);
     setLogStartTime(existing?.startTime ?? "");
+    setLogEndDate(existing?.endDate ?? startDate);
     setLogEndTime(existing?.endTime ?? "");
     setLogHoursInput(existingHoursInput);
     setLogNote(existing?.note ?? "");
@@ -4570,8 +4723,9 @@ useEffect(() => {
     setLogTaskId(log.taskId);
     setLogDate(log.date);
     setLogStartTime(log.startTime ?? "");
+    setLogEndDate(log.endDate ?? log.date);
     setLogEndTime(log.endTime ?? "");
-    setLogHoursInput(formatHourInput(log.hours));
+    setLogHoursInput(formatHourInput(log.hours ?? 0));
     setLogNote(log.note);
     setLogOpen(true);
   }
@@ -4612,27 +4766,7 @@ useEffect(() => {
     setLoggerAnchor(today);
   }
 
-  async function submitTimeLog() {
-    const hours = resolveTimeLogHours(logHoursInput, calculatedLogHours);
-    if (!logTaskId || hours === null) return;
-
-    const date = logDate || clientToday || todayISO();
-    const existing = editingLogId
-      ? timeLogs.find((entry) => entry.id === editingLogId)
-      : null;
-    const next: TimeLog = {
-      id: existing?.id ?? createTimeLogId(),
-      taskId: logTaskId,
-      date,
-      startTime: logStartTime || undefined,
-      endTime: logEndTime || undefined,
-      hours,
-      note: logNote.trim(),
-    };
-
-    const sourcePlannerEvent = plannerLogSourceEventId
-      ? calendarEvents.find((event) => event.id === plannerLogSourceEventId)
-      : null;
+  async function persistTimeLogDraft(next: TimeLog, existing: TimeLog | null, sourcePlannerEvent: CalendarEvent | null) {
     const saved = await saveSupabaseTimeLog(SYNC_CODE, next);
 
     if (!saved) {
@@ -4640,14 +4774,14 @@ useEffect(() => {
         operation: existing ? "edit" : "create",
         id: next.id,
       });
-      if (sourcePlannerEvent) return;
+      if (sourcePlannerEvent) return false;
     }
 
     if (sourcePlannerEvent) {
       const savedResolution = await savePlannerWorkResolution(sourcePlannerEvent, "logged", next.id);
       if (!savedResolution) {
         await deleteSupabaseTimeLog(SYNC_CODE, next.id);
-        return;
+        return false;
       }
     }
 
@@ -4659,6 +4793,66 @@ useEffect(() => {
     setEditingLogId(null);
     setPlannerLogSourceEventId(null);
     setLogOpen(false);
+    return true;
+  }
+
+  async function submitTimeLog() {
+    if (logSaving) return;
+    const closingOpenSession = editingTimeLog ? isOpenTimeLog(editingTimeLog) : false;
+    const hours = closingOpenSession
+      ? calculatedLogHours
+      : resolveClosedTimeLogHours(logHoursInput, calculatedLogHours, logStartTime, logEndTime);
+    if (!logTaskId || hours === null) return;
+
+    const date = logDate || clientToday || todayISO();
+    const existing = editingTimeLog;
+    const next: TimeLog = {
+      id: existing?.id ?? createTimeLogId(),
+      taskId: logTaskId,
+      date,
+      startTime: logStartTime || undefined,
+      endDate: logEndTime ? logEndDate || date : null,
+      endTime: logEndTime || undefined,
+      hours,
+      note: logNote.trim(),
+    };
+
+    const sourcePlannerEvent = plannerLogSourceEventId
+      ? calendarEvents.find((event) => event.id === plannerLogSourceEventId)
+      : null;
+    setLogSaving(true);
+    try {
+      await persistTimeLogDraft(next, existing, sourcePlannerEvent);
+    } finally {
+      setLogSaving(false);
+    }
+  }
+
+  async function startOpenTimeLog() {
+    if (logSaving) return;
+    const date = logDate || clientToday || todayISO();
+    if (!logTaskId || !isTimeLogISODate(date) || timeLogTimeToMinutes(logStartTime) === null) return;
+
+    const existing = editingTimeLog;
+    const next: TimeLog = {
+      id: existing?.id ?? createTimeLogId(),
+      taskId: logTaskId,
+      date,
+      startTime: logStartTime,
+      endDate: null,
+      endTime: undefined,
+      hours: null,
+      note: logNote.trim(),
+    };
+
+    if (!isOpenTimeLog(next)) return;
+
+    setLogSaving(true);
+    try {
+      await persistTimeLogDraft(next, existing, null);
+    } finally {
+      setLogSaving(false);
+    }
   }
 
   function deleteTimeLog(id: string) {
@@ -4764,7 +4958,7 @@ useEffect(() => {
       <div className="relative inline-flex" onClick={(e) => e.stopPropagation()}>
         <button
           type="button"
-          className={`rounded-full border px-3 py-2 text-sm ${
+          className={`h-9 rounded-xl border px-3 text-sm ${
             count
               ? "border-slate-300 bg-slate-50 text-slate-800"
               : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
@@ -4893,7 +5087,7 @@ useEffect(() => {
       <div className="relative inline-flex" onClick={(e) => e.stopPropagation()}>
         <button
           type="button"
-          className={`rounded-full border px-3 py-2 text-sm ${
+          className={`h-9 rounded-xl border px-3 text-sm ${
             range
               ? "border-slate-300 bg-slate-50 text-slate-800"
               : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
@@ -5008,136 +5202,356 @@ useEffect(() => {
     });
   }
 
+  const pageTitle = modeLabel(mode);
+  const pageSubtitle = modeSubtitle(mode);
+
   return (
-    <div className="min-h-screen w-full bg-slate-50 text-slate-900">
-      <div className="mx-auto max-w-7xl px-4 py-8">
-        {/* Header */}
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-          <div className="space-y-1">
-            <div className="text-sm text-slate-500">
-              {isDemoMode ? "Task Tracker Playground" : "Yasmine's Tracker"}
+    <div className="min-h-screen w-full bg-[#f7f8f8] text-slate-900">
+      <aside
+        className={`fixed inset-y-0 left-0 z-40 hidden border-r border-slate-200/80 bg-white/85 py-5 backdrop-blur transition-[width] duration-200 md:flex md:flex-col ${
+          sidebarCollapsed ? "w-16 px-2" : "w-60 px-4"
+        }`}
+      >
+        <div className={`flex items-center ${sidebarCollapsed ? "justify-center" : "gap-3 px-2"}`}>
+          <div className="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-slate-200 bg-white">
+            <div className="grid grid-cols-2 gap-0.5">
+              <span className="h-2 w-2 rounded-sm bg-slate-900" />
+              <span className="h-2 w-2 rounded-sm bg-slate-300" />
+              <span className="h-2 w-2 rounded-sm bg-slate-300" />
+              <span className="h-2 w-2 rounded-sm bg-slate-900" />
             </div>
-            <h1 className="text-2xl font-semibold tracking-tight">Tasks</h1>
           </div>
-
-          <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
-            <select
-              value={courseFilter}
-              onChange={(e) => setCourseFilter(e.target.value)}
-              className="w-full rounded-full border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200 lg:w-[180px]"
-            >
-              <option value="all">Category</option>
-              {activeCategories.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {categoryDisplayLabel(c)}
-                </option>
-              ))}
-            </select>
-
-            {mode === "list" ? (
-              <>
-                {renderListFilterMenu<Status>({
-                  id: "status",
-                  label: "Status",
-                  count: statusFilters.length,
-                  options: LIST_STATUS_OPTIONS,
-                  selected: statusFilters,
-                  onToggle: (value) => setStatusFilters((prev) => toggleFilterValue(prev, value)),
-                })}
-
-                {renderListFilterMenu<Priority>({
-                  id: "priority",
-                  label: "Priority",
-                  count: priorityFilters.length,
-                  options: PRIORITIES,
-                  selected: priorityFilters,
-                  onToggle: (value) => setPriorityFilters((prev) => toggleFilterValue(prev, value)),
-                })}
-
-                {renderListFilterMenu<string>({
-                  id: "difficulty",
-                  label: "Difficulty",
-                  count: difficultyFilters.length,
-                  options: DIFFICULTY_FILTERS.map((value) => ({ id: value, label: value })),
-                  selected: difficultyFilters,
-                  onToggle: (value) => setDifficultyFilters((prev) => toggleFilterValue(prev, value)),
-                })}
-
-                {renderTimeLeftFilterMenu()}
-              </>
-            ) : null}
-
-            <div className="relative">
-              <input
-                ref={searchRef}
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search (press /)"
-                className="w-full rounded-full border border-slate-200 bg-white px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200 lg:w-[260px]"
-              />
+          {!sidebarCollapsed ? (
+          <div className="min-w-0">
+            <div className="text-sm font-semibold tracking-tight text-slate-900">
+              {isDemoMode ? "Tracker Playground" : "Yasmine's Tracker"}
             </div>
-
-            <button
-              onClick={() => setNewOpen(true)}
-              className="rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
-            >
-              New
-            </button>
+            <div className="text-[11px] text-slate-400">Personal operating system</div>
           </div>
+          ) : null}
         </div>
 
-        {/* Tabs */}
-        <div className="mt-5 flex items-center justify-between">
-          <div className="inline-flex rounded-full border border-slate-200 bg-white p-1">
-            <button
-              className={`rounded-full px-4 py-2 text-sm ${
-                mode === "board" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"
-              }`}
-              onClick={() => setMode("board")}
-            >
-              Dashboard
-            </button>
-            <button
-              className={`rounded-full px-4 py-2 text-sm ${
-                mode === "planner" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"
-              }`}
-              onClick={() => setMode("planner")}
-            >
-              Planner
-            </button>
-            <button
-              className={`rounded-full px-4 py-2 text-sm ${
-                mode === "list" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"
-              }`}
-              onClick={() => setMode("list")}
-            >
-              List
-            </button>
-            <button
-              className={`rounded-full px-4 py-2 text-sm ${
-                mode === "logger" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"
-              }`}
-              onClick={() => setMode("logger")}
-            >
-              Logger
-            </button>
-          </div>
+        <nav className="mt-8 grid gap-1">
+          {APP_NAV_ITEMS.map((item) => {
+            const Icon = item.icon;
+            const active = mode === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setMode(item.id)}
+                title={sidebarCollapsed ? item.label : undefined}
+                className={`group relative flex h-9 items-center rounded-xl text-sm transition-colors ${
+                  active
+                    ? "bg-slate-900 text-white"
+                    : "text-slate-500 hover:bg-slate-100/80 hover:text-slate-900"
+                } ${sidebarCollapsed ? "justify-center px-0" : "gap-3 px-3"}`}
+              >
+                <Icon className="h-4 w-4" aria-hidden />
+                {!sidebarCollapsed ? <span>{item.label}</span> : null}
+                {sidebarCollapsed ? (
+                  <span className="pointer-events-none absolute left-full top-1/2 z-50 ml-2 -translate-y-1/2 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-600 opacity-0 shadow-lg transition-opacity group-hover:opacity-100">
+                    {item.label}
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
+        </nav>
 
-          <div className="text-sm text-slate-500">
-            {filtered.length} task{filtered.length === 1 ? "" : "s"}
-          </div>
+        <button
+          type="button"
+          onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
+          className={`mt-auto flex h-9 items-center rounded-xl text-sm text-slate-400 transition-colors hover:bg-slate-100/80 hover:text-slate-800 ${
+            sidebarCollapsed ? "justify-center px-0" : "gap-2 px-3"
+          }`}
+          aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+        >
+          {sidebarCollapsed ? (
+            <PanelLeftOpen className="h-4 w-4" aria-hidden="true" />
+          ) : (
+            <PanelLeftClose className="h-4 w-4" aria-hidden="true" />
+          )}
+          {!sidebarCollapsed ? <span>Collapse</span> : null}
+        </button>
+      </aside>
+
+      <nav className="fixed inset-x-0 bottom-0 z-50 border-t border-slate-200 bg-white/95 px-3 pb-[calc(env(safe-area-inset-bottom)+0.35rem)] pt-2 backdrop-blur md:hidden">
+        <div className="grid grid-cols-4 gap-1">
+          {APP_NAV_ITEMS.map((item) => {
+            const Icon = item.icon;
+            const active = mode === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setMode(item.id)}
+                className={`flex flex-col items-center gap-1 rounded-xl px-2 py-1.5 text-[11px] transition-colors ${
+                  active ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-100"
+                }`}
+              >
+                <Icon className="h-4 w-4" aria-hidden />
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </nav>
+
+      <main className={`min-h-screen pb-24 transition-[margin] duration-200 md:pb-8 ${sidebarCollapsed ? "md:ml-16" : "md:ml-60"}`}>
+        <div className="mx-auto max-w-[1440px] px-4 py-5 sm:px-6 lg:px-8">
+          <div className="border-b border-slate-200/70 pb-4">
+            <div className="space-y-1">
+              <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400">
+                {isDemoMode ? "Task Tracker Playground" : "Yasmine's Tracker"}
+              </div>
+              <h1 className="text-xl font-semibold tracking-tight text-slate-950">{pageTitle}</h1>
+              <p className="max-w-xl text-sm text-slate-500">{pageSubtitle}</p>
+            </div>
         </div>
 
         {/* Main */}
         {mode === "list" ? (
           <>
-            <div className="mt-5 overflow-x-auto overflow-y-visible rounded-2xl border border-slate-200 bg-white">
+            <div className="mt-5 hidden items-center justify-end gap-2 rounded-[18px] border border-slate-200/70 bg-white p-2 md:flex md:flex-wrap">
+              <select
+                value={courseFilter}
+                onChange={(e) => setCourseFilter(e.target.value)}
+                className="h-9 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200 lg:w-[180px]"
+              >
+                <option value="all">Category</option>
+                {activeCategories.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {categoryDisplayLabel(c)}
+                  </option>
+                ))}
+              </select>
+
+              {renderListFilterMenu<Status>({
+                id: "status",
+                label: "Status",
+                count: statusFilters.length,
+                options: LIST_STATUS_OPTIONS,
+                selected: statusFilters,
+                onToggle: (value) => setStatusFilters((prev) => toggleFilterValue(prev, value)),
+              })}
+
+              {renderListFilterMenu<Priority>({
+                id: "priority",
+                label: "Priority",
+                count: priorityFilters.length,
+                options: PRIORITIES,
+                selected: priorityFilters,
+                onToggle: (value) => setPriorityFilters((prev) => toggleFilterValue(prev, value)),
+              })}
+
+              {renderListFilterMenu<string>({
+                id: "difficulty",
+                label: "Difficulty",
+                count: difficultyFilters.length,
+                options: DIFFICULTY_FILTERS.map((value) => ({ id: value, label: value })),
+                selected: difficultyFilters,
+                onToggle: (value) => setDifficultyFilters((prev) => toggleFilterValue(prev, value)),
+              })}
+
+              {renderTimeLeftFilterMenu()}
+              {renderDurationFilterMenu()}
+
+              <div className="relative">
+                <input
+                  ref={searchRef}
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search (press /)"
+                  className="h-9 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200 lg:w-[260px]"
+                />
+              </div>
+
+              <button
+                onClick={() => setNewOpen(true)}
+                className="h-9 rounded-xl bg-slate-900 px-4 text-sm font-medium text-white hover:bg-slate-800"
+              >
+                New
+              </button>
+            </div>
+
+            <div className="mt-5 md:hidden">
+              <div className="flex items-center gap-2">
+                <input
+                  ref={searchRef}
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search tasks"
+                  className="h-10 min-w-0 flex-1 rounded-2xl border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileTaskFiltersOpen((open) => !open);
+                    setOpenListFilter(null);
+                  }}
+                  className="h-10 rounded-2xl border border-slate-200 bg-white px-3 text-sm text-slate-600 hover:bg-slate-50"
+                >
+                  Filters
+                  {activeTaskFilterCount ? <span className="text-slate-400"> · {activeTaskFilterCount}</span> : null}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setNewOpen(true)}
+                  className="h-10 rounded-2xl bg-slate-900 px-3 text-sm font-medium text-white hover:bg-slate-800"
+                >
+                  New
+                </button>
+              </div>
+
+              {mobileTaskFiltersOpen ? (
+                <div className="mt-2 rounded-[18px] border border-slate-200 bg-white p-3 shadow-lg ring-1 ring-slate-900/5">
+                  <div className="grid gap-2">
+                    <select
+                      value={courseFilter}
+                      onChange={(e) => setCourseFilter(e.target.value)}
+                      className="h-9 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                    >
+                      <option value="all">Category</option>
+                      {activeCategories.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {categoryDisplayLabel(c)}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="flex flex-wrap gap-2">
+                      {renderListFilterMenu<Status>({
+                        id: "status",
+                        label: "Status",
+                        count: statusFilters.length,
+                        options: LIST_STATUS_OPTIONS,
+                        selected: statusFilters,
+                        onToggle: (value) => setStatusFilters((prev) => toggleFilterValue(prev, value)),
+                      })}
+
+                      {renderListFilterMenu<Priority>({
+                        id: "priority",
+                        label: "Priority",
+                        count: priorityFilters.length,
+                        options: PRIORITIES,
+                        selected: priorityFilters,
+                        onToggle: (value) => setPriorityFilters((prev) => toggleFilterValue(prev, value)),
+                      })}
+
+                      {renderListFilterMenu<string>({
+                        id: "difficulty",
+                        label: "Difficulty",
+                        count: difficultyFilters.length,
+                        options: DIFFICULTY_FILTERS.map((value) => ({ id: value, label: value })),
+                        selected: difficultyFilters,
+                        onToggle: (value) => setDifficultyFilters((prev) => toggleFilterValue(prev, value)),
+                      })}
+
+                      {renderTimeLeftFilterMenu()}
+                      {renderDurationFilterMenu()}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="mt-4 divide-y divide-slate-100 rounded-[18px] border border-slate-200/70 bg-white">
+                {listRows.length ? (
+                  listRows.map((t) => {
+                    const days = t.due ? daysLeftFromISO(t.due) : null;
+                    const deadlineLabel = days === null ? null : timeLeftLabel(days);
+                    const effort = taskDisplayEffortLevel(t);
+                    const showPriority = t.priority === "high" || t.priority === "low";
+                    const statusMenuOpen = openStatusTaskId === t.id;
+
+                    return (
+                      <div
+                        key={`mobile-task-${t.id}`}
+                        className={`relative cursor-pointer bg-white px-3 py-3 hover:bg-slate-50/70 ${t.status === "frozen" ? "text-slate-400" : ""}`}
+                        onClick={() => openEdit(t)}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") openEdit(t);
+                        }}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className={`truncate text-sm font-medium ${frozenTitleClass(t)}`}>{t.title}</div>
+                            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
+                              <span className="truncate">{courseLabel(t.courseId)}</span>
+                              <span className="text-slate-300">·</span>
+                              <button
+                                type="button"
+                                className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${statusPill(t.status)}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setOpenListFilter(null);
+                                  setOpenStatusTaskId((id) => (id === t.id ? null : t.id));
+                                }}
+                              >
+                                {statusLabel(t.status)}
+                              </button>
+                            </div>
+
+                            <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-400">
+                              {deadlineLabel ? (
+                                <span className={days !== null && days <= 2 ? "text-rose-600" : ""}>{deadlineLabel}</span>
+                              ) : null}
+                              {effort ? <span>{effortLabel(effort)}</span> : null}
+                              {showPriority ? <span>{priorityLabel(t.priority)}</span> : null}
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-700"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              completeTask(t.id);
+                            }}
+                            aria-label="Mark completed"
+                          >
+                            <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                          </button>
+                        </div>
+
+                        {statusMenuOpen ? (
+                          <div
+                            className="absolute left-3 top-14 z-[1000] min-w-[136px] overflow-hidden rounded-xl border border-slate-200 bg-white py-1 text-xs shadow-xl ring-1 ring-slate-900/5"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {LIST_STATUS_OPTIONS.map((option) => (
+                              <button
+                                key={option.id}
+                                type="button"
+                                className="block w-full whitespace-nowrap bg-white px-3 py-2 text-left text-slate-600 hover:bg-slate-50"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  updateTaskStatus(t.id, option.id);
+                                }}
+                              >
+                                {option.label}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="px-3 py-8 text-center text-sm text-slate-400">No tasks match these filters.</div>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-5 hidden overflow-x-auto overflow-y-visible rounded-[18px] border border-slate-200/70 bg-white md:block">
               <table className="w-full text-sm">
-                <thead className="bg-slate-50 text-xs text-slate-600">
+                <thead className="bg-slate-50/70 text-xs text-slate-500">
                   <tr>
                     {([
                       ["title", "Title"],
-                      ["course", "Course"],
+                      ["course", "Category"],
                       ["status", "Status"],
                       ["priority", "Priority"],
                       ["due", "Due"],
@@ -5171,15 +5585,15 @@ useEffect(() => {
                     return (
                       <tr
                         key={t.id}
-                        className={`relative cursor-pointer border-t border-slate-100 hover:bg-slate-50 ${
+                        className={`relative cursor-pointer border-t border-slate-100/80 hover:bg-slate-50/70 ${
                           statusMenuOpen ? "z-50" : "z-0"
                         }`}
                         onClick={() => openEdit(t)}
                       >
-                        <td className={`max-w-[420px] truncate px-3 py-2 font-medium ${frozenTitleClass(t)}`}>{t.title}</td>
-                        <td className={`px-3 py-2 ${t.status === "frozen" ? "text-slate-400" : "text-slate-600"}`}>{courseLabel(t.courseId)}</td>
+                        <td className={`max-w-[420px] truncate px-3 py-2.5 font-medium text-slate-900 ${frozenTitleClass(t)}`}>{t.title}</td>
+                        <td className={`px-3 py-2.5 ${t.status === "frozen" ? "text-slate-400" : "text-slate-500"}`}>{courseLabel(t.courseId)}</td>
                         <td
-                          className={`relative px-3 py-2 ${statusMenuOpen ? "z-[120]" : "z-0"}`}
+                          className={`relative px-3 py-2.5 ${statusMenuOpen ? "z-[120]" : "z-0"}`}
                           onClick={(e) => e.stopPropagation()}
                         >
                           <span className="relative z-[130] inline-flex">
@@ -5216,22 +5630,27 @@ useEffect(() => {
                             ) : null}
                           </span>
                         </td>
-                        <td className="px-3 py-2 text-slate-600">{priorityLabel(t.priority)}</td>
-                        <td className="px-3 py-2 tabular-nums text-slate-600">{t.due ?? "—"}</td>
-                        <td className={`px-3 py-2 tabular-nums ${days !== null && days <= 2 ? "text-red-600" : "text-slate-600"}`}>
+                        <td className="px-3 py-2.5 text-slate-500">{priorityLabel(t.priority)}</td>
+                        <td className="px-3 py-2.5 tabular-nums text-slate-500">{t.due ?? "—"}</td>
+                        <td className={`px-3 py-2.5 tabular-nums ${days !== null && days <= 2 ? "text-red-600" : "text-slate-500"}`}>
                           {days === null ? "—" : timeLeftLabel(days)}
                         </td>
-                        <td className="px-3 py-2 text-slate-600">{effortLabel(taskDisplayEffortLevel(t))}</td>
-                        <td className="px-3 py-2 tabular-nums text-slate-600">{t.difficulty == null ? "—" : t.difficulty}</td>
+                        <td className="px-3 py-2.5 text-slate-500">{effortLabel(taskDisplayEffortLevel(t))}</td>
+                        <td className="px-3 py-2.5 tabular-nums text-slate-500">{t.difficulty == null ? "—" : t.difficulty}</td>
                       </tr>
                     );
                   })}
                 </tbody>
               </table>
+              {!listRows.length ? (
+                <div className="border-t border-slate-100 px-3 py-8 text-center text-sm text-slate-400">
+                  No tasks match these filters.
+                </div>
+              ) : null}
             </div>
 
             {completedRows.length ? (
-              <section className="mt-5 rounded-2xl border border-slate-200 bg-white p-4">
+              <section className="mt-5 rounded-[18px] border border-slate-200/70 bg-white p-4">
                 <div className="text-sm font-semibold text-slate-700">Completed</div>
                 <div className="mt-1 text-xs text-slate-400">
                   Recoverable for {COMPLETED_RECOVERY_DAYS} days, then hidden from this list.
@@ -5264,12 +5683,9 @@ useEffect(() => {
             ) : null}
           </>
         ) : mode === "planner" ? (
-          <div className="mt-5 rounded-2xl border border-slate-200 bg-white shadow-sm">
-            <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="text-sm font-semibold">Planner</div>
-
-              <div className="flex items-center gap-2">
-                <div className="inline-flex rounded-full border border-slate-200 bg-white p-1">
+          <div className="mt-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="inline-flex rounded-full border border-slate-200 bg-white p-1">
                   {([
                     { id: "week", label: "Week" },
                     { id: "month", label: "Month" },
@@ -5290,6 +5706,7 @@ useEffect(() => {
                   ))}
                 </div>
 
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
                   onClick={openSmartImport}
@@ -5311,7 +5728,7 @@ useEffect(() => {
             </div>
 
             {plannerView === "week" ? (
-              <div className="p-4">
+              <div className="pt-3">
                 <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <div className="text-xs font-medium text-slate-500">{plannerWeekLabel}</div>
                   <div className="inline-flex w-fit rounded-full border border-slate-200 bg-white p-1">
@@ -5341,10 +5758,104 @@ useEffect(() => {
                   </div>
                 </div>
 
-                <div className="overflow-x-auto">
-                  <div className="min-w-[860px] overflow-hidden rounded-2xl border border-slate-200 bg-white">
-                    <div className="grid grid-cols-[64px_repeat(7,minmax(96px,1fr))] border-b border-slate-100 bg-white">
-                      <div className="border-r border-slate-100" />
+                <div className="md:hidden">
+                  <div className="grid grid-cols-7 gap-1">
+                    {plannerWeekDays.map((day) => {
+                      const date = new Date(day + "T00:00:00");
+                      const isToday = day === clientToday;
+                      const isSelected = day === plannerMobileWeekDate;
+
+                      return (
+                        <button
+                          key={`mobile-week-${day}`}
+                          type="button"
+                          onClick={() => setPlannerMobileSelectedDate(day)}
+                          className={`rounded-2xl border px-1 py-2 text-center transition-colors ${
+                            isSelected
+                              ? "border-slate-900 bg-white text-slate-950"
+                              : "border-slate-200/80 bg-white/70 text-slate-500 hover:bg-white"
+                          }`}
+                        >
+                          <div className="text-[9px] font-semibold uppercase tracking-[0.1em]">
+                            {new Intl.DateTimeFormat("en", { weekday: "short" }).format(date)}
+                          </div>
+                          <div
+                            className={`mx-auto mt-1 flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold tabular-nums ${
+                              isToday ? "bg-slate-900 text-white" : ""
+                            }`}
+                          >
+                            {date.getDate()}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="mt-3 rounded-[18px] border border-slate-200/70 bg-white p-3">
+                    {!plannerMobileAllDayItems.length && !plannerMobileTimedLayouts.length ? (
+                      <div className="py-1 text-xs text-slate-400">No events</div>
+                    ) : (
+                      <>
+                        {plannerMobileAllDayItems.length ? (
+                          <div className="mb-3 space-y-1.5">
+                            {plannerMobileAllDayItems.map((item) => (
+                              <button
+                                key={`mobile-all-day-${plannerMobileWeekDate}-${item.sourceType === "calendar_event" ? item.event.id : item.task.id}`}
+                                type="button"
+                                onClick={() =>
+                                  item.sourceType === "calendar_event"
+                                    ? openPlannerEventEdit(item.event)
+                                    : openEdit(item.task)
+                                }
+                                className={`flex w-full min-w-0 items-center gap-2 rounded-xl border px-2 py-1.5 text-left text-xs font-medium ${
+                                  item.sourceType === "calendar_event"
+                                    ? plannerEventTone(item.event.eventType)
+                                    : plannerDeadlineTone(item.task)
+                                }`}
+                              >
+                                {item.sourceType === "calendar_event" ? (
+                                  <PlannerEventTypeIcon eventType={item.event.eventType} />
+                                ) : (
+                                  <Flag className="h-3 w-3 shrink-0" aria-hidden="true" />
+                                )}
+                                <span className="truncate">{plannerItemTitle(item)}</span>
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        <div className="space-y-2">
+                          {plannerMobileTimedLayouts.map((layout) => {
+                            const timeRange = `${formatPlannerEventTime(layout.event.startAt)}${
+                              layout.event.endAt ? `-${formatPlannerEventTime(layout.event.endAt)}` : ""
+                            }`;
+                            return (
+                              <button
+                                key={`mobile-timed-${plannerMobileWeekDate}-${layout.event.id}`}
+                                type="button"
+                                onClick={() => openPlannerEventEdit(layout.event)}
+                                className={`flex w-full min-w-0 items-start gap-2 rounded-2xl border px-3 py-2 text-left text-xs ${plannerEventTone(
+                                  layout.event.eventType
+                                )}`}
+                              >
+                                <PlannerEventTypeIcon eventType={layout.event.eventType} />
+                                <span className="min-w-0 flex-1">
+                                  <span className="block truncate font-medium">{layout.event.title}</span>
+                                  {timeRange ? <span className="mt-0.5 block text-[11px] opacity-70">{timeRange}</span> : null}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                <div className="hidden md:block md:overflow-x-auto">
+                  <div className="min-w-[860px] overflow-hidden rounded-[18px] border border-slate-200/70 bg-white">
+                    <div className="grid grid-cols-[64px_repeat(7,minmax(96px,1fr))] border-b border-slate-100/80 bg-white">
+                      <div className="border-r border-slate-100/80" />
                       {plannerWeekDays.map((day) => {
                         const date = new Date(day + "T00:00:00");
                         const isToday = day === clientToday;
@@ -5352,7 +5863,7 @@ useEffect(() => {
                         return (
                           <div
                             key={day}
-                            className={`border-r border-slate-100 px-2 py-3 text-center last:border-r-0 ${
+                            className={`border-r border-slate-100/80 px-2 py-3 text-center last:border-r-0 ${
                               isToday ? "bg-slate-50" : ""
                             }`}
                           >
@@ -5371,8 +5882,8 @@ useEffect(() => {
                       })}
                     </div>
 
-                    <div className="grid grid-cols-[64px_1fr] border-b border-slate-100 bg-slate-50/40">
-                      <div className="border-r border-slate-100 px-3 py-3 text-xs font-medium text-slate-400">
+                    <div className="grid grid-cols-[64px_1fr] border-b border-slate-100/80 bg-slate-50/30">
+                      <div className="border-r border-slate-100/80 px-3 py-3 text-xs font-medium text-slate-400">
                         All day
                       </div>
                       <div
@@ -5382,7 +5893,7 @@ useEffect(() => {
                         {plannerWeekDays.map((day) => (
                           <div
                             key={`all-day-bg-${day}`}
-                            className={`border-r border-slate-100 px-2 py-2 text-center text-sm text-slate-300 last:border-r-0 ${
+                            className={`border-r border-slate-100/80 px-2 py-2 text-center text-sm text-slate-300 last:border-r-0 ${
                               day === clientToday ? "bg-slate-100/50" : ""
                             }`}
                           >
@@ -5437,7 +5948,7 @@ useEffect(() => {
                         className="relative grid grid-cols-[64px_repeat(7,minmax(96px,1fr))]"
                         style={{ height: (PLANNER_END_HOUR - PLANNER_START_HOUR) * PLANNER_HOUR_HEIGHT }}
                       >
-                        <div className="relative border-r border-slate-100 bg-white">
+                        <div className="relative border-r border-slate-100/80 bg-white">
                           {plannerHours.slice(0, -1).map((hour, index) => (
                             <div
                               key={hour}
@@ -5452,14 +5963,14 @@ useEffect(() => {
                         {plannerWeekDays.map((day) => (
                           <div
                             key={`timed-${day}`}
-                            className={`relative border-r border-slate-100 last:border-r-0 ${
-                              day === clientToday ? "bg-slate-50/50" : "bg-white"
+                            className={`relative border-r border-slate-100/80 last:border-r-0 ${
+                              day === clientToday ? "bg-slate-50/40" : "bg-white"
                             }`}
                           >
                             {plannerHours.slice(0, -1).map((hour, index) => (
                               <div
                                 key={`${day}-${hour}`}
-                                className="absolute left-0 right-0 border-t border-slate-100"
+                                className="absolute left-0 right-0 border-t border-slate-100/80"
                                 style={{ top: index * PLANNER_HOUR_HEIGHT }}
                               />
                             ))}
@@ -5490,7 +6001,7 @@ useEffect(() => {
                                   key={`${day}-${layout.event.id}`}
                                   role="button"
                                   tabIndex={0}
-                                  className={`absolute z-20 cursor-grab select-none overflow-hidden rounded-xl border px-2 py-1.5 text-[11px] shadow-sm active:cursor-grabbing ${
+                                  className={`absolute z-20 cursor-grab select-none overflow-hidden rounded-xl border px-2 py-1.5 text-[11px] active:cursor-grabbing ${
                                     plannerInteraction?.eventId === layout.event.id ? "ring-2 ring-slate-300" : ""
                                   } ${plannerEventTone(
                                     layout.event.eventType
@@ -5589,7 +6100,7 @@ useEffect(() => {
                 </div>
               </div>
             ) : plannerView === "month" ? (
-              <div className="p-3">
+              <div className="pt-3">
                 <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <div className="px-1 text-xs font-semibold text-slate-600">{plannerMonthLabel}</div>
                   <div className="inline-flex w-fit rounded-full border border-slate-200 bg-white p-1">
@@ -5619,12 +6130,12 @@ useEffect(() => {
                   </div>
                 </div>
 
-                <div className="overflow-hidden rounded-2xl border border-slate-100 bg-white">
-                  <div className="grid grid-cols-7 border-b border-slate-100 bg-slate-50/50">
+                <div className="overflow-hidden rounded-[18px] border border-slate-200/70 bg-white">
+                  <div className="grid grid-cols-7 border-b border-slate-100/80 bg-slate-50/40">
                     {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((weekday) => (
                       <div
                         key={weekday}
-                        className="border-r border-slate-100/80 px-2 py-1.5 text-center text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400 last:border-r-0"
+                        className="border-r border-slate-100/70 px-2 py-1.5 text-center text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400 last:border-r-0"
                       >
                         {weekday}
                       </div>
@@ -5647,7 +6158,7 @@ useEffect(() => {
                             return (
                               <div
                                 key={day.date}
-                                className={`min-h-[104px] border-r border-b border-slate-100/80 px-1.5 py-1.5 [&:nth-child(7n)]:border-r-0 ${
+                                className={`min-h-[96px] border-r border-b border-slate-100/70 px-1.5 py-1.5 [&:nth-child(7n)]:border-r-0 ${
                                   day.isCurrentMonth ? "bg-white" : "bg-slate-50/40"
                                 }`}
                               >
@@ -5684,7 +6195,7 @@ useEffect(() => {
                                           if (item.sourceType === "calendar_event") openPlannerEventEdit(item.event);
                                           else openEdit(item.task);
                                         }}
-                                        className={`flex w-full min-w-0 items-center gap-1 rounded-md border px-1.5 py-0.5 text-left text-[10px] font-medium leading-4 ${
+                                        className={`flex w-full min-w-0 items-center gap-1 rounded-lg border px-1.5 py-0.5 text-left text-[10px] font-medium leading-4 ${
                                           item.sourceType === "calendar_event"
                                             ? plannerEventTone(item.event.eventType)
                                             : plannerDeadlineTone(item.task)
@@ -5726,8 +6237,8 @@ useEffect(() => {
                                     else openEdit(span.item.task);
                                   }}
                                   className={`pointer-events-auto flex min-w-0 items-center gap-1 border px-1.5 py-0.5 text-left text-[10px] font-medium leading-4 ${
-                                    span.startsBefore ? "rounded-l-sm" : "rounded-l-md"
-                                  } ${span.endsAfter ? "rounded-r-sm" : "rounded-r-md"} ${
+                                    span.startsBefore ? "rounded-l-sm" : "rounded-l-lg"
+                                  } ${span.endsAfter ? "rounded-r-sm" : "rounded-r-lg"} ${
                                     span.item.sourceType === "calendar_event"
                                       ? plannerEventTone(span.item.event.eventType)
                                       : plannerDeadlineTone(span.item.task)
@@ -5755,7 +6266,7 @@ useEffect(() => {
                 </div>
               </div>
             ) : (
-              <div className="p-4">
+              <div className="pt-3">
                 <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <div className="text-xs font-medium text-slate-500">{plannerYearLabel}</div>
                   <div className="inline-flex w-fit rounded-full border border-slate-200 bg-white p-1">
@@ -5800,9 +6311,9 @@ useEffect(() => {
                   ))}
                 </div>
 
-                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                   {plannerYearMonths.map((month) => (
-                    <div key={month.id} className="rounded-2xl border border-slate-200 bg-white p-3">
+                    <div key={month.id} className="rounded-[18px] border border-slate-200/70 bg-white p-3">
                       <button
                         type="button"
                         onClick={() => {
@@ -5946,17 +6457,12 @@ useEffect(() => {
             )}
           </div>
         ) : mode === "logger" ? (
-          <div className="mt-5 rounded-2xl border border-slate-200 bg-white shadow-sm">
-            <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <div className="text-sm font-semibold">Logger</div>
-                <div className="mt-1 text-xs text-slate-500">
-                  {loggerPeriodLabel}
-                </div>
-              </div>
-
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                <div className="inline-flex rounded-full border border-slate-200 bg-white p-1">
+          <div className="mt-4">
+            <div className="flex flex-col gap-3 rounded-[18px] border border-slate-200/70 bg-white p-3">
+              <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="text-xs font-medium text-slate-500">{loggerPeriodLabel}</div>
+                  <div className="inline-flex rounded-xl border border-slate-200 bg-white p-1">
                   {[
                     { id: "week", label: "Week" },
                     { id: "month", label: "Month" },
@@ -5967,7 +6473,7 @@ useEffect(() => {
                       key={option.id}
                       type="button"
                       onClick={() => setLoggerRangeMode(option.id as LoggerRangeMode)}
-                      className={`rounded-full px-3 py-1.5 text-sm ${
+                      className={`rounded-lg px-3 py-1.5 text-sm ${
                         loggerRangeMode === option.id
                           ? "bg-slate-900 text-white"
                           : "text-slate-600 hover:bg-slate-50"
@@ -5978,10 +6484,32 @@ useEffect(() => {
                   ))}
                 </div>
 
+                  <div className="inline-flex rounded-xl border border-slate-200 bg-white p-1">
+                    {[
+                      { id: "hours", label: "Hours logged" },
+                      { id: "times", label: "Times logged" },
+                    ].map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => setLoggerValueMode(option.id as LoggerValueMode)}
+                        className={`rounded-lg px-3 py-1.5 text-sm ${
+                          loggerValueMode === option.id
+                            ? "bg-slate-900 text-white"
+                            : "text-slate-600 hover:bg-slate-50"
+                        }`}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
                 <select
                   value={loggerTaskFilter}
                   onChange={(e) => setLoggerTaskFilter(e.target.value)}
-                  className="w-full rounded-full border border-slate-200 bg-white px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200 sm:w-[220px]"
+                  className="h-9 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200 sm:w-[220px]"
                 >
                   <option value="all">All tasks</option>
                   {filtered.map((task) => (
@@ -5991,39 +6519,20 @@ useEffect(() => {
                   ))}
                 </select>
 
-                <div className="inline-flex rounded-full border border-slate-200 bg-white p-1">
-                  {[
-                    { id: "hours", label: "Hours logged" },
-                    { id: "times", label: "Times logged" },
-                  ].map((option) => (
-                    <button
-                      key={option.id}
-                      type="button"
-                      onClick={() => setLoggerValueMode(option.id as LoggerValueMode)}
-                      className={`rounded-full px-3 py-1.5 text-sm ${
-                        loggerValueMode === option.id
-                          ? "bg-slate-900 text-white"
-                          : "text-slate-600 hover:bg-slate-50"
-                      }`}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="inline-flex rounded-full border border-slate-200 bg-white p-1">
+                <div className="inline-flex h-9 rounded-xl border border-slate-200 bg-white p-1">
                   <button
                     type="button"
                     onClick={() => moveLoggerSelectedRange(-1)}
                     disabled={loggerRangeMode === "custom"}
-                    className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
+                    className="rounded-lg px-2.5 text-sm text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
+                    aria-label="Previous Logger range"
                   >
-                    Previous
+                    &lt;
                   </button>
                   <button
                     type="button"
                     onClick={returnLoggerRangeToToday}
-                    className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                    className="rounded-lg px-3 text-sm text-slate-600 hover:bg-slate-50"
                   >
                     Today
                   </button>
@@ -6031,24 +6540,25 @@ useEffect(() => {
                     type="button"
                     onClick={() => moveLoggerSelectedRange(1)}
                     disabled={loggerRangeMode === "custom"}
-                    className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
+                    className="rounded-lg px-2.5 text-sm text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
+                    aria-label="Next Logger range"
                   >
-                    Next
+                    &gt;
                   </button>
                 </div>
 
                 <button
                   type="button"
                   onClick={() => openLogTime()}
-                  className="rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
+                  className="h-9 rounded-xl bg-slate-900 px-4 text-sm font-medium text-white hover:bg-slate-800"
                 >
                   Log time
                 </button>
+                </div>
               </div>
-            </div>
 
             {loggerRangeMode === "custom" ? (
-              <div className="flex flex-wrap items-center gap-3 border-b border-slate-100 px-4 pb-4 text-xs text-slate-500">
+              <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
                 <label className="flex items-center gap-2">
                   <span>From</span>
                   <input
@@ -6063,7 +6573,7 @@ useEffect(() => {
                         setCustomEndDate(nextStart);
                       }
                     }}
-                    className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 outline-none focus:ring-2 focus:ring-slate-200"
+                    className="h-8 rounded-xl border border-slate-200 bg-white px-3 text-xs text-slate-700 outline-none focus:ring-2 focus:ring-slate-200"
                   />
                 </label>
                 <label className="flex items-center gap-2">
@@ -6080,30 +6590,31 @@ useEffect(() => {
                         setCustomStartDate(nextEnd);
                       }
                     }}
-                    className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 outline-none focus:ring-2 focus:ring-slate-200"
+                    className="h-8 rounded-xl border border-slate-200 bg-white px-3 text-xs text-slate-700 outline-none focus:ring-2 focus:ring-slate-200"
                   />
                 </label>
               </div>
             ) : null}
+            </div>
 
-            <div className="grid gap-3 border-b border-slate-100 px-4 py-4 sm:grid-cols-2 lg:grid-cols-4">
-              <div className="rounded-2xl border border-slate-200 bg-white p-3">
+            <div className="mt-3 grid grid-cols-2 overflow-hidden rounded-[18px] border border-slate-200/70 bg-white lg:grid-cols-4">
+              <div className="border-b border-r border-slate-100/80 p-2.5 sm:p-3 lg:border-b-0">
                 <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">Total hours</div>
                 <div className="mt-2 text-lg font-semibold tabular-nums text-slate-900">
                   {formatLoggedTime(loggerRangeSummary.totalHours)}
                 </div>
               </div>
-              <div className="rounded-2xl border border-slate-200 bg-white p-3">
+              <div className="border-b border-slate-100/80 p-2.5 sm:p-3 lg:border-r lg:border-b-0">
                 <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">
                   Avg / active day
                 </div>
                 <div className="mt-2 text-lg font-semibold tabular-nums text-slate-900">
                   {loggerRangeSummary.activeDayCount
                     ? formatLoggedTime(loggerRangeSummary.averageHoursPerActiveDay)
-                    : "—"}
+                  : "—"}
                 </div>
               </div>
-              <div className="rounded-2xl border border-slate-200 bg-white p-3">
+              <div className="border-r border-slate-100/80 p-2.5 sm:p-3 lg:border-b-0">
                 <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">
                   Most worked task
                 </div>
@@ -6116,7 +6627,7 @@ useEffect(() => {
                   </div>
                 ) : null}
               </div>
-              <div className="rounded-2xl border border-slate-200 bg-white p-3">
+              <div className="p-2.5 sm:p-3">
                 <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">
                   Most worked category
                 </div>
@@ -6131,17 +6642,134 @@ useEffect(() => {
               </div>
             </div>
 
+            {openTimeLogs.length ? (
+              <div className="mt-3 rounded-[18px] border border-cyan-100 bg-cyan-50/40 px-3 py-3">
+                <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.14em] text-cyan-700/70">
+                  Open sessions
+                </div>
+                <div className="grid gap-2 lg:grid-cols-2">
+                  {openTimeLogs.map((log) => (
+                    <div
+                      key={log.id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-white/80 px-3 py-2 text-sm"
+                    >
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white text-cyan-700">
+                          <Clock3 className="h-3.5 w-3.5" aria-hidden="true" />
+                        </span>
+                        <div className="min-w-0">
+                          <div className="truncate font-medium text-slate-800">
+                            {taskNameById[log.taskId] ?? "Archived task"}
+                          </div>
+                          <div className="text-xs text-cyan-700">
+                            {formatOpenSessionStarted(log)} · Open
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => openLogTime(log.taskId, log.date, log)}
+                        className="rounded-full border border-cyan-100 bg-white px-3 py-1.5 text-xs font-medium text-cyan-700 hover:bg-cyan-50"
+                      >
+                        Add end time
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
             {loggerRangeMode === "year" ? (
               <div className="border-b border-slate-100 px-4 py-8 text-center text-sm text-slate-400">
                 Detailed daily view is available in Week, Month or Custom.
               </div>
             ) : (
-              <div ref={loggerGridScrollRef} className="overflow-x-auto px-3 py-3">
+              <>
+              <div className="mt-3 md:hidden">
+                <div className="overflow-x-auto pb-2">
+                  <div className="flex w-max gap-1">
+                    {loggerDays.map((day) => {
+                      const isSelected = day === loggerMobileDate;
+                      const isToday = day === clientToday;
+                      return (
+                        <button
+                          key={`logger-mobile-day-${day}`}
+                          type="button"
+                          onClick={() => setLoggerMobileSelectedDate(day)}
+                          className={`w-14 rounded-2xl border px-2 py-2 text-center transition-colors ${
+                            isSelected
+                              ? "border-slate-900 bg-white text-slate-950"
+                              : "border-slate-200/80 bg-white/70 text-slate-500 hover:bg-white"
+                          }`}
+                        >
+                          <div className="text-[9px] font-semibold uppercase tracking-[0.1em] text-slate-400">
+                            {formatLoggerWeekday(day).slice(0, 3)}
+                          </div>
+                          <div
+                            className={`mx-auto mt-1 flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold tabular-nums ${
+                              isToday ? "bg-slate-900 text-white" : ""
+                            }`}
+                          >
+                            {new Date(day + "T00:00:00").getDate()}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="mt-2 divide-y divide-slate-100 rounded-[18px] border border-slate-200/70 bg-white">
+                  <div className="px-3 py-2 text-xs font-medium text-slate-500">
+                    {formatLoggerDate(loggerMobileDate)}
+                  </div>
+                  {loggerRows.length ? (
+                    loggerRows.map(({ task }) => {
+                      const cellLogs = logsByTaskDate[`${task.id}:${loggerMobileDate}`] ?? [];
+                      const openCellLogs = openLogsByTaskDate[`${task.id}:${loggerMobileDate}`] ?? [];
+                      const hours = cellLogs.reduce((sum, log) => sum + (log.hours ?? 0), 0);
+                      const count = cellLogs.length;
+                      const hasValue = loggerValueMode === "hours" ? hours > 0 : count > 0;
+
+                      return (
+                        <button
+                          key={`logger-mobile-row-${task.id}`}
+                          type="button"
+                          onClick={() => openLogTime(task.id, loggerMobileDate, cellLogs[0] ?? openCellLogs[0])}
+                          className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left hover:bg-slate-50/70"
+                        >
+                          <span className="min-w-0">
+                            <span className="block truncate text-sm font-medium text-slate-800">{task.title}</span>
+                            <span className="mt-0.5 block truncate text-xs text-slate-400">{courseLabel(task.courseId)}</span>
+                          </span>
+                          <span className="shrink-0 text-sm font-semibold tabular-nums text-slate-700">
+                            {hasValue
+                              ? loggerValueMode === "hours"
+                                ? formatGridHours(hours)
+                                : count
+                              : openCellLogs.length
+                                ? <Clock3 className="h-4 w-4 text-cyan-600" aria-hidden="true" />
+                                : ""}
+                          </span>
+                        </button>
+                      );
+                    })
+                  ) : (
+                    <div className="px-3 py-8 text-center text-sm text-slate-400">
+                      No tasks have time logs in this view.
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div
+                ref={loggerGridScrollRef}
+                className="mt-3 hidden max-w-full overflow-x-auto rounded-[18px] border border-slate-200/70 bg-white p-2 md:block"
+              >
                 <table
                   className={`min-w-max border-separate text-sm ${
                     useCompactLoggerGrid
-                      ? "border-spacing-x-0 border-spacing-y-1"
-                      : "border-spacing-x-1 border-spacing-y-1"
+                      ? "border-spacing-x-0 border-spacing-y-0.5"
+                      : "border-spacing-x-0.5 border-spacing-y-0.5"
                   }`}
                 >
                   <thead className="text-xs text-slate-500">
@@ -6232,12 +6860,13 @@ useEffect(() => {
                           </td>
                           {loggerDays.map((day) => {
                             const cellLogs = logsByTaskDate[`${task.id}:${day}`] ?? [];
-                            const hours = cellLogs.reduce((sum, log) => sum + log.hours, 0);
+                            const openCellLogs = openLogsByTaskDate[`${task.id}:${day}`] ?? [];
+                            const hours = cellLogs.reduce((sum, log) => sum + (log.hours ?? 0), 0);
                             const count = cellLogs.length;
                             const hasValue = loggerValueMode === "hours" ? hours > 0 : count > 0;
                             const title = `${task.title} • ${day} • ${
                               loggerValueMode === "hours" ? formatDuration(hours) : `${count} logs`
-                            }`;
+                            }${openCellLogs.length ? " • Open session" : ""}`;
 
                             return (
                               <td
@@ -6251,7 +6880,7 @@ useEffect(() => {
                               >
                                 <button
                                   type="button"
-                                  onClick={() => openLogTime(task.id, day, cellLogs[0])}
+                                  onClick={() => openLogTime(task.id, day, cellLogs[0] ?? openCellLogs[0])}
                                   className={`flex items-center justify-center transition-colors ${
                                     useCompactLoggerGrid ? "h-9 w-11 rounded-lg" : "h-10 w-14 rounded-xl"
                                   } ${
@@ -6261,7 +6890,11 @@ useEffect(() => {
                                   } ${hasValue ? "hover:ring-1 hover:ring-violet-200" : "hover:bg-slate-50"}`}
                                   aria-label={title}
                                 >
-                                  {loggerValueMode === "hours" ? formatGridHours(hours) : count || ""}
+                                  {loggerValueMode === "hours" ? (
+                                    formatGridHours(hours) || (openCellLogs.length ? <Clock3 className="h-3.5 w-3.5 text-cyan-600" aria-hidden="true" /> : "")
+                                  ) : (
+                                    count || (openCellLogs.length ? <Clock3 className="h-3.5 w-3.5 text-cyan-600" aria-hidden="true" /> : "")
+                                  )}
                                 </button>
                               </td>
                             );
@@ -6277,7 +6910,7 @@ useEffect(() => {
                               ? total > 0
                                 ? formatLoggedTime(total)
                                 : ""
-                              : timeLogs.filter((log) => log.taskId === task.id && loggerDays.includes(log.date)).length || ""}
+                              : closedTimeLogs.filter((log) => log.taskId === task.id && loggerDays.includes(log.date)).length || ""}
                           </td>
                         </tr>
                       ))
@@ -6294,6 +6927,7 @@ useEffect(() => {
                   </tbody>
                 </table>
               </div>
+              </>
             )}
 
             <div className="space-y-4 border-t border-slate-100 px-4 py-4">
@@ -6451,142 +7085,13 @@ useEffect(() => {
             </div>
           </div>
         ) : (
-          <div className="mt-5 grid gap-4 lg:grid-cols-[1fr_360px]">
-            {/* Course columns */}
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {activeCategories.map((c) => (
-                <div key={c.id} className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-                  <div className="border-b border-slate-100 px-4 py-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="text-sm font-semibold">{categoryDisplayLabel(c)}</div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => openEditCategory(c)}
-                          className="rounded-full border border-slate-200 px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-50"
-                        >
-                          Edit
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="space-y-3 px-4 py-4">
-                    {byCourse[c.id]?.length ? (
-                      byCourse[c.id].map((t) => {
-                        const deadlineLabel = compactDeadlineLabel(t);
-                        const activityLabel = activityTypeLabel(t.activityType);
-
-                        return (
-                          <div
-                            key={t.id}
-                            onClick={() => openEdit(t)}
-                            className={`cursor-pointer rounded-xl border border-slate-200 bg-white p-3 hover:bg-slate-50 ${frozenTaskClass(t)}`}
-                            role="button"
-                            tabIndex={0}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") openEdit(t);
-                            }}
-                          >
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <div className={`truncate text-sm font-medium ${frozenTitleClass(t)}`}>{t.title}</div>
-                                <div className="mt-2 flex flex-wrap gap-2">
-                                  {deadlineLabel ? (
-                                    <TaskMetaPill className={deadlinePillTone(t)}>
-                                      <Clock className="h-3 w-3" aria-hidden="true" />
-                                      {deadlineLabel}
-                                    </TaskMetaPill>
-                                  ) : null}
-                                  {t.activityType && activityLabel ? (
-                                    <TaskMetaPill className={activityPillTone(t.activityType)}>
-                                      <ActivityTypeIcon activityType={t.activityType} />
-                                      {activityLabel}
-                                    </TaskMetaPill>
-                                  ) : null}
-                                </div>
-                              </div>
-
-                              <button
-                                className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-700"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  completeTask(t.id);
-                                }}
-                                aria-label="Mark completed"
-                              >
-                                <Check className="h-3.5 w-3.5" aria-hidden="true" />
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })
-                    ) : (
-                      <div
-                        className="cursor-pointer rounded-xl border border-dashed border-slate-300 p-3 text-sm text-slate-400 hover:bg-slate-50"
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => openNewTaskForCourse(c.id)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") openNewTaskForCourse(c.id);
-                        }}
-                      >
-                        Empty
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-
-              <button
-                type="button"
-                onClick={openAddCategory}
-                className="min-h-[160px] rounded-2xl border border-dashed border-slate-300 bg-white p-4 text-left shadow-sm hover:bg-slate-50"
-              >
-                <div className="text-sm font-semibold text-slate-700">+ Add category</div>
-                <div className="mt-1 text-xs text-slate-400">
-                  Create a new category card
-                </div>
-              </button>
-
-              {archivedCategories.length ? (
-                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm md:col-span-2 lg:col-span-3">
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div>
-                      <div className="text-sm font-semibold">Archived categories</div>
-                      <div className="mt-1 text-xs text-slate-400">
-                        Hidden from normal use, still safe for existing tasks
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {archivedCategories.map((category) => (
-                      <div
-                        key={category.id}
-                        className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-600"
-                      >
-                        <span>{categoryDisplayLabel(category)}</span>
-                        <button
-                          type="button"
-                          onClick={() => restoreCategory(category)}
-                          className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] text-slate-600 hover:bg-slate-100"
-                        >
-                          Restore
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-            </div>
-
-            {/* Right rail */}
-            <div className="rounded-2xl border border-slate-200 bg-white shadow-sm lg:sticky lg:top-6 h-fit">
-              <div className="border-b border-slate-100 px-4 py-3">
-                <div className="flex items-center justify-between">
+          <div className="mt-6 grid gap-8">
+            {/* Attention */}
+            <section className="order-1">
+              <div className="border-b border-slate-200/70 pb-3">
+                <div className="flex items-center justify-between gap-3">
                   <div>
-                    <div className="text-sm font-semibold">Attention score</div>
+                    <div className="text-sm font-semibold tracking-tight text-slate-900">Attention score</div>
                     <div className="text-xs text-slate-500">{scoredTasks.length} tasks</div>
                   </div>
                   <div className="relative" onClick={(e) => e.stopPropagation()}>
@@ -6649,19 +7154,18 @@ useEffect(() => {
                 </div>
               </div>
 
-              <div className="space-y-4 px-4 py-4">
-                {/* Score list */}
-                <div className="max-h-[52vh] space-y-2 overflow-auto pr-1">
+              <div className="mt-3">
+                <div className="grid overflow-hidden rounded-[18px] border border-slate-200/70 bg-white sm:grid-cols-2 xl:grid-cols-3">
                   {attentionIncludedCategoryIds.length === 0 ? (
-                    <div className="rounded-xl border border-dashed border-slate-200 px-3 py-6 text-center text-sm text-slate-400">
+                    <div className="px-3 py-6 text-center text-sm text-slate-400 sm:col-span-2 xl:col-span-3">
                       No categories selected
                     </div>
                   ) : null}
-                  {attentionIncludedCategoryIds.length > 0 ? scoredTasks.map(({ task, total: score, reasons, visualAttentionScore }) => {
+                  {attentionIncludedCategoryIds.length > 0 ? scoredTasks.map(({ task, total: score, reasons, visualAttentionScore }, index) => {
                     return (
                       <div
                         key={task.id}
-                        className="cursor-pointer rounded-xl border border-slate-200 p-2 hover:bg-slate-50"
+                        className="cursor-pointer border-b border-slate-100/80 p-3 transition-colors hover:bg-slate-50/70 sm:border-r xl:[&:nth-child(3n)]:border-r-0 sm:[&:nth-child(2n)]:border-r-0 xl:[&:nth-child(2n)]:border-r"
                         role="button"
                         tabIndex={0}
                         onClick={() => openEdit(task)}
@@ -6669,21 +7173,24 @@ useEffect(() => {
                           if (e.key === "Enter") openEdit(task);
                         }}
                       >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <div className="line-clamp-2 text-sm font-medium leading-snug">{task.title}</div>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="grid min-w-0 grid-cols-[1.5rem_1fr] gap-2">
+                            <div className="pt-0.5 text-xs tabular-nums text-slate-300">{index + 1}</div>
+                            <div className="min-w-0">
+                            <div className="line-clamp-2 text-sm font-medium leading-snug text-slate-900">{task.title}</div>
                             <div className="mt-1 text-[11px] text-slate-500">{courseLabel(task.courseId)}</div>
                             {reasons.length ? (
                               <div className="mt-1 line-clamp-2 text-[11px] leading-snug text-slate-400">
                                 {reasons.join(" · ")}
                               </div>
                             ) : null}
+                            </div>
                           </div>
 
                           <div className="shrink-0 text-xs font-semibold tabular-nums text-slate-700">{Math.round(score)}</div>
                         </div>
 
-                        <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-100">
+                        <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-slate-100">
                           <div
                             className={`h-2 rounded-full transition-all duration-500 ${urgencyColour(visualAttentionScore)}`}
                             style={{ width: `${visualAttentionScore}%` }}
@@ -6694,7 +7201,157 @@ useEffect(() => {
                   }) : null}
                 </div>
               </div>
+            </section>
+
+            {/* Category columns */}
+            <div className="order-2 grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+              {activeCategories.map((c) => {
+                const categoryTasks = byCourse[c.id] ?? [];
+                const isExpanded = expandedDashboardCategoryIds.includes(c.id);
+                const visibleTasks = isExpanded ? categoryTasks : categoryTasks.slice(0, 4);
+                const remainingTasks = Math.max(0, categoryTasks.length - visibleTasks.length);
+
+                return (
+                <div key={c.id} className="self-start rounded-[18px] border border-slate-200/70 bg-white">
+                  <div className="border-b border-slate-100/80 px-4 py-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-sm font-semibold tracking-tight text-slate-900">{categoryDisplayLabel(c)}</div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => openEditCategory(c)}
+                          className="rounded-full border border-slate-200 px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-50"
+                        >
+                          Edit
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2.5 px-4 py-4">
+                    {categoryTasks.length ? (
+                      visibleTasks.map((t) => {
+                        const deadlineLabel = compactDeadlineLabel(t);
+                        const activityLabel = activityTypeLabel(t.activityType);
+
+                        return (
+                          <div
+                            key={t.id}
+                            onClick={() => openEdit(t)}
+                            className={`cursor-pointer rounded-2xl border border-slate-200/60 bg-white px-3 py-2.5 transition-colors hover:bg-slate-50/70 ${frozenTaskClass(t)}`}
+                            role="button"
+                            tabIndex={0}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") openEdit(t);
+                            }}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className={`truncate text-sm font-medium ${frozenTitleClass(t)}`}>{t.title}</div>
+                                <div className="mt-2 flex flex-wrap gap-1.5">
+                                  {deadlineLabel ? (
+                                    <TaskMetaPill className={`${deadlinePillTone(t)} bg-opacity-60`}>
+                                      <Clock className="h-3 w-3" aria-hidden="true" />
+                                      {deadlineLabel}
+                                    </TaskMetaPill>
+                                  ) : null}
+                                  {t.activityType && activityLabel ? (
+                                    <TaskMetaPill className={`${activityPillTone(t.activityType)} bg-opacity-60`}>
+                                      <ActivityTypeIcon activityType={t.activityType} />
+                                      {activityLabel}
+                                    </TaskMetaPill>
+                                  ) : null}
+                                </div>
+                              </div>
+
+                              <button
+                                className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-700"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  completeTask(t.id);
+                                }}
+                                aria-label="Mark completed"
+                              >
+                                <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <div
+                        className="cursor-pointer rounded-2xl border border-dashed border-slate-200 p-3 text-sm text-slate-400 hover:bg-slate-50"
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => openNewTaskForCourse(c.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") openNewTaskForCourse(c.id);
+                        }}
+                      >
+                        Empty
+                      </div>
+                    )}
+                    {categoryTasks.length > 4 ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExpandedDashboardCategoryIds((ids) =>
+                            isExpanded ? ids.filter((id) => id !== c.id) : [...ids, c.id]
+                          )
+                        }
+                        className="w-full rounded-xl px-3 py-2 text-left text-xs font-medium text-slate-400 hover:bg-slate-50 hover:text-slate-600"
+                      >
+                        {isExpanded ? "Show less" : `Show ${remainingTasks} more`}
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+                );
+              })}
+
+              <button
+                type="button"
+                onClick={openAddCategory}
+                className="min-h-[150px] rounded-[20px] border border-dashed border-slate-300 bg-white p-4 text-left hover:bg-slate-50"
+              >
+                <div className="text-sm font-semibold text-slate-700">+ Add category</div>
+                <div className="mt-1 text-xs text-slate-400">
+                  Create a new category card
+                </div>
+              </button>
+
+              {archivedCategories.length ? (
+                <div className="rounded-[20px] border border-slate-200/70 bg-white p-4 md:col-span-2 xl:col-span-3 2xl:col-span-4">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <div className="text-sm font-semibold">Archived categories</div>
+                      <div className="mt-1 text-xs text-slate-400">
+                        Hidden from normal use, still safe for existing tasks
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {archivedCategories.map((category) => (
+                      <div
+                        key={category.id}
+                        className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-600"
+                      >
+                        <span>{categoryDisplayLabel(category)}</span>
+                        <button
+                          type="button"
+                          onClick={() => restoreCategory(category)}
+                          className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] text-slate-600 hover:bg-slate-100"
+                        >
+                          Restore
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </div>
+
           </div>
         )}
 
@@ -6742,7 +7399,8 @@ useEffect(() => {
             </div>
           </div>
         </div>
-      </div>
+        </div>
+      </main>
 
       {/* Smart schedule import modal */}
       <Modal open={smartImportOpen} title="Smart schedule import" onClose={closeSmartImport}>
@@ -7069,6 +7727,15 @@ useEffect(() => {
           </div>
         ) : (
           <div className="grid gap-3">
+            <div
+              className={`flex w-fit items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium ${plannerEventTone(
+                plannerEventDraft.eventType
+              )}`}
+            >
+              <PlannerEventTypeIcon eventType={plannerEventDraft.eventType} />
+              {PLANNER_EVENT_TYPES.find((option) => option.id === plannerEventDraft.eventType)?.label ?? "Event"}
+            </div>
+
             <Field label="Type">
               <select
                 value={plannerEventDraft.eventType}
@@ -7664,7 +8331,7 @@ useEffect(() => {
       {/* Log Time modal */}
       <Modal
         open={logOpen}
-        title={editingLogId ? "Edit time log" : "Log time"}
+        title={logModalTitle}
         onClose={() => {
           setEditingLogId(null);
           setPlannerLogSourceEventId(null);
@@ -7692,7 +8359,13 @@ useEffect(() => {
               <input
                 type="date"
                 value={logDate}
-                onChange={(e) => setLogDate(e.target.value)}
+                onChange={(e) => {
+                  const nextDate = e.target.value;
+                  setLogDate(nextDate);
+                  if (!logEndDate || logEndDate < nextDate) {
+                    setLogEndDate(nextDate);
+                  }
+                }}
                 className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
               />
             </Field>
@@ -7729,7 +8402,18 @@ useEffect(() => {
               />
             </Field>
 
-            <Field label="Duration">
+            <Field label="End date">
+              <input
+                type="date"
+                value={logEndDate}
+                min={logDate || undefined}
+                onChange={(e) => setLogEndDate(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+              />
+            </Field>
+          </div>
+
+          <Field label="Duration">
               <div className="relative">
                 <input
                   type="number"
@@ -7762,8 +8446,7 @@ useEffect(() => {
               {isCalculatedLogDuration ? (
                 <p className="mt-1 text-[11px] text-slate-400">Calculated from start and end time</p>
               ) : null}
-            </Field>
-          </div>
+          </Field>
 
           <Field label="Note">
             <textarea
@@ -7786,7 +8469,22 @@ useEffect(() => {
               <div />
             )}
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {!plannerLogSourceEventId && (!editingTimeLog || isOpenTimeLog(editingTimeLog)) ? (
+                <button
+                  className="rounded-full border border-cyan-100 bg-cyan-50/60 px-4 py-2 text-sm font-medium text-cyan-700 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={startOpenTimeLog}
+                  disabled={
+                    logSaving ||
+                    !logTaskId ||
+                    !isTimeLogISODate(logDate || clientToday || todayISO()) ||
+                    timeLogTimeToMinutes(logStartTime) === null ||
+                    Boolean(logEndTime)
+                  }
+                >
+                  {editingLogId ? "Save open session" : "Start open session"}
+                </button>
+              ) : null}
               <button
                 className="rounded-full border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
                 onClick={() => {
@@ -7800,9 +8498,15 @@ useEffect(() => {
               <button
                 className="rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
                 onClick={submitTimeLog}
-                disabled={!logTaskId || resolveTimeLogHours(logHoursInput, calculatedLogHours) === null}
+                disabled={
+                  logSaving ||
+                  !logTaskId ||
+                  (editingTimeLog && isOpenTimeLog(editingTimeLog)
+                    ? calculatedLogHours === null
+                    : resolveClosedTimeLogHours(logHoursInput, calculatedLogHours, logStartTime, logEndTime) === null)
+                }
               >
-                {editingLogId ? "Save" : "Log time"}
+                {editingTimeLog && isOpenTimeLog(editingTimeLog) ? "Close session" : editingLogId ? "Save" : "Log time"}
               </button>
             </div>
           </div>
