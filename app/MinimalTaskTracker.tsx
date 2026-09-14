@@ -2,20 +2,27 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Activity,
   ArrowDown,
   ArrowUp,
   BookOpen,
   BriefcaseBusiness,
   Check,
+  ChevronRight,
   Circle,
   CircleCheck,
   Diamond,
+  Ellipsis,
   Clock,
   Clock3,
   CalendarDays,
+  Coffee,
   Flag,
+  FileText,
   Gauge,
   GraduationCap,
+  Heart,
+  HeartPulse,
   Layers,
   LayoutDashboard,
   ListChecks,
@@ -24,11 +31,14 @@ import {
   Minus,
   PanelLeftClose,
   PanelLeftOpen,
+  Pill as PillIcon,
   Plane,
+  Plus,
   Snowflake,
   UserRound,
   Users,
   WandSparkles,
+  X,
   Zap,
 } from "lucide-react";
 import {
@@ -57,6 +67,54 @@ import {
   type CalendarEvent,
   type CalendarEventType,
 } from "./calendarEventStore/calendarEventTypes";
+import {
+  type CalendarDaypart,
+  type CalendarTimeMode,
+  calendarEventIntersectsWeek,
+  eventDateSpan,
+  eventLocalDate,
+  formatPlannerEventTime,
+  formatPlannerMonthLabel,
+  formatPlannerThreeMonthLabel,
+  formatPlannerWeekRange,
+  formatPlannerYearLabel,
+  getCalendarEventDaypart,
+  getCalendarEventTimeMode,
+  isCalendarDaypart,
+  plannerMonthsVisibleRange,
+  plannerAllDaySpanKey,
+  plannerAllDaySpansForDays,
+  plannerDaypartAnchorMinutes,
+  plannerItemDateSpan,
+  plannerItemPrefix,
+  plannerItemTimingLabel,
+  plannerItemsForDate,
+  plannerItemTitle,
+  plannerMonthDaysForAnchor,
+  plannerMonthWeeksForDays,
+  plannerThreeMonthsForAnchor,
+  plannerWeekDaysForAnchor,
+  plannerYearItemEventType,
+  plannerYearMonthsForAnchor,
+  type PlannerDateItem,
+  type PlannerMonthDay,
+  type PlannerYearMonth,
+  withCalendarTimingMetadata,
+} from "./planner/plannerDomain";
+import {
+  deleteMedicationEntry,
+  loadMedicationEntries,
+  saveMedicationEntry,
+  updateMedicationEntry,
+} from "./medicationStore/supabaseMedicationStore";
+import {
+  createMedicationEntryId,
+  type FeelingDaypart,
+  type FeelingIntensity,
+  type FeelingValence,
+  type MedicationEntry,
+  type MedicationKind,
+} from "./medicationStore/medicationTypes";
 import {
   calculateTimeLogDurationHours,
   isClosedTimeLog,
@@ -89,14 +147,30 @@ const ATTENTION_CATEGORY_SCOPE_KEY = isDemoMode
   : "yasmine_attention_category_scope_v1";
 const SYNC_CODE = isDemoMode ? "DEMO-TASKS" : "YAS-TEST-001";
 
-type ViewMode = "board" | "planner" | "list" | "logger";
-type PlannerView = "week" | "month" | "year";
+type ViewMode = "board" | "planner" | "list" | "logger" | "meds";
+type PlannerView = "week" | "month" | "three_month" | "year";
+type MedsView = "today" | "history";
+type MedicationModalMode = "dose" | "feeling";
 type PlannerEventModalMode = "create" | "edit";
+type PlannerWhenChoice =
+  | "any_time"
+  | "all_day"
+  | "morning"
+  | "noon"
+  | "afternoon"
+  | "evening"
+  | "night"
+  | "at_time"
+  | "time_range";
+type PlannerActiveIntensity = "low" | "mid" | "high";
 type PlannerEventDraft = {
   id: string;
   eventType: CalendarEventType;
   title: string;
   allDay: boolean;
+  timeMode: CalendarTimeMode;
+  daypart: CalendarDaypart | "";
+  activeIntensity: PlannerActiveIntensity | "";
   date: string;
   endDate: string;
   startTime: string;
@@ -117,6 +191,7 @@ type PlannerEventDraft = {
   recurrenceApplyScope: "this" | "future" | "all";
   recurrenceParentId: string | null;
   recurrenceExceptionDate: string | null;
+  metadata: Record<string, unknown>;
 };
 type PlannerWeekInteraction = {
   kind: "move" | "resize";
@@ -132,17 +207,14 @@ type PlannerWeekInteraction = {
   originalDurationMinutes: number;
   hasMoved: boolean;
 };
-type PlannerDateItem =
-  | { sourceType: "calendar_event"; event: CalendarEvent }
-  | { sourceType: "task_deadline"; task: Task; date: string };
-type PlannerAllDaySpan = {
-  item: PlannerDateItem;
-  startIndex: number;
-  span: number;
-  startsBefore: boolean;
-  endsAfter: boolean;
-};
 type PlannerWorkResolutionStatus = "logged" | "skipped";
+type PlannerTemporalState = "past" | "today" | "future";
+type PlannerMonthGridData = {
+  month: PlannerYearMonth;
+  eventsByDate: Record<string, PlannerDateItem[]>;
+  weeks: PlannerMonthDay[][];
+  allDaySpansByWeek: ReturnType<typeof plannerAllDaySpansForDays>[];
+};
 type SmartImportRecurrence = "none" | "weekly";
 type SmartImportProposal = {
   id: string;
@@ -165,13 +237,34 @@ type SmartImportProposal = {
   warnings: string[];
 };
 type LoggerValueMode = "hours" | "times";
-type LoggerRangeMode = "week" | "month" | "year" | "custom";
-type ListFilterMenu = "status" | "priority" | "difficulty" | "timeLeft" | "duration";
+type LoggerRangeMode = "day" | "week" | "month" | "year" | "custom";
+type LoggerTimeOfDayBucket = "morning" | "afternoon" | "evening" | "night";
+type LoggerBreakdownMode = "tasks" | "categories";
+type ListFilterMenu = "status" | "priority" | "difficulty" | "timeLeft";
 type AppNavItem = {
   id: ViewMode;
   label: string;
   icon: React.ComponentType<{ className?: string; "aria-hidden"?: boolean }>;
 };
+type MedicationCurvePoint = {
+  hour: number;
+  value: number;
+};
+type MedsLevelRange = "now" | "24h" | "2d" | "week";
+type MedsChartPoint = { x: number; y: number };
+type MedsChartDot = { key: string; x: number; y: number; label: string; sublabel?: string };
+type CaffeineDrinkId =
+  | "espresso"
+  | "americano"
+  | "cappuccino"
+  | "latte"
+  | "iced_latte"
+  | "cortado"
+  | "flat_white"
+  | "homemade_coffee"
+  | "matcha_latte"
+  | "espresso_martini"
+  | "custom";
 type AttentionWeights = {
   time: number;
   duration: number;
@@ -210,6 +303,12 @@ const CATEGORY_COLOURS = [
   { id: "amber", label: "Amber", swatch: "bg-amber-300" },
   { id: "rose", label: "Rose", swatch: "bg-rose-300" },
 ];
+const LOGGER_TIME_OF_DAY_BUCKETS: { id: LoggerTimeOfDayBucket; label: string }[] = [
+  { id: "morning", label: "Morning" },
+  { id: "afternoon", label: "Afternoon" },
+  { id: "evening", label: "Evening" },
+  { id: "night", label: "Night" },
+];
 
 const STATUSES: { id: Status; label: string }[] = [
   { id: "to_do", label: "To do" },
@@ -234,8 +333,6 @@ const PRIORITIES: { id: Priority; label: string }[] = [
 const DIFFICULTY_FILTERS = ["1", "2", "3", "4", "5"];
 const TIME_LEFT_MIN = 0;
 const TIME_LEFT_MAX = 365;
-const DURATION_MIN_HOURS = 5 / 60;
-const DURATION_MAX_HOURS = 10;
 const PLANNER_START_HOUR = 6;
 const PLANNER_END_HOUR = 24;
 const PLANNER_HOUR_HEIGHT = 56;
@@ -245,9 +342,47 @@ const PLANNER_EVENT_TYPES: { id: CalendarEventType; label: string }[] = [
   { id: "class", label: "Class" },
   { id: "meeting", label: "Meeting" },
   { id: "deadline", label: "Deadline" },
-  { id: "milestone", label: "Milestone" },
   { id: "personal", label: "Personal" },
   { id: "travel", label: "Travel" },
+  { id: "date", label: "Date" },
+  { id: "social", label: "Social" },
+  { id: "active", label: "Active" },
+  { id: "admin", label: "Admin" },
+];
+const PLANNER_LEGACY_EVENT_TYPES: { id: CalendarEventType; label: string }[] = [
+  { id: "milestone", label: "Milestone" },
+];
+const PLANNER_EVENT_PALETTE: Record<CalendarEventType, { label: string; color: string }> = {
+  work: { label: "Denim", color: "#5FA9FF" },
+  class: { label: "Eggplant", color: "#C29EFF" },
+  meeting: { label: "Pumpkin", color: "#FCB100" },
+  deadline: { label: "Lava", color: "#FE7877" },
+  personal: { label: "Mint", color: "#88E18E" },
+  travel: { label: "Ice", color: "#04E6F7" },
+  date: { label: "Peach", color: "#FC889F" },
+  social: { label: "Sky", color: "#55CDFF" },
+  active: { label: "Veggie", color: "#2DCC70" },
+  admin: { label: "Metal", color: "#8293B9" },
+  milestone: { label: "Tangerine", color: "#FD925E" },
+};
+const PLANNER_DAYPART_OPTIONS: { id: CalendarDaypart; label: string }[] = [
+  { id: "morning", label: "Morning" },
+  { id: "noon", label: "Noon" },
+  { id: "afternoon", label: "Afternoon" },
+  { id: "evening", label: "Evening" },
+  { id: "night", label: "Night" },
+];
+const PLANNER_WHEN_OPTIONS: { id: PlannerWhenChoice; label: string }[] = [
+  { id: "any_time", label: "Any time" },
+  { id: "all_day", label: "All day" },
+  ...PLANNER_DAYPART_OPTIONS,
+  { id: "at_time", label: "At time" },
+  { id: "time_range", label: "Time range" },
+];
+const PLANNER_ACTIVE_INTENSITY_OPTIONS: { id: PlannerActiveIntensity; label: string }[] = [
+  { id: "low", label: "Low" },
+  { id: "mid", label: "Mid" },
+  { id: "high", label: "High" },
 ];
 const PLANNER_WEEKDAY_OPTIONS = [
   { id: 1, label: "Monday" },
@@ -263,6 +398,82 @@ const APP_NAV_ITEMS: AppNavItem[] = [
   { id: "planner", label: "Planner", icon: CalendarDays },
   { id: "list", label: "Tasks", icon: ListChecks },
   { id: "logger", label: "Logger", icon: Clock3 },
+  { id: "meds", label: "Meds", icon: PillIcon },
+];
+const MOBILE_PRIMARY_NAV_ITEMS = APP_NAV_ITEMS.filter((item) =>
+  item.id === "board" || item.id === "planner" || item.id === "list"
+);
+const MOBILE_MORE_NAV_ITEMS = APP_NAV_ITEMS.filter((item) => item.id === "logger" || item.id === "meds");
+const MEDICATION_OPTIONS: { id: MedicationKind; label: string; unit: string }[] = [
+  { id: "Vyvanse", label: "Vyvanse", unit: "mg" },
+  { id: "Prozac", label: "Prozac", unit: "mg" },
+  { id: "Coffee", label: "Coffee", unit: "cup" },
+  { id: "Custom", label: "+ Custom", unit: "" },
+];
+const MEDS_RANGE_CONFIG: Record<MedsLevelRange, { label: string; durationHours: number; futureHours: number }> = {
+  now: { label: "Now", durationHours: 12, futureHours: 2 },
+  "24h": { label: "24h", durationHours: 24, futureHours: 0 },
+  "2d": { label: "2 Days", durationHours: 48, futureHours: 0 },
+  week: { label: "Week", durationHours: 24 * 7, futureHours: 0 },
+};
+const VYVANSE_VISUAL_MODEL = {
+  absorptionRatePerHour: 0.664,
+  halfLifeHours: 10.5,
+  visibleHours: 36,
+  referenceDoseMg: 30,
+  defaultChartMaxPercent: 125,
+};
+const CAFFEINE_VISUAL_MODEL = {
+  absorptionRatePerHour: 4,
+  halfLifeHours: 5,
+  visibleHours: 30,
+  referenceMg: 100,
+  defaultChartMaxPercent: 200,
+};
+const CAFFEINE_DRINK_DEFAULTS: {
+  id: CaffeineDrinkId;
+  label: string;
+  mg: number;
+  shots?: number;
+}[] = [
+  { id: "espresso", label: "Espresso", mg: 65, shots: 1 },
+  { id: "americano", label: "Americano", mg: 130, shots: 2 },
+  { id: "cappuccino", label: "Cappuccino", mg: 120, shots: 2 },
+  { id: "latte", label: "Latte", mg: 120, shots: 2 },
+  { id: "iced_latte", label: "Iced latte", mg: 120, shots: 2 },
+  { id: "cortado", label: "Cortado", mg: 60, shots: 1 },
+  { id: "flat_white", label: "Flat white", mg: 130, shots: 2 },
+  { id: "homemade_coffee", label: "Homemade coffee", mg: 95 },
+  { id: "matcha_latte", label: "Matcha latte", mg: 70 },
+  { id: "espresso_martini", label: "Espresso martini", mg: 65, shots: 1 },
+  { id: "custom", label: "Custom", mg: 100 },
+];
+const FEELING_OPTIONS = [
+  "Sharp focus",
+  "Calm",
+  "Hyper",
+  "Anxious",
+  "Sleepy",
+  "Can't sleep",
+  "Headache",
+  "+ Custom",
+];
+const FEELING_VALENCES: { id: FeelingValence; label: string }[] = [
+  { id: "positive", label: "Positive" },
+  { id: "neutral", label: "Neutral" },
+  { id: "negative", label: "Negative" },
+];
+const FEELING_INTENSITIES: { id: FeelingIntensity; label: string }[] = [
+  { id: "low", label: "Low" },
+  { id: "medium", label: "Medium" },
+  { id: "high", label: "High" },
+];
+const FEELING_DAYPARTS: { id: FeelingDaypart; label: string }[] = [
+  { id: "morning", label: "Morning" },
+  { id: "noon", label: "Noon" },
+  { id: "afternoon", label: "Afternoon" },
+  { id: "evening", label: "Evening" },
+  { id: "night", label: "Night" },
 ];
 
 function statusLabel(id: Status) {
@@ -398,20 +609,6 @@ function taskMatchesTimeLeftFilter(task: Task, range: { min: number; max: number
   return filterDays >= range.min && filterDays <= range.max;
 }
 
-function taskMatchesDurationFilter(task: Task, range: { min: number; max: number } | null) {
-  if (!range) return true;
-  if (task.durationHrs == null || !Number.isFinite(task.durationHrs)) return false;
-  return task.durationHrs >= range.min && task.durationHrs <= range.max;
-}
-
-function formatDurationFilterLabel(hours: number) {
-  if (hours < 1) {
-    return `${Math.round(hours * 60)}m`;
-  }
-
-  return Number.isInteger(hours) ? `${hours}h` : `${Number(hours.toFixed(2))}h`;
-}
-
 function formatHourInput(hours: number) {
   if (!Number.isFinite(hours)) return "";
   return String(hours);
@@ -495,87 +692,6 @@ function startOfLoggerWeek(iso: string) {
   return addDaysISO(iso, -mondayOffset);
 }
 
-function startOfPlannerWeek(iso: string) {
-  return startOfLoggerWeek(iso);
-}
-
-function plannerWeekDaysForAnchor(anchorDate: string) {
-  const anchor = isValidISODate(anchorDate) ? anchorDate : todayISO();
-  const start = startOfPlannerWeek(anchor);
-
-  return Array.from({ length: 7 }, (_, index) => addDaysISO(start, index));
-}
-
-function plannerMonthDaysForAnchor(anchorDate: string) {
-  const anchor = isValidISODate(anchorDate) ? anchorDate : todayISO();
-  const monthStart = startOfLoggerMonth(anchor);
-  const monthEnd = endOfLoggerMonth(anchor);
-  const gridStart = startOfPlannerWeek(monthStart);
-  const gridEnd = addDaysISO(startOfPlannerWeek(monthEnd), 6);
-  const days: { date: string; isCurrentMonth: boolean }[] = [];
-  let cursor = gridStart;
-
-  while (cursor <= gridEnd) {
-    days.push({
-      date: cursor,
-      isCurrentMonth: cursor.slice(0, 7) === monthStart.slice(0, 7),
-    });
-    cursor = addDaysISO(cursor, 1);
-  }
-
-  return days;
-}
-
-function plannerYearMonthsForAnchor(anchorDate: string) {
-  const anchor = isValidISODate(anchorDate) ? anchorDate : todayISO();
-  const year = isoParts(anchor).year;
-
-  return Array.from({ length: 12 }, (_, monthIndex) => {
-    const month = monthIndex + 1;
-    const monthAnchor = `${year}-${String(month).padStart(2, "0")}-01`;
-    return {
-      id: monthAnchor.slice(0, 7),
-      anchorDate: monthAnchor,
-      label: new Intl.DateTimeFormat("en", { month: "short" }).format(
-        new Date(monthAnchor + "T00:00:00")
-      ),
-      days: plannerMonthDaysForAnchor(monthAnchor),
-    };
-  });
-}
-
-function formatPlannerMonthLabel(anchorDate: string) {
-  const anchor = isValidISODate(anchorDate) ? anchorDate : todayISO();
-  return new Intl.DateTimeFormat("en", { month: "long", year: "numeric" }).format(
-    new Date(startOfLoggerMonth(anchor) + "T00:00:00")
-  );
-}
-
-function formatPlannerYearLabel(anchorDate: string) {
-  const anchor = isValidISODate(anchorDate) ? anchorDate : todayISO();
-  return String(isoParts(anchor).year);
-}
-
-function formatPlannerWeekRange(days: string[]) {
-  if (!days.length) return "";
-
-  const start = new Date(days[0] + "T00:00:00");
-  const end = new Date(days[days.length - 1] + "T00:00:00");
-  const sameMonth = start.getMonth() === end.getMonth() && start.getFullYear() === end.getFullYear();
-  const monthFormatter = new Intl.DateTimeFormat("en", { month: "long", year: "numeric" });
-  const compactFormatter = new Intl.DateTimeFormat("en", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
-
-  if (sameMonth) {
-    return `${start.getDate()}-${end.getDate()} ${monthFormatter.format(end)}`;
-  }
-
-  return `${compactFormatter.format(start)} - ${compactFormatter.format(end)}`;
-}
-
 function plannerHourLabels() {
   return Array.from({ length: PLANNER_END_HOUR - PLANNER_START_HOUR + 1 }, (_, index) => {
     const hour = PLANNER_START_HOUR + index;
@@ -587,25 +703,6 @@ function localDateISO(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
     date.getDate()
   ).padStart(2, "0")}`;
-}
-
-function eventLocalDate(timestamp?: string | null) {
-  if (!timestamp) return null;
-  const date = new Date(timestamp);
-  if (!Number.isFinite(date.getTime())) return null;
-  return localDateISO(date);
-}
-
-function formatPlannerEventTime(timestamp?: string | null) {
-  if (!timestamp) return "";
-  const date = new Date(timestamp);
-  if (!Number.isFinite(date.getTime())) return "";
-
-  return new Intl.DateTimeFormat("en", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(date);
 }
 
 function localMinutesFromTimestamp(timestamp?: string | null) {
@@ -679,6 +776,10 @@ function timeInputFromTimestamp(timestamp?: string | null) {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
+function localTimeInput(date: Date) {
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
 function browserTimezone() {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || "Europe/Madrid";
 }
@@ -731,9 +832,38 @@ function nextDateForIsoWeekday(startDate: string, weekday: number) {
   return addDaysISO(startDate, offset);
 }
 
+function plannerEventTypeLabel(eventType: CalendarEventType) {
+  return (
+    [...PLANNER_EVENT_TYPES, ...PLANNER_LEGACY_EVENT_TYPES].find((option) => option.id === eventType)
+      ?.label ?? "Event"
+  );
+}
+
+function plannerEventTypeOptionsForDraft(draft: PlannerEventDraft) {
+  return draft.eventType === "milestone"
+    ? [...PLANNER_LEGACY_EVENT_TYPES, ...PLANNER_EVENT_TYPES]
+    : PLANNER_EVENT_TYPES;
+}
+
+function isPlannerActiveIntensity(value: unknown): value is PlannerActiveIntensity {
+  return value === "low" || value === "mid" || value === "high";
+}
+
 function defaultPlannerEventDraft(eventType: CalendarEventType, date: string): PlannerEventDraft {
   const resolvedDate = isValidISODate(date) ? date : todayISO();
-  const allDay = eventType === "deadline" || eventType === "milestone";
+  const allDay = eventType === "milestone";
+  const startsTimed = eventType === "work" || eventType === "class" || eventType === "meeting";
+  const startsSingleTime = eventType === "date" || eventType === "social" || eventType === "admin";
+  const daypart = "";
+  const timeMode: CalendarTimeMode = allDay
+    ? "all_day"
+    : startsTimed
+      ? "time_range"
+      : startsSingleTime
+        ? "single_time"
+        : daypart
+          ? "daypart"
+          : "date_only";
   const timezone = browserTimezone();
 
   return {
@@ -741,10 +871,13 @@ function defaultPlannerEventDraft(eventType: CalendarEventType, date: string): P
     eventType,
     title: "",
     allDay,
+    timeMode,
+    daypart,
+    activeIntensity: "",
     date: resolvedDate,
     endDate: resolvedDate,
-    startTime: "09:00",
-    endTime: eventType === "deadline" ? "" : "10:00",
+    startTime: startsTimed || startsSingleTime ? "09:00" : "",
+    endTime: startsTimed ? "10:00" : "",
     taskId: "",
     description: "",
     who: "",
@@ -761,6 +894,7 @@ function defaultPlannerEventDraft(eventType: CalendarEventType, date: string): P
     recurrenceApplyScope: "this",
     recurrenceParentId: null,
     recurrenceExceptionDate: null,
+    metadata: {},
   };
 }
 
@@ -770,6 +904,10 @@ function plannerDraftFromEvent(event: CalendarEvent): PlannerEventDraft {
   const parentId = parentIdForPlannerOccurrence(event);
   const occurrenceDate = occurrenceDateForPlannerEvent(event);
   const isVirtualOccurrence = isVirtualRecurringOccurrence(event);
+  const timeMode = getCalendarEventTimeMode(event);
+  const daypart = getCalendarEventDaypart(event) ?? "";
+  const activeIntensity = isPlannerActiveIntensity(metadata.intensity) ? metadata.intensity : "";
+  const usesExactTime = timeMode === "single_time" || timeMode === "time_range";
   const startDate = event.allDay
     ? event.startDate ?? todayISO()
     : eventLocalDate(event.startAt) ?? todayISO();
@@ -781,11 +919,14 @@ function plannerDraftFromEvent(event: CalendarEvent): PlannerEventDraft {
     id: isVirtualOccurrence ? createCalendarEventId() : event.id,
     eventType: event.eventType,
     title: event.title,
-    allDay: event.allDay,
+    allDay: timeMode === "all_day" || timeMode === "multi_day",
+    timeMode,
+    daypart,
+    activeIntensity,
     date: startDate,
     endDate,
-    startTime: timeInputFromTimestamp(event.startAt),
-    endTime: timeInputFromTimestamp(event.endAt),
+    startTime: usesExactTime ? timeInputFromTimestamp(event.startAt) : "",
+    endTime: timeMode === "time_range" ? timeInputFromTimestamp(event.endAt) : "",
     taskId: event.taskId ?? "",
     description: event.description ?? "",
     who: typeof metadata.who === "string" ? metadata.who : "",
@@ -802,11 +943,129 @@ function plannerDraftFromEvent(event: CalendarEvent): PlannerEventDraft {
     recurrenceApplyScope: parentId ? "this" : "all",
     recurrenceParentId: parentId ?? null,
     recurrenceExceptionDate: occurrenceDate ?? null,
+    metadata: { ...metadata },
   };
 }
 
-function eventRequiresEndTime(eventType: CalendarEventType) {
-  return eventType === "work" || eventType === "class" || eventType === "meeting" || eventType === "personal" || eventType === "travel";
+function plannerDraftTimeMode(draft: PlannerEventDraft): CalendarTimeMode {
+  const endDate = isValidISODate(draft.endDate) ? draft.endDate : draft.date;
+  const hasStart = Boolean(draft.startTime);
+  const hasEnd = Boolean(draft.endTime);
+
+  if (draft.daypart) return "daypart";
+  if (draft.allDay || draft.eventType === "milestone") {
+    return endDate > draft.date ? "multi_day" : "all_day";
+  }
+  if (!hasStart && !hasEnd) return endDate > draft.date ? "multi_day" : "date_only";
+  if (hasStart && hasEnd) return "time_range";
+  return "single_time";
+}
+
+function plannerWhenChoiceFromDraft(draft: PlannerEventDraft): PlannerWhenChoice {
+  if (draft.daypart) return draft.daypart;
+  if (draft.allDay || draft.eventType === "milestone") return "all_day";
+  if (draft.startTime && draft.endTime) return "time_range";
+  if (draft.startTime) return "at_time";
+  return "any_time";
+}
+
+function plannerDraftWithWhenChoice(draft: PlannerEventDraft, choice: PlannerWhenChoice): PlannerEventDraft {
+  if (choice === "any_time") {
+    return { ...draft, allDay: false, daypart: "", startTime: "", endTime: "" };
+  }
+  if (choice === "all_day") {
+    return { ...draft, allDay: true, daypart: "", startTime: "", endTime: "" };
+  }
+  if (isCalendarDaypart(choice)) {
+    return { ...draft, allDay: false, daypart: choice, startTime: "", endTime: "" };
+  }
+  if (choice === "at_time") {
+    return {
+      ...draft,
+      allDay: false,
+      daypart: "",
+      startTime: draft.startTime || "09:00",
+      endTime: "",
+    };
+  }
+  return {
+    ...draft,
+    allDay: false,
+    daypart: "",
+    startTime: draft.startTime || "09:00",
+    endTime: draft.endTime || "10:00",
+  };
+}
+
+function plannerDraftWithEventType(draft: PlannerEventDraft, eventType: CalendarEventType): PlannerEventDraft {
+  const startsTimed = eventType === "work" || eventType === "class" || eventType === "meeting";
+  const startsSingleTime = eventType === "date" || eventType === "social" || eventType === "admin";
+  const forceAllDay = eventType === "milestone";
+  return {
+    ...draft,
+    eventType,
+    allDay: forceAllDay ? true : draft.allDay,
+    daypart: forceAllDay ? "" : draft.daypart,
+    startTime:
+      forceAllDay || draft.daypart ? "" : draft.startTime || (startsTimed || startsSingleTime ? "09:00" : ""),
+    endTime: forceAllDay || draft.daypart ? "" : draft.endTime || (startsTimed ? "10:00" : ""),
+    repeat: eventType === "class" ? draft.repeat : "none",
+    taskId: eventType === "work" || eventType === "deadline" ? draft.taskId : "",
+    activeIntensity: eventType === "active" ? draft.activeIntensity : "",
+  };
+}
+
+function plannerDraftHasMoreDetails(draft: PlannerEventDraft) {
+  return Boolean(
+    draft.description.trim() ||
+      draft.location.trim() ||
+      draft.videoUrl.trim() ||
+      draft.notes.trim() ||
+      draft.repeat === "weekly"
+  );
+}
+
+function plannerEventRendersAsAllDaySpan(event: CalendarEvent) {
+  return event.allDay && getCalendarEventTimeMode(event) !== "daypart";
+}
+
+function plannerMetadataFromDraft(
+  draft: PlannerEventDraft,
+  timeMode: CalendarTimeMode
+): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {
+    ...(draft.metadata ?? {}),
+    timeMode,
+  };
+  delete metadata.virtualOccurrence;
+  delete metadata.parentEventId;
+  delete metadata.occurrenceDate;
+  const who = draft.who.trim();
+  const origin = draft.origin.trim();
+  const destination = draft.destination.trim();
+
+  if (who) metadata.who = who;
+  else delete metadata.who;
+
+  if (origin) metadata.origin = origin;
+  else delete metadata.origin;
+
+  if (destination) metadata.destination = destination;
+  else delete metadata.destination;
+
+  if (timeMode === "daypart" && draft.daypart) {
+    metadata.daypart = draft.daypart;
+  } else {
+    delete metadata.daypart;
+  }
+
+  if (draft.eventType === "active" && draft.activeIntensity) {
+    metadata.intensity = draft.activeIntensity;
+  } else {
+    delete metadata.intensity;
+  }
+
+  return metadata;
 }
 
 function calendarEventFromDraft(draft: PlannerEventDraft): { event: CalendarEvent | null; error: string | null } {
@@ -814,53 +1073,56 @@ function calendarEventFromDraft(draft: PlannerEventDraft): { event: CalendarEven
   if (!title) return { event: null, error: "Title is required." };
   if (!isValidISODate(draft.date)) return { event: null, error: "A valid date is required." };
 
-  const allDay = draft.eventType === "milestone" ? true : draft.allDay;
+  const timeMode = plannerDraftTimeMode(draft);
   const endDate = isValidISODate(draft.endDate) ? draft.endDate : draft.date;
   const timezone = draft.timezone || browserTimezone();
+  const metadata = plannerMetadataFromDraft(draft, timeMode);
+  const baseEvent = {
+    id: draft.id,
+    eventType: draft.eventType,
+    title,
+    description: draft.description.trim() || null,
+    timezone,
+    taskId: draft.taskId || null,
+    categoryId: null,
+    location: draft.location.trim() || null,
+    videoUrl: draft.videoUrl.trim() || null,
+    notes: draft.notes.trim() || null,
+    metadata,
+    recurrenceParentId: draft.recurrenceParentId,
+    recurrenceExceptionDate: draft.recurrenceExceptionDate,
+    recurrenceStatus: draft.recurrenceParentId ? "moved" : null,
+  };
 
-  if (allDay) {
+  if (draft.eventType === "class" && draft.repeat === "weekly" && timeMode !== "time_range") {
+    return { event: null, error: "Recurring classes need a start and end time for now." };
+  }
+
+  if (timeMode === "all_day" || timeMode === "multi_day" || timeMode === "date_only" || timeMode === "daypart") {
     if (endDate < draft.date) return { event: null, error: "End date cannot be before start date." };
+    if (timeMode === "daypart" && !draft.daypart) return { event: null, error: "Choose a valid daypart." };
 
     return {
       error: null,
       event: {
-        id: draft.id,
-        eventType: draft.eventType,
-        title,
-        description: draft.description.trim() || null,
+        ...baseEvent,
         allDay: true,
         startAt: null,
         endAt: null,
         startDate: draft.date,
-        endDate: endDate === draft.date ? null : endDate,
-        timezone,
-        taskId: draft.taskId || null,
-        categoryId: null,
-        location: draft.location.trim() || null,
-        videoUrl: draft.videoUrl.trim() || null,
-        notes: draft.notes.trim() || null,
-        metadata: {
-          who: draft.who.trim() || undefined,
-          origin: draft.origin.trim() || undefined,
-          destination: draft.destination.trim() || undefined,
-        },
+        endDate: timeMode === "multi_day" ? endDate : null,
         recurrenceRule: null,
-        recurrenceParentId: draft.recurrenceParentId,
-        recurrenceExceptionDate: draft.recurrenceExceptionDate,
-        recurrenceStatus: draft.recurrenceParentId ? "moved" : null,
       },
     };
   }
 
   if (!draft.startTime) return { event: null, error: "Start time is required." };
-  if (eventRequiresEndTime(draft.eventType) && !draft.endTime) {
-    return { event: null, error: "End time is required." };
-  }
+  if (draft.endTime && !draft.startTime) return { event: null, error: "Start time is required when an end time is set." };
 
   const startAt = zonedDateTimeToUtcISO(draft.date, draft.startTime, timezone);
-  const endAt = draft.endTime ? zonedDateTimeToUtcISO(endDate, draft.endTime, timezone) : null;
+  const endAt = timeMode === "time_range" ? zonedDateTimeToUtcISO(endDate, draft.endTime, timezone) : null;
   if (!startAt) return { event: null, error: "Start time is invalid." };
-  if (draft.endTime && !endAt) return { event: null, error: "End time is invalid." };
+  if (timeMode === "time_range" && !endAt) return { event: null, error: "End time is invalid." };
   if (endAt && Date.parse(endAt) <= Date.parse(startAt)) {
     return { event: null, error: "End time must be after start time." };
   }
@@ -892,41 +1154,43 @@ function calendarEventFromDraft(draft: PlannerEventDraft): { event: CalendarEven
   return {
     error: null,
     event: {
-      id: draft.id,
-      eventType: draft.eventType,
-      title,
-      description: draft.description.trim() || null,
+      ...baseEvent,
       allDay: false,
       startAt,
       endAt,
       startDate: null,
       endDate: null,
-      timezone,
-      taskId: draft.taskId || null,
-      categoryId: null,
-      location: draft.location.trim() || null,
-      videoUrl: draft.videoUrl.trim() || null,
-      notes: draft.notes.trim() || null,
-      metadata: {
-        who: draft.who.trim() || undefined,
-        origin: draft.origin.trim() || undefined,
-        destination: draft.destination.trim() || undefined,
-      },
       recurrenceRule: weeklyRule ? stringifyWeeklyRecurrenceRule(weeklyRule) : null,
-      recurrenceParentId: draft.recurrenceParentId,
-      recurrenceExceptionDate: draft.recurrenceExceptionDate,
-      recurrenceStatus: draft.recurrenceParentId ? "moved" : null,
     },
   };
 }
 
 function plannerTimedEventSegment(event: CalendarEvent, day: string) {
+  const timeMode = getCalendarEventTimeMode(event);
+  const daypart = getCalendarEventDaypart(event);
+  if (timeMode === "daypart" && daypart) {
+    const eventDate = event.startDate ?? eventLocalDate(event.startAt);
+    if (eventDate !== day) return null;
+    const startMinutes = plannerDaypartAnchorMinutes(daypart);
+    const endMinutes = Math.min(PLANNER_END_HOUR * 60, startMinutes + 30);
+
+    return {
+      event,
+      startMinutes,
+      endMinutes,
+      top: ((startMinutes - PLANNER_START_HOUR * 60) / 60) * PLANNER_HOUR_HEIGHT,
+      height: Math.max(26, ((endMinutes - startMinutes) / 60) * PLANNER_HOUR_HEIGHT),
+      displayOnly: true,
+    };
+  }
+
   if (!event.startAt) return null;
 
   const start = new Date(event.startAt);
   if (!Number.isFinite(start.getTime())) return null;
 
-  const fallbackEnd = new Date(start.getTime() + 60 * 60 * 1000);
+  const fallbackMinutes = getCalendarEventTimeMode(event) === "single_time" ? 15 : 60;
+  const fallbackEnd = new Date(start.getTime() + fallbackMinutes * 60 * 1000);
   const parsedEnd = event.endAt ? new Date(event.endAt) : fallbackEnd;
   const end = Number.isFinite(parsedEnd.getTime()) && parsedEnd > start ? parsedEnd : fallbackEnd;
   const dayStart = new Date(day + "T00:00:00");
@@ -946,6 +1210,7 @@ function plannerTimedEventSegment(event: CalendarEvent, day: string) {
     endMinutes,
     top: ((startMinutes - PLANNER_START_HOUR * 60) / 60) * PLANNER_HOUR_HEIGHT,
     height: Math.max(26, ((endMinutes - startMinutes) / 60) * PLANNER_HOUR_HEIGHT),
+    displayOnly: false,
   };
 }
 
@@ -968,45 +1233,41 @@ function layoutPlannerTimedEvents(events: CalendarEvent[], day: string) {
   return positioned.map((segment) => ({ ...segment, columnCount }));
 }
 
-function calendarEventIntersectsWeek(event: CalendarEvent, weekStart: string, weekEnd: string) {
-  if (event.allDay) {
-    const start = event.startDate;
-    const end = event.endDate || event.startDate;
-    return Boolean(start && end && start <= weekEnd && end >= weekStart);
-  }
+function buildPlannerMonthGridData(
+  month: PlannerYearMonth,
+  calendarEventsForRender: CalendarEvent[],
+  taskDeadlinesByDate: Record<string, Task[]>
+): PlannerMonthGridData {
+  const eventsByDate = month.days.reduce<Record<string, PlannerDateItem[]>>((groups, day) => {
+    groups[day.date] = plannerItemsForDate(
+      day.date,
+      calendarEventsForRender,
+      taskDeadlinesByDate
+    );
+    return groups;
+  }, {});
+  const weeks = plannerMonthWeeksForDays(month.days);
+  const allDaySpansByWeek = weeks.map((week) => {
+    const days = week.map((day) => day.date);
+    const weekStart = days[0];
+    const weekEnd = days[days.length - 1];
+    const items: PlannerDateItem[] = calendarEventsForRender
+      .filter((event) => {
+        if (!plannerEventRendersAsAllDaySpan(event) || !event.startDate || !weekStart || !weekEnd) return false;
+        const endDate = event.endDate || event.startDate;
+        return event.startDate <= weekEnd && endDate >= weekStart;
+      })
+      .map((event) => ({ sourceType: "calendar_event" as const, event }));
 
-  const start = eventLocalDate(event.startAt);
-  const end = eventLocalDate(event.endAt) || start;
-  return Boolean(start && end && start <= weekEnd && end >= weekStart);
-}
+    return plannerAllDaySpansForDays(days, items);
+  });
 
-function calendarEventIntersectsDay(event: CalendarEvent, day: string) {
-  if (event.allDay) {
-    const start = event.startDate;
-    const end = event.endDate || event.startDate;
-    return Boolean(start && end && start <= day && end >= day);
-  }
-
-  const start = eventLocalDate(event.startAt);
-  const end = eventLocalDate(event.endAt) || start;
-  return Boolean(start && end && start <= day && end >= day);
-}
-
-function plannerMonthEventPrefix(event: CalendarEvent, day: string) {
-  if (event.allDay) return "";
-  return eventLocalDate(event.startAt) === day ? formatPlannerEventTime(event.startAt) : "";
-}
-
-function eventDateSpan(event: CalendarEvent) {
-  if (event.allDay) {
-    const start = event.startDate;
-    const end = event.endDate || event.startDate;
-    return start && end ? { start, end } : null;
-  }
-
-  const start = eventLocalDate(event.startAt);
-  const end = eventLocalDate(event.endAt) || start;
-  return start && end ? { start, end } : null;
+  return {
+    month,
+    eventsByDate,
+    weeks,
+    allDaySpansByWeek,
+  };
 }
 
 function recurringOccurrenceMetadata(parent: CalendarEvent, occurrenceDate: string) {
@@ -1457,40 +1718,79 @@ function smartImportDuplicateWarning(proposal: SmartImportProposal, events: Cale
   });
 }
 
-function plannerYearMarkerTone(eventType: CalendarEventType) {
-  if (eventType === "work") return "bg-[#2098D4] text-white";
-  if (eventType === "class") return "bg-[#7045D8] text-white";
-  if (eventType === "meeting") return "bg-[#FFC515] text-slate-900";
-  if (eventType === "deadline") return "bg-[#F04A2D] text-white";
-  if (eventType === "milestone") return "bg-[#FF8A1F] text-white";
-  if (eventType === "travel") return "bg-[#43D4DC] text-slate-900";
-  return "bg-[#43C995] text-slate-900";
+function plannerTemporalStateForDate(date: string | null | undefined, today: string | null | undefined): PlannerTemporalState {
+  if (!date || !today || !isValidISODate(date) || !isValidISODate(today)) return "future";
+  if (date < today) return "past";
+  if (date === today) return "today";
+  return "future";
 }
 
-function plannerYearPillTone(eventType: CalendarEventType) {
-  if (eventType === "work") return "border-[#2098D4]/30 bg-[#2098D4]/12 text-[#1775A5]";
-  if (eventType === "class") return "border-[#7045D8]/30 bg-[#7045D8]/12 text-[#5632B0]";
-  if (eventType === "meeting") return "border-[#FFC515]/40 bg-[#FFC515]/18 text-[#9A7200]";
-  if (eventType === "deadline") return "border-[#F04A2D]/35 bg-[#F04A2D]/14 text-[#B93822]";
-  if (eventType === "milestone") return "border-[#FF8A1F]/35 bg-[#FF8A1F]/14 text-[#B85C0B]";
-  if (eventType === "travel") return "border-[#43D4DC]/40 bg-[#43D4DC]/14 text-[#16858C]";
-  return "border-[#43C995]/35 bg-[#43C995]/14 text-[#1F805B]";
+function plannerTemporalStateForSpan(
+  start: string | null | undefined,
+  end: string | null | undefined,
+  today: string | null | undefined
+): PlannerTemporalState {
+  if (!start || !today || !isValidISODate(start) || !isValidISODate(today)) return "future";
+  const safeEnd = end && isValidISODate(end) ? end : start;
+  if (safeEnd < today) return "past";
+  if (start <= today && today <= safeEnd) return "today";
+  return "future";
+}
+
+function plannerEventTemporalState(event: CalendarEvent, today: string | null | undefined): PlannerTemporalState {
+  const span = eventDateSpan(event);
+  return plannerTemporalStateForSpan(span?.start, span?.end, today);
+}
+
+function plannerItemTemporalState(
+  item: PlannerDateItem,
+  today: string | null | undefined,
+  fallbackDate?: string
+): PlannerTemporalState {
+  if (item.sourceType === "task_deadline") {
+    return plannerTemporalStateForDate(item.date ?? fallbackDate, today);
+  }
+  return plannerEventTemporalState(item.event, today);
+}
+
+function plannerPastSoftening(temporalState: PlannerTemporalState) {
+  if (temporalState === "past") return "saturate-[0.72] text-slate-500";
+  if (temporalState === "today") return "ring-1 ring-inset ring-slate-900/10";
+  return "";
+}
+
+function plannerYearMarkerTone(_eventType: CalendarEventType, temporalState: PlannerTemporalState = "future") {
+  if (temporalState === "past") return "opacity-70 saturate-[0.72]";
+  if (temporalState === "today") return "ring-1 ring-inset ring-slate-900/10";
+  return "";
+}
+
+function plannerYearPillTone(eventType: CalendarEventType, temporalState: PlannerTemporalState = "future") {
+  const temporal = plannerPastSoftening(temporalState);
+  const today = temporalState === "today" ? " ring-1 ring-inset ring-slate-900/10" : "";
+  if (eventType === "work") return `border-[#5FA9FF]/30 bg-[#5FA9FF]/10 text-[#2D6FAF] ${temporal}${today}`;
+  if (eventType === "class") return `border-[#C29EFF]/35 bg-[#C29EFF]/12 text-[#6F4CB8] ${temporal}${today}`;
+  if (eventType === "meeting") return `border-[#FCB100]/38 bg-[#FCB100]/14 text-[#9B6900] ${temporal}${today}`;
+  if (eventType === "deadline") return `border-[#FE7877]/50 bg-[#FE7877]/16 text-[#B33F3E] font-semibold ${temporal}${today}`;
+  if (eventType === "milestone") return `border-[#FD925E]/38 bg-[#FD925E]/14 text-[#A94F20] ${temporal}${today}`;
+  if (eventType === "personal") return `border-[#88E18E]/35 bg-[#88E18E]/12 text-[#2F7E39] ${temporal}${today}`;
+  if (eventType === "travel") return `border-[#04E6F7]/40 bg-[#04E6F7]/12 text-[#067F89] ${temporal}${today}`;
+  if (eventType === "date") return `border-[#FC889F]/35 bg-[#FC889F]/12 text-[#AE3E56] ${temporal}${today}`;
+  if (eventType === "social") return `border-[#55CDFF]/35 bg-[#55CDFF]/12 text-[#167BA8] ${temporal}${today}`;
+  if (eventType === "active") return `border-[#2DCC70]/35 bg-[#2DCC70]/12 text-[#197C45] ${temporal}${today}`;
+  return `border-[#8293B9]/35 bg-[#8293B9]/12 text-[#465777] ${temporal}${today}`;
 }
 
 function PlannerYearMarkerIcon({ eventType }: { eventType: CalendarEventType }) {
-  if (eventType === "work") return <BriefcaseBusiness className="h-2.5 w-2.5" aria-hidden="true" />;
-  if (eventType === "class") return <GraduationCap className="h-2.5 w-2.5" aria-hidden="true" />;
-  if (eventType === "meeting") return <Users className="h-2.5 w-2.5" aria-hidden="true" />;
-  if (eventType === "deadline") return <Flag className="h-2.5 w-2.5" aria-hidden="true" />;
-  if (eventType === "milestone") return <Diamond className="h-2.5 w-2.5" aria-hidden="true" />;
-  if (eventType === "travel") return <Plane className="h-2.5 w-2.5" aria-hidden="true" />;
-  return <UserRound className="h-2.5 w-2.5" aria-hidden="true" />;
+  return <PlannerEventTypeIcon eventType={eventType} />;
 }
 
-function plannerDeadlineTone(task: Task) {
+function plannerDeadlineTone(task: Task, temporalState: PlannerTemporalState = "future") {
+  const temporal = plannerPastSoftening(temporalState);
+  const today = temporalState === "today" ? " ring-1 ring-inset ring-[#F04A2D]/15" : "";
   return task.status === "frozen"
-    ? "border-[#F04A2D]/25 bg-[#F04A2D]/10 text-[#B93822]"
-    : "border-[#F04A2D]/30 bg-[#F04A2D]/12 text-[#B93822]";
+    ? `border-[#F04A2D]/25 border-l-2 border-l-[#F04A2D]/45 bg-[#F04A2D]/10 text-[#B93822] font-semibold ${temporal}${today}`
+    : `border-[#F04A2D]/35 border-l-2 border-l-[#F04A2D]/65 bg-[#F04A2D]/14 text-[#B93822] font-semibold ${temporal}${today}`;
 }
 
 function plannerWorkResolutionStatus(event: CalendarEvent): PlannerWorkResolutionStatus | null {
@@ -1518,6 +1818,12 @@ function withPlannerWorkResolution(
     ...event,
     metadata,
   };
+}
+
+async function savePlannerCalendarEvent(event: CalendarEvent) {
+  const eventToSave = withCalendarTimingMetadata(event);
+  const saved = await saveCalendarEvent(eventToSave, SYNC_CODE);
+  return saved ? eventToSave : null;
 }
 
 function isPastUnresolvedPlannerWorkEvent(event: CalendarEvent, nowMs: number | null) {
@@ -1554,83 +1860,6 @@ function plannedWorkTimeLogFromEvent(event: CalendarEvent): TimeLog | null {
   };
 }
 
-function plannerDateItemSortValue(item: PlannerDateItem) {
-  if (item.sourceType === "task_deadline") return `0-${item.task.title}`;
-  const event = item.event;
-  const allDayRank = event.allDay ? 1 : 2;
-  return `${allDayRank}-${event.startAt ?? event.startDate ?? ""}-${event.title}`;
-}
-
-function plannerItemsForDate(
-  date: string,
-  calendarEventsForRender: CalendarEvent[],
-  taskDeadlinesByDate: Record<string, Task[]>
-) {
-  const calendarItems: PlannerDateItem[] = calendarEventsForRender
-    .filter((event) => calendarEventIntersectsDay(event, date))
-    .map((event) => ({ sourceType: "calendar_event", event }));
-  const deadlineItems: PlannerDateItem[] = (taskDeadlinesByDate[date] ?? []).map((task) => ({
-    sourceType: "task_deadline",
-    task,
-    date,
-  }));
-
-  return [...deadlineItems, ...calendarItems].sort((a, b) =>
-    plannerDateItemSortValue(a).localeCompare(plannerDateItemSortValue(b))
-  );
-}
-
-function plannerItemTitle(item: PlannerDateItem) {
-  return item.sourceType === "task_deadline" ? item.task.title : item.event.title;
-}
-
-function plannerItemPrefix(item: PlannerDateItem, date: string) {
-  if (item.sourceType === "task_deadline") return "";
-  return plannerMonthEventPrefix(item.event, date);
-}
-
-function plannerYearItemEventType(item: PlannerDateItem): CalendarEventType {
-  return item.sourceType === "task_deadline" ? "deadline" : item.event.eventType;
-}
-
-function plannerItemDateSpan(item: PlannerDateItem) {
-  if (item.sourceType === "task_deadline") return { start: item.date, end: item.date };
-  return eventDateSpan(item.event);
-}
-
-function plannerAllDaySpansForDays(days: string[], items: PlannerDateItem[]): PlannerAllDaySpan[] {
-  const rangeStart = days[0];
-  const rangeEnd = days[days.length - 1];
-  if (!rangeStart || !rangeEnd) return [];
-
-  return items
-    .map((item) => {
-      const span = plannerItemDateSpan(item);
-      if (!span || span.end < rangeStart || span.start > rangeEnd) return null;
-
-      const start = span.start < rangeStart ? rangeStart : span.start;
-      const end = span.end > rangeEnd ? rangeEnd : span.end;
-      const startIndex = days.indexOf(start);
-      const endIndex = days.indexOf(end);
-      if (startIndex === -1 || endIndex === -1) return null;
-
-      return {
-        item,
-        startIndex,
-        span: endIndex - startIndex + 1,
-        startsBefore: span.start < rangeStart,
-        endsAfter: span.end > rangeEnd,
-      };
-    })
-    .filter((span): span is PlannerAllDaySpan => Boolean(span))
-    .sort((a, b) => a.startIndex - b.startIndex || b.span - a.span || plannerItemTitle(a.item).localeCompare(plannerItemTitle(b.item)));
-}
-
-function plannerAllDaySpanKey(span: PlannerAllDaySpan, prefix: string) {
-  const id = span.item.sourceType === "calendar_event" ? span.item.event.id : span.item.task.id;
-  return `${prefix}-${id}-${span.startIndex}-${span.span}`;
-}
-
 function startOfLoggerMonth(iso: string) {
   const { year, month } = isoParts(iso);
   return `${year}-${String(month).padStart(2, "0")}-01`;
@@ -1661,6 +1890,10 @@ function loggerDateRangeForMode(
   if (mode === "week") {
     const start = startOfLoggerWeek(anchor);
     return { start, end: addDaysISO(start, 6) };
+  }
+
+  if (mode === "day") {
+    return { start: anchor, end: anchor };
   }
 
   if (mode === "month") {
@@ -1715,6 +1948,15 @@ function formatLoggerPeriod(
       }).format(end)}`;
     }
     return `${dateFormatter.format(start)} - ${dateFormatter.format(end)}`;
+  }
+
+  if (mode === "day") {
+    return new Intl.DateTimeFormat("en", {
+      weekday: "long",
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    }).format(new Date(range.start + "T00:00:00"));
   }
 
   if (mode === "month") {
@@ -1774,6 +2016,80 @@ function formatOpenSessionStarted(log: TimeLog) {
   return `Started ${weekday} ${log.startTime ?? ""}`.trim();
 }
 
+function exactTimeLogDuration(log: TimeLog) {
+  if (!isClosedTimeLog(log) || !log.startTime || !log.endTime) return null;
+  return calculateTimeLogDurationHours(log.date, log.startTime, log.endDate || log.date, log.endTime);
+}
+
+function isExactTimedTimeLog(log: TimeLog) {
+  return exactTimeLogDuration(log) !== null;
+}
+
+function timeOfDayBucketFromMinutes(minutes: number): LoggerTimeOfDayBucket {
+  if (minutes >= 5 * 60 && minutes < 12 * 60) return "morning";
+  if (minutes >= 12 * 60 && minutes < 17 * 60) return "afternoon";
+  if (minutes >= 17 * 60 && minutes < 22 * 60) return "evening";
+  return "night";
+}
+
+function timeOfDayBucketForLog(log: TimeLog) {
+  const minutes = timeLogTimeToMinutes(log.startTime);
+  return minutes === null ? null : timeOfDayBucketFromMinutes(minutes);
+}
+
+function loggerCategoryTone(colour?: string | null) {
+  switch (colour) {
+    case "sky":
+      return {
+        accent: "bg-sky-400",
+        border: "border-sky-100",
+        bg: "bg-sky-50/70",
+        text: "text-sky-800",
+        muted: "text-sky-600",
+      };
+    case "violet":
+      return {
+        accent: "bg-violet-400",
+        border: "border-violet-100",
+        bg: "bg-violet-50/70",
+        text: "text-violet-800",
+        muted: "text-violet-600",
+      };
+    case "emerald":
+      return {
+        accent: "bg-emerald-400",
+        border: "border-emerald-100",
+        bg: "bg-emerald-50/70",
+        text: "text-emerald-800",
+        muted: "text-emerald-600",
+      };
+    case "amber":
+      return {
+        accent: "bg-amber-400",
+        border: "border-amber-100",
+        bg: "bg-amber-50/70",
+        text: "text-amber-800",
+        muted: "text-amber-600",
+      };
+    case "rose":
+      return {
+        accent: "bg-rose-400",
+        border: "border-rose-100",
+        bg: "bg-rose-50/70",
+        text: "text-rose-800",
+        muted: "text-rose-600",
+      };
+    default:
+      return {
+        accent: "bg-slate-300",
+        border: "border-slate-200",
+        bg: "bg-slate-50",
+        text: "text-slate-800",
+        muted: "text-slate-500",
+      };
+  }
+}
+
 function loggerCellTone(hours: number) {
   if (hours <= 0) return "bg-transparent text-transparent";
   if (hours < 1) return "bg-violet-50/70 text-violet-700";
@@ -1792,40 +2108,52 @@ function loggerCountCellTone(count: number) {
 
 function formatGridHours(hours: number) {
   if (!Number.isFinite(hours) || hours <= 0) return "";
-  return Number.isInteger(hours) ? String(hours) : String(Number(hours.toFixed(2)));
+  return formatDuration(hours);
 }
 
-function calendarCellTone(hours: number) {
-  if (hours <= 0) return "border border-slate-100 bg-white";
-  if (hours < 1) return "bg-violet-50";
-  if (hours < 2) return "bg-violet-100";
-  if (hours < 4) return "bg-violet-200";
-  if (hours < 6) return "bg-violet-300";
-  return "bg-violet-400";
+function loggerActivityCellTone(colour: string | null | undefined, level: number) {
+  const safeLevel = clamp(Math.round(level), 0, 4);
+  const palette =
+    colour === "sky"
+      ? ["bg-white border-sky-100", "bg-sky-50 border-sky-100", "bg-sky-100 border-sky-100", "bg-sky-200 border-sky-200", "bg-sky-400 border-sky-400"]
+      : colour === "violet"
+        ? ["bg-white border-violet-100", "bg-violet-50 border-violet-100", "bg-violet-100 border-violet-100", "bg-violet-200 border-violet-200", "bg-violet-400 border-violet-400"]
+        : colour === "emerald"
+          ? ["bg-white border-emerald-100", "bg-emerald-50 border-emerald-100", "bg-emerald-100 border-emerald-100", "bg-emerald-200 border-emerald-200", "bg-emerald-400 border-emerald-400"]
+          : colour === "amber"
+            ? ["bg-white border-amber-100", "bg-amber-50 border-amber-100", "bg-amber-100 border-amber-100", "bg-amber-200 border-amber-200", "bg-amber-400 border-amber-400"]
+            : colour === "rose"
+              ? ["bg-white border-rose-100", "bg-rose-50 border-rose-100", "bg-rose-100 border-rose-100", "bg-rose-200 border-rose-200", "bg-rose-400 border-rose-400"]
+              : ["bg-white border-slate-100", "bg-slate-100 border-slate-100", "bg-slate-200 border-slate-200", "bg-slate-300 border-slate-300", "bg-slate-500 border-slate-500"];
+  return palette[safeLevel];
 }
 
-function courseBarClass(courseId?: string) {
-  switch (courseId) {
-    case "robotics_studio":
-    case "studio_work":
-      return "bg-emerald-500";
-    case "computational_design":
-    case "design_research":
-      return "bg-violet-500";
-    case "thesis":
-      return "bg-sky-500";
-    case "the_yas_project":
-    case "practice":
-      return "bg-cyan-500";
-    case "project_vernacular":
-    case "field_notes":
-      return "bg-lime-500";
-    case "project_bloomberg":
-    case "client_project":
-      return "bg-amber-500";
-    default:
-      return "bg-slate-400";
+function loggerActivityLevel(hours: number, thresholds: number[]) {
+  if (!Number.isFinite(hours) || hours <= 0) return 0;
+  if (!thresholds.length) return 1;
+  if (hours <= thresholds[0]) return 1;
+  if (hours <= thresholds[1]) return 2;
+  if (hours <= thresholds[2]) return 3;
+  return 4;
+}
+
+function loggerActivityThresholds(values: number[]) {
+  const nonZero = values.filter((value) => Number.isFinite(value) && value > 0).sort((a, b) => a - b);
+  if (!nonZero.length) return [];
+  if (nonZero.length === 1) return [nonZero[0], nonZero[0], nonZero[0]];
+
+  const unique = Array.from(new Set(nonZero.map((value) => Number(value.toFixed(4)))));
+  if (unique.length === 1) {
+    const value = unique[0];
+    return [value * 0.5, value, value * 1.5];
   }
+
+  function quantile(position: number) {
+    const index = Math.min(nonZero.length - 1, Math.max(0, Math.ceil(position * nonZero.length) - 1));
+    return nonZero[index];
+  }
+
+  return [quantile(0.25), quantile(0.5), quantile(0.75)];
 }
 
 function normalizeTimeLogs(value: unknown): TimeLog[] {
@@ -1946,7 +2274,7 @@ function modeToStoredTab(mode: ViewMode) {
 }
 
 function storedTabToMode(value: string | null): ViewMode {
-  if (value === "planner" || value === "list" || value === "logger") return value;
+  if (value === "planner" || value === "list" || value === "logger" || value === "meds") return value;
   return "board";
 }
 
@@ -1958,7 +2286,404 @@ function modeSubtitle(mode: ViewMode) {
   if (mode === "board") return "What needs attention, then everything by category.";
   if (mode === "planner") return "Calendar structure and scheduled blocks.";
   if (mode === "logger") return "Actual time spent and working cadence.";
+  if (mode === "meds") return "Lightweight medication and feeling notes.";
   return "Search, filter and maintain task details.";
+}
+
+function formatMedicationTime(timestamp: string) {
+  const date = new Date(timestamp);
+  if (!Number.isFinite(date.getTime())) return "—";
+
+  return new Intl.DateTimeFormat("en", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
+function formatMedicationDate(timestamp: string) {
+  const date = new Date(timestamp);
+  if (!Number.isFinite(date.getTime())) return "Unknown";
+
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "2-digit",
+  }).format(date).toUpperCase();
+}
+
+function medicationLocalDate(entry: MedicationEntry) {
+  const date = new Date(entry.timestamp);
+  if (!Number.isFinite(date.getTime())) return "";
+  return localDateISO(date);
+}
+
+function medicationLabel(entry: MedicationEntry) {
+  if (entry.entryType === "input") {
+    return [entry.medication, entry.amount ? formatMedicationAmount(entry.amount) : "", entry.unit ?? ""]
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  return [
+    entry.feeling,
+    entry.intensity ? titleCase(entry.intensity) : "",
+    entry.valence ? titleCase(entry.valence) : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function formatMedicationAmount(amount: number) {
+  return Number.isInteger(amount) ? String(amount) : String(Number(amount.toFixed(3)));
+}
+
+function titleCase(value: string) {
+  return value ? value.slice(0, 1).toUpperCase() + value.slice(1) : value;
+}
+
+function medicationTimestampFromInputs(date: string, time: string) {
+  if (!isValidISODate(date) || timeToMinutes(time) === null) return null;
+  const { year, month, day } = isoParts(date);
+  const [hours, minutes] = time.split(":").map(Number);
+  const parsed = new Date(year, month - 1, day, hours, minutes, 0, 0);
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
+}
+
+function medicationMetadataValue(entry: MedicationEntry, key: string) {
+  const value = entry.metadata?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+function isVyvanseEntry(entry: MedicationEntry) {
+  return entry.entryType === "input" && (entry.medication ?? "").toLowerCase().includes("vyvanse");
+}
+
+function isCaffeineEntry(entry: MedicationEntry) {
+  if (entry.entryType !== "input") return false;
+  const medication = (entry.medication ?? "").toLowerCase();
+  const source = medicationMetadataValue(entry, "source").toLowerCase();
+  return medication.includes("coffee") || medication.includes("caffeine") || source.includes("caffeine");
+}
+
+function caffeineDrinkLabel(entry: MedicationEntry) {
+  const label = medicationMetadataValue(entry, "drinkLabel");
+  if (label) return label;
+  if (entry.medication === "Coffee") return "Coffee";
+  return entry.medication ?? "Caffeine";
+}
+
+function medicationChartX(timestampMs: number, startMs: number, endMs: number) {
+  if (endMs <= startMs) return 36;
+  return 36 + clamp((timestampMs - startMs) / (endMs - startMs), 0, 1) * 278;
+}
+
+function medicationChartY(value: number, maxPercent: number) {
+  return 132 - clamp(value / Math.max(1, maxPercent), 0, 1) * 104;
+}
+
+function eliminationRateFromHalfLife(halfLifeHours: number) {
+  return Math.log(2) / halfLifeHours;
+}
+
+function batemanRelativeLevel(elapsedHours: number, absorptionRatePerHour: number, eliminationRatePerHour: number) {
+  if (elapsedHours < 0) return 0;
+  const ka = absorptionRatePerHour;
+  const ke = eliminationRatePerHour;
+  if (!Number.isFinite(ka) || !Number.isFinite(ke) || ka <= 0 || ke <= 0) return 0;
+
+  if (Math.abs(ka - ke) < 1e-6) {
+    return Math.max(0, ka * elapsedHours * Math.exp(-ke * elapsedHours));
+  }
+
+  return Math.max(0, (ka / (ka - ke)) * (Math.exp(-ke * elapsedHours) - Math.exp(-ka * elapsedHours)));
+}
+
+function batemanPeakTimeHours(absorptionRatePerHour: number, eliminationRatePerHour: number) {
+  if (Math.abs(absorptionRatePerHour - eliminationRatePerHour) < 1e-6) {
+    return 1 / eliminationRatePerHour;
+  }
+
+  return Math.log(absorptionRatePerHour / eliminationRatePerHour) / (absorptionRatePerHour - eliminationRatePerHour);
+}
+
+const VYVANSE_ELIMINATION_RATE = eliminationRateFromHalfLife(VYVANSE_VISUAL_MODEL.halfLifeHours);
+const VYVANSE_REFERENCE_PEAK_HOURS = batemanPeakTimeHours(
+  VYVANSE_VISUAL_MODEL.absorptionRatePerHour,
+  VYVANSE_ELIMINATION_RATE
+);
+const VYVANSE_REFERENCE_PEAK_LEVEL = batemanRelativeLevel(
+  VYVANSE_REFERENCE_PEAK_HOURS,
+  VYVANSE_VISUAL_MODEL.absorptionRatePerHour,
+  VYVANSE_ELIMINATION_RATE
+);
+const CAFFEINE_ELIMINATION_RATE = eliminationRateFromHalfLife(CAFFEINE_VISUAL_MODEL.halfLifeHours);
+const CAFFEINE_REFERENCE_PEAK_HOURS = batemanPeakTimeHours(
+  CAFFEINE_VISUAL_MODEL.absorptionRatePerHour,
+  CAFFEINE_ELIMINATION_RATE
+);
+const CAFFEINE_REFERENCE_PEAK_LEVEL = batemanRelativeLevel(
+  CAFFEINE_REFERENCE_PEAK_HOURS,
+  CAFFEINE_VISUAL_MODEL.absorptionRatePerHour,
+  CAFFEINE_ELIMINATION_RATE
+);
+
+function chartScaleMaxPercent(kind: "vyvanse" | "caffeine", maxValue: number) {
+  const defaultMax = kind === "vyvanse"
+    ? VYVANSE_VISUAL_MODEL.defaultChartMaxPercent
+    : CAFFEINE_VISUAL_MODEL.defaultChartMaxPercent;
+  if (maxValue <= defaultMax) return defaultMax;
+  return Math.ceil(maxValue / 25) * 25;
+}
+
+function vyvanseContribution(entry: MedicationEntry, sampleMs: number) {
+  const doseMs = Date.parse(entry.timestamp);
+  if (!Number.isFinite(doseMs) || sampleMs < doseMs) return 0;
+  const elapsedHours = (sampleMs - doseMs) / (60 * 60 * 1000);
+  if (elapsedHours > VYVANSE_VISUAL_MODEL.visibleHours) return 0;
+
+  const amount = entry.amount && Number.isFinite(entry.amount) ? entry.amount : VYVANSE_VISUAL_MODEL.referenceDoseMg;
+  const doseScale = amount / VYVANSE_VISUAL_MODEL.referenceDoseMg;
+  const relativeLevel = batemanRelativeLevel(
+    elapsedHours,
+    VYVANSE_VISUAL_MODEL.absorptionRatePerHour,
+    VYVANSE_ELIMINATION_RATE
+  );
+  return VYVANSE_REFERENCE_PEAK_LEVEL > 0 ? 100 * doseScale * (relativeLevel / VYVANSE_REFERENCE_PEAK_LEVEL) : 0;
+}
+
+function caffeineContribution(entry: MedicationEntry, sampleMs: number) {
+  const intakeMs = Date.parse(entry.timestamp);
+  if (!Number.isFinite(intakeMs) || sampleMs < intakeMs) return 0;
+  const elapsedHours = (sampleMs - intakeMs) / (60 * 60 * 1000);
+  if (elapsedHours > CAFFEINE_VISUAL_MODEL.visibleHours) return 0;
+
+  const mg = entry.amount && Number.isFinite(entry.amount) ? entry.amount : CAFFEINE_VISUAL_MODEL.referenceMg;
+  const amountScale = mg / CAFFEINE_VISUAL_MODEL.referenceMg;
+  const relativeLevel = batemanRelativeLevel(
+    elapsedHours,
+    CAFFEINE_VISUAL_MODEL.absorptionRatePerHour,
+    CAFFEINE_ELIMINATION_RATE
+  );
+  return CAFFEINE_REFERENCE_PEAK_LEVEL > 0 ? 100 * amountScale * (relativeLevel / CAFFEINE_REFERENCE_PEAK_LEVEL) : 0;
+}
+
+function buildMedsRange(range: MedsLevelRange, offset: number, nowMs: number) {
+  const config = MEDS_RANGE_CONFIG[range];
+  const durationMs = config.durationHours * 60 * 60 * 1000;
+  const futureMs = config.futureHours * 60 * 60 * 1000;
+  const currentEnd = nowMs + futureMs;
+  const endMs = currentEnd - Math.max(0, offset) * durationMs;
+  return { startMs: endMs - durationMs, endMs, durationMs };
+}
+
+function buildMedsCurveSeries({
+  entries,
+  startMs,
+  endMs,
+  kind,
+}: {
+  entries: MedicationEntry[];
+  startMs: number;
+  endMs: number;
+  kind: "vyvanse" | "caffeine";
+}) {
+  const samples = 56;
+  const raw = Array.from({ length: samples }, (_, index) => {
+    const sampleMs = startMs + ((endMs - startMs) * index) / (samples - 1);
+    const value = entries.reduce(
+      (sum, entry) => sum + (kind === "vyvanse" ? vyvanseContribution(entry, sampleMs) : caffeineContribution(entry, sampleMs)),
+      0
+    );
+    return { sampleMs, value };
+  });
+  const maxPercent = chartScaleMaxPercent(kind, Math.max(0, ...raw.map((point) => point.value)));
+
+  return {
+    points: raw.map((point) => ({
+      x: medicationChartX(point.sampleMs, startMs, endMs),
+      y: medicationChartY(point.value, maxPercent),
+    })),
+    maxPercent,
+  };
+}
+
+function medChartDots({
+  entries,
+  startMs,
+  endMs,
+  kind,
+  maxPercent,
+}: {
+  entries: MedicationEntry[];
+  startMs: number;
+  endMs: number;
+  kind: "vyvanse" | "caffeine";
+  maxPercent: number;
+}): MedsChartDot[] {
+  return entries
+    .filter((entry) => {
+      const timestamp = Date.parse(entry.timestamp);
+      return Number.isFinite(timestamp) && timestamp >= startMs && timestamp <= endMs;
+    })
+    .slice(-6)
+    .map((entry) => {
+      const timestamp = Date.parse(entry.timestamp);
+      const contribution = kind === "vyvanse" ? vyvanseContribution(entry, timestamp + 60 * 60 * 1000) : caffeineContribution(entry, timestamp + 35 * 60 * 1000);
+      return {
+        key: entry.id,
+        x: medicationChartX(timestamp, startMs, endMs),
+        y: medicationChartY(Math.max(contribution, maxPercent * 0.06), maxPercent),
+        label:
+          kind === "vyvanse"
+            ? `${formatMedicationAmount(entry.amount ?? VYVANSE_VISUAL_MODEL.referenceDoseMg)}${entry.unit ?? "mg"}`
+            : caffeineDrinkLabel(entry),
+        sublabel:
+          kind === "vyvanse"
+            ? formatMedicationTime(entry.timestamp)
+            : `${formatMedicationTime(entry.timestamp)}\n~${formatMedicationAmount(entry.amount ?? CAFFEINE_VISUAL_MODEL.referenceMg)}mg`,
+      };
+    });
+}
+
+function medsCurvePath(points: MedsChartPoint[]) {
+  return points
+    .map((point, index) => {
+      if (index === 0) return `M ${point.x.toFixed(1)} ${point.y.toFixed(1)}`;
+      const previous = points[index - 1];
+      const controlX = (previous.x + point.x) / 2;
+      return `Q ${controlX.toFixed(1)} ${previous.y.toFixed(1)} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`;
+    })
+    .join(" ");
+}
+
+function medsAreaPath(points: MedsChartPoint[]) {
+  if (!points.length) return "";
+  const curve = medsCurvePath(points);
+  const first = points[0];
+  const last = points[points.length - 1];
+  return `${curve} L ${last.x.toFixed(1)} 132 L ${first.x.toFixed(1)} 132 Z`;
+}
+
+function formatMedsRangeTimeLabel(timestampMs: number, range: MedsLevelRange) {
+  const date = new Date(timestampMs);
+  if (!Number.isFinite(date.getTime())) return "";
+  if (range === "week") {
+    return new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(date);
+  }
+  return new Intl.DateTimeFormat("en", { hour: "numeric", hour12: true }).format(date).replace(" ", "");
+}
+
+function medsRangeLabel(startMs: number, endMs: number) {
+  const start = new Date(startMs);
+  const end = new Date(endMs);
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) return "";
+  return `${new Intl.DateTimeFormat("en", { month: "short", day: "numeric", hour: "numeric" }).format(start)} – ${new Intl.DateTimeFormat("en", { month: "short", day: "numeric", hour: "numeric" }).format(end)}`;
+}
+
+function MedsChartCard({
+  title,
+  subtitle,
+  meta,
+  tone,
+  softTone,
+  icon,
+  points,
+  dots,
+  nowX,
+  axisLabels,
+  maxPercent,
+}: {
+  title: string;
+  subtitle: string;
+  meta: string;
+  tone: string;
+  softTone: string;
+  icon: React.ReactNode;
+  points: MedsChartPoint[];
+  dots: MedsChartDot[];
+  nowX: number | null;
+  axisLabels: string[];
+  maxPercent: number;
+}) {
+  const gradientId = `meds-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-fill`;
+  const path = medsCurvePath(points);
+  const area = medsAreaPath(points);
+
+  return (
+    <section className="rounded-[22px] border border-slate-200/80 bg-white px-4 pb-4 pt-3 shadow-[0_10px_28px_rgba(15,23,42,0.04)]">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-3">
+          <div
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl"
+            style={{ backgroundColor: softTone, color: tone }}
+          >
+            {icon}
+          </div>
+          <div className="min-w-0">
+            <div className="truncate text-base font-semibold leading-tight text-slate-950">{title}</div>
+            <div className="mt-0.5 truncate text-xs text-slate-500">{subtitle}</div>
+          </div>
+        </div>
+        <div className="shrink-0 pt-1 text-right text-xs font-medium text-slate-500">{meta}</div>
+      </div>
+
+      <svg viewBox="0 0 340 178" className="mt-3 h-[220px] w-full overflow-visible" role="img" aria-label={`${title} estimated levels`}>
+        <defs>
+          <linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor={tone} stopOpacity="0.22" />
+            <stop offset="55%" stopColor={tone} stopOpacity="0.08" />
+            <stop offset="100%" stopColor={tone} stopOpacity="0.015" />
+          </linearGradient>
+        </defs>
+
+        {[40, 70, 100, 130].map((y) => (
+          <line key={`grid-y-${y}`} x1="36" y1={y} x2="314" y2={y} stroke="#e2e8f0" strokeOpacity="0.65" />
+        ))}
+        {[36, 106, 176, 246, 314].map((x) => (
+          <line key={`grid-x-${x}`} x1={x} y1="28" x2={x} y2="132" stroke="#e2e8f0" strokeOpacity="0.45" />
+        ))}
+        {[maxPercent, maxPercent * 0.75, maxPercent * 0.5, maxPercent * 0.25, 0].map((value, index) => (
+          <text key={`${title}-axis-${index}`} x="6" y={37 + index * 24} className="fill-slate-400 text-[10px]">
+            {`${Math.round(value)}%`}
+          </text>
+        ))}
+        {axisLabels.map((label, index) => (
+          <text key={`${label}-${index}`} x={36 + index * 69.5} y="154" textAnchor="middle" className="fill-slate-500 text-[11px]">
+            {label}
+          </text>
+        ))}
+
+        <path d={area} fill={`url(#${gradientId})`} />
+        <path d={path} fill="none" stroke={tone} strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.4" />
+
+        {nowX !== null ? (
+          <>
+            <line x1={nowX} y1="16" x2={nowX} y2="139" stroke="#334155" strokeDasharray="4 4" strokeWidth="1.1" />
+            <text x={Math.min(nowX + 5, 290)} y="28" className="fill-slate-800 text-[11px] font-semibold">
+              Now
+            </text>
+          </>
+        ) : null}
+
+        {dots.map((dot) => (
+          <g key={dot.key}>
+            <line x1={dot.x} y1={dot.y} x2={dot.x} y2="132" stroke="#cbd5e1" strokeDasharray="3 3" strokeOpacity="0.7" />
+            <circle cx={dot.x} cy={dot.y} r="5.5" fill={tone} stroke="#fff" strokeWidth="2" />
+          </g>
+        ))}
+      </svg>
+
+      <div className="mt-1 flex flex-wrap justify-center gap-x-5 gap-y-2 text-center text-[11px] text-slate-600">
+        {dots.map((dot) => (
+          <div key={`${dot.key}-legend`} className="grid justify-items-center gap-0.5">
+            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: tone }} />
+            <span className="font-medium text-slate-800">{dot.label}</span>
+            {dot.sublabel ? <span className="whitespace-pre-line text-slate-500">{dot.sublabel}</span> : null}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
 }
 
 function daysUntil(dueISO?: string | null) {
@@ -2440,24 +3165,50 @@ function EffortIcon({ effortLevel }: { effortLevel: EffortLevel }) {
   return <Gauge className="h-3.5 w-3.5" aria-hidden="true" />;
 }
 
-function plannerEventTone(eventType: CalendarEventType) {
-  if (eventType === "work") return "border-[#2098D4]/25 bg-[#2098D4]/10 text-[#1775A5]";
-  if (eventType === "class") return "border-[#7045D8]/25 bg-[#7045D8]/10 text-[#5632B0]";
-  if (eventType === "meeting") return "border-[#FFC515]/35 bg-[#FFC515]/14 text-[#9A7200]";
-  if (eventType === "deadline") return "border-[#F04A2D]/30 bg-[#F04A2D]/12 text-[#B93822]";
-  if (eventType === "milestone") return "border-[#FF8A1F]/30 bg-[#FF8A1F]/12 text-[#B85C0B]";
-  if (eventType === "travel") return "border-[#43D4DC]/35 bg-[#43D4DC]/12 text-[#16858C]";
-  return "border-[#43C995]/30 bg-[#43C995]/12 text-[#1F805B]";
+function plannerEventTone(eventType: CalendarEventType, temporalState: PlannerTemporalState = "future") {
+  const temporal = plannerPastSoftening(temporalState);
+  const today = temporalState === "today" ? " ring-1 ring-inset ring-slate-900/10" : "";
+  if (eventType === "work") return `border-[#5FA9FF]/25 bg-[#5FA9FF]/10 text-[#2D6FAF] ${temporal}${today}`;
+  if (eventType === "class") return `border-[#C29EFF]/25 bg-[#C29EFF]/10 text-[#6F4CB8] ${temporal}${today}`;
+  if (eventType === "meeting") return `border-[#FCB100]/35 bg-[#FCB100]/12 text-[#9B6900] ${temporal}${today}`;
+  if (eventType === "deadline") {
+    return `border-[#FE7877]/45 border-l-2 border-l-[#FE7877]/75 bg-[#FE7877]/14 text-[#B33F3E] font-semibold ${temporal}${today}`;
+  }
+  if (eventType === "milestone") return `border-[#FD925E]/30 bg-[#FD925E]/12 text-[#A94F20] ${temporal}${today}`;
+  if (eventType === "personal") return `border-[#88E18E]/30 bg-[#88E18E]/12 text-[#2F7E39] ${temporal}${today}`;
+  if (eventType === "travel") return `border-[#04E6F7]/35 bg-[#04E6F7]/12 text-[#067F89] ${temporal}${today}`;
+  if (eventType === "date") return `border-[#FC889F]/30 bg-[#FC889F]/12 text-[#AE3E56] ${temporal}${today}`;
+  if (eventType === "social") return `border-[#55CDFF]/30 bg-[#55CDFF]/12 text-[#167BA8] ${temporal}${today}`;
+  if (eventType === "active") return `border-[#2DCC70]/30 bg-[#2DCC70]/12 text-[#197C45] ${temporal}${today}`;
+  return `border-[#8293B9]/30 bg-[#8293B9]/12 text-[#465777] ${temporal}${today}`;
 }
 
 function PlannerEventTypeIcon({ eventType }: { eventType: CalendarEventType }) {
-  if (eventType === "work") return <BriefcaseBusiness className="h-3 w-3" aria-hidden="true" />;
-  if (eventType === "class") return <GraduationCap className="h-3 w-3" aria-hidden="true" />;
-  if (eventType === "meeting") return <Users className="h-3 w-3" aria-hidden="true" />;
-  if (eventType === "deadline") return <Flag className="h-3 w-3" aria-hidden="true" />;
-  if (eventType === "milestone") return <Diamond className="h-3 w-3" aria-hidden="true" />;
-  if (eventType === "travel") return <Plane className="h-3 w-3" aria-hidden="true" />;
-  return <UserRound className="h-3 w-3" aria-hidden="true" />;
+  const iconClassName = "h-2.5 w-2.5 text-white";
+  const iconProps = { className: iconClassName, strokeWidth: 2.4, "aria-hidden": "true" as const };
+  let icon: React.ReactNode;
+
+  if (eventType === "work") icon = <BriefcaseBusiness {...iconProps} />;
+  else if (eventType === "class") icon = <GraduationCap {...iconProps} />;
+  else if (eventType === "meeting") icon = <Users {...iconProps} />;
+  else if (eventType === "deadline") icon = <Flag {...iconProps} />;
+  else if (eventType === "milestone") icon = <Diamond {...iconProps} />;
+  else if (eventType === "travel") icon = <Plane {...iconProps} />;
+  else if (eventType === "date") icon = <Heart {...iconProps} />;
+  else if (eventType === "social") icon = <Users {...iconProps} />;
+  else if (eventType === "active") icon = <Activity {...iconProps} />;
+  else if (eventType === "admin") icon = <FileText {...iconProps} />;
+  else icon = <UserRound {...iconProps} />;
+
+  return (
+    <span
+      className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-white"
+      style={{ backgroundColor: PLANNER_EVENT_PALETTE[eventType].color }}
+      aria-hidden="true"
+    >
+      {icon}
+    </span>
+  );
 }
 
 function TaskMetaPill({
@@ -2749,6 +3500,7 @@ export default function MinimalTaskTracker() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [timeLogs, setTimeLogs] = useState<TimeLog[]>([]);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
+  const [medicationEntries, setMedicationEntries] = useState<MedicationEntry[]>([]);
   const [hasMounted, setHasMounted] = useState(false);
   const [timeLogsLoaded, setTimeLogsLoaded] = useState(false);
   const [tasksLoaded, setTasksLoaded] = useState(false);
@@ -2770,6 +3522,8 @@ export default function MinimalTaskTracker() {
   const [plannerEventModalOpen, setPlannerEventModalOpen] = useState(false);
   const [plannerEventModalMode, setPlannerEventModalMode] = useState<PlannerEventModalMode>("create");
   const [plannerEventDraft, setPlannerEventDraft] = useState<PlannerEventDraft | null>(null);
+  const [plannerEventMoreDetailsOpen, setPlannerEventMoreDetailsOpen] = useState(false);
+  const [plannerEventTypeChooserOpen, setPlannerEventTypeChooserOpen] = useState(false);
   const [plannerEventSaving, setPlannerEventSaving] = useState(false);
   const [plannerEventError, setPlannerEventError] = useState<string | null>(null);
   const [plannerInteraction, setPlannerInteraction] = useState<PlannerWeekInteraction | null>(null);
@@ -2780,6 +3534,40 @@ export default function MinimalTaskTracker() {
   const [smartImportProposals, setSmartImportProposals] = useState<SmartImportProposal[]>([]);
   const [smartImportSaving, setSmartImportSaving] = useState(false);
   const [smartImportMessage, setSmartImportMessage] = useState<string | null>(null);
+  const [medsView, setMedsView] = useState<MedsView>("today");
+  const [medsDetailsOpen, setMedsDetailsOpen] = useState(false);
+  const [medsModalMode, setMedsModalMode] = useState<MedicationModalMode | null>(null);
+  const [medsSaving, setMedsSaving] = useState(false);
+  const [medsError, setMedsError] = useState<string | null>(null);
+  const [editingMedicationEntry, setEditingMedicationEntry] = useState<MedicationEntry | null>(null);
+  const [medsDeleteConfirm, setMedsDeleteConfirm] = useState(false);
+  const [doseMedicationKind, setDoseMedicationKind] = useState<MedicationKind>("Vyvanse");
+  const [doseCustomMedication, setDoseCustomMedication] = useState("");
+  const [doseAmount, setDoseAmount] = useState("");
+  const [doseUnit, setDoseUnit] = useState("mg");
+  const [doseWhenMode, setDoseWhenMode] = useState<"now" | "manual">("now");
+  const [doseDate, setDoseDate] = useState("");
+  const [doseTime, setDoseTime] = useState("");
+  const [feelingChoice, setFeelingChoice] = useState("Sharp focus");
+  const [feelingCustom, setFeelingCustom] = useState("");
+  const [feelingValence, setFeelingValence] = useState<FeelingValence | "">("");
+  const [feelingIntensity, setFeelingIntensity] = useState<FeelingIntensity | "">("");
+  const [feelingDaypart, setFeelingDaypart] = useState<FeelingDaypart | "">("");
+  const [feelingWhenMode, setFeelingWhenMode] = useState<"now" | "manual">("now");
+  const [feelingDate, setFeelingDate] = useState("");
+  const [feelingTime, setFeelingTime] = useState("");
+  const [medsHistoryFilter, setMedsHistoryFilter] = useState<"all" | "Vyvanse" | "Prozac" | "Coffee" | "feelings">("all");
+  const [medsLevelRange, setMedsLevelRange] = useState<MedsLevelRange>("24h");
+  const [medsRangeOffset, setMedsRangeOffset] = useState(0);
+  const [caffeineSheetOpen, setCaffeineSheetOpen] = useState(false);
+  const [caffeineDrinkId, setCaffeineDrinkId] = useState<CaffeineDrinkId>("iced_latte");
+  const [caffeineSize, setCaffeineSize] = useState<"S" | "M" | "L">("M");
+  const [caffeineMg, setCaffeineMg] = useState("120");
+  const [caffeineWhenMode, setCaffeineWhenMode] = useState<"now" | "manual">("now");
+  const [caffeineDate, setCaffeineDate] = useState("");
+  const [caffeineTime, setCaffeineTime] = useState("");
+  const [caffeineNote, setCaffeineNote] = useState("");
+  const [mobileMoreNavOpen, setMobileMoreNavOpen] = useState(false);
   const [backupStatus, setBackupStatus] = useState({ label: "—", count: 0 });
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -2838,9 +3626,15 @@ useEffect(() => {
   const [logHoursInput, setLogHoursInput] = useState<string>("");
   const [logNote, setLogNote] = useState<string>("");
   const [logSaving, setLogSaving] = useState(false);
+  const [endingOpenLogId, setEndingOpenLogId] = useState<string | null>(null);
+  const [deletingTimeLogId, setDeletingTimeLogId] = useState<string | null>(null);
+  const [loggerActionError, setLoggerActionError] = useState<string | null>(null);
   const [loggerTaskFilter, setLoggerTaskFilter] = useState<string>("all");
   const [loggerValueMode, setLoggerValueMode] = useState<LoggerValueMode>("hours");
   const [loggerRangeMode, setLoggerRangeMode] = useState<LoggerRangeMode>("month");
+  const [loggerBreakdownMode, setLoggerBreakdownMode] = useState<LoggerBreakdownMode>("tasks");
+  const [loggerBreakdownExpanded, setLoggerBreakdownExpanded] = useState(false);
+  const [loggerDetailsOpen, setLoggerDetailsOpen] = useState(false);
   const [loggerAnchorDate, setLoggerAnchorDate] = useState<string>("");
   const [loggerMobileSelectedDate, setLoggerMobileSelectedDate] = useState<string>("");
   const [customStartDate, setCustomStartDate] = useState<string>("");
@@ -2857,7 +3651,7 @@ useEffect(() => {
 
   // List sorting
   const [listSortKey, setListSortKey] = useState<
-    "title" | "course" | "status" | "priority" | "due" | "timeLeft" | "effort" | "duration" | "difficulty"
+    "title" | "course" | "status" | "priority" | "due" | "timeLeft" | "effort" | "difficulty"
   >("due");
   const [listSortDir, setListSortDir] = useState<"asc" | "desc">("asc");
   const [openStatusTaskId, setOpenStatusTaskId] = useState<string | null>(null);
@@ -2867,7 +3661,6 @@ useEffect(() => {
   const [priorityFilters, setPriorityFilters] = useState<Priority[]>([]);
   const [difficultyFilters, setDifficultyFilters] = useState<string[]>([]);
   const [timeLeftFilter, setTimeLeftFilter] = useState<{ min: number; max: number } | null>(null);
-  const [durationFilter, setDurationFilter] = useState<{ min: number; max: number } | null>(null);
 
   // Attention score toggles
   const [scoreUseTime, setScoreUseTime] = useState(true);
@@ -2890,6 +3683,10 @@ useEffect(() => {
     setCustomEndDate(today);
     setLogDate(today);
     setLogEndDate(today);
+    setDoseDate(today);
+    setFeelingDate(today);
+    setDoseTime(timeInputFromTimestamp(new Date().toISOString()));
+    setFeelingTime(timeInputFromTimestamp(new Date().toISOString()));
     setMode(storedTabToMode(localStorage.getItem(ACTIVE_TAB_STORAGE_KEY)));
     setSidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "true");
     setSidebarPreferenceLoaded(true);
@@ -2944,6 +3741,17 @@ useEffect(() => {
 
       console.warn("Supabase calendar event load failed. Preserving current Planner event state.");
     })();
+
+    void (async () => {
+      const remoteMedicationEntries = await loadMedicationEntries(SYNC_CODE);
+
+      if (remoteMedicationEntries.ok) {
+        setMedicationEntries(remoteMedicationEntries.entries);
+        return;
+      }
+
+      console.warn("Supabase medication entry load failed. Preserving current Meds state.");
+    })();
   });
 }, []);
 
@@ -2980,6 +3788,7 @@ useEffect(() => {
 useEffect(() => {
   if (mode !== "list") setOpenListFilter(null);
   if (mode !== "list") setMobileTaskFiltersOpen(false);
+  setMobileMoreNavOpen(false);
 }, [mode]);
 
 useEffect(() => {
@@ -3248,7 +4057,6 @@ useEffect(() => {
         if (priorityFilters.length > 0 && !priorityFilters.includes(t.priority)) return false;
         if (difficultyFilters.length > 0 && !difficultyFilters.includes(String(t.difficulty ?? ""))) return false;
         if (!taskMatchesTimeLeftFilter(t, timeLeftFilter)) return false;
-        if (!taskMatchesDurationFilter(t, durationFilter)) return false;
         if (!q) return true;
         return (
           t.title.toLowerCase().includes(q) ||
@@ -3262,7 +4070,7 @@ useEffect(() => {
         if (ad !== bd) return bd.localeCompare(ad);
         return (b.createdAt ?? 0) - (a.createdAt ?? 0);
       });
-  }, [clientNowMs, courseFilter, difficultyFilters, durationFilter, priorityFilters, query, statusFilters, tasks, timeLeftFilter]);
+  }, [clientNowMs, courseFilter, difficultyFilters, priorityFilters, query, statusFilters, tasks, timeLeftFilter]);
 
   const listRows = useMemo(() => {
     const rows = filtered.filter((task) => {
@@ -3270,7 +4078,6 @@ useEffect(() => {
       if (priorityFilters.length > 0 && !priorityFilters.includes(task.priority)) return false;
       if (difficultyFilters.length > 0 && !difficultyFilters.includes(String(task.difficulty ?? ""))) return false;
       if (!taskMatchesTimeLeftFilter(task, timeLeftFilter)) return false;
-      if (!taskMatchesDurationFilter(task, durationFilter)) return false;
       return true;
     });
     const dir = listSortDir === "asc" ? 1 : -1;
@@ -3293,8 +4100,6 @@ useEffect(() => {
         }
         case "effort":
           return effortRank(taskDisplayEffortLevel(t));
-        case "duration":
-          return t.durationHrs == null ? 999999 : Number(t.durationHrs);
         case "difficulty":
           return t.difficulty == null ? 999999 : Number(t.difficulty);
         default:
@@ -3312,17 +4117,423 @@ useEffect(() => {
     });
 
     return rows;
-  }, [difficultyFilters, durationFilter, filtered, listSortKey, listSortDir, priorityFilters, statusFilters, timeLeftFilter]);
+  }, [difficultyFilters, filtered, listSortKey, listSortDir, priorityFilters, statusFilters, timeLeftFilter]);
 
   const activeTaskFilterCount =
     (courseFilter === "all" ? 0 : 1) +
     statusFilters.length +
     priorityFilters.length +
     difficultyFilters.length +
-    (timeLeftFilter ? 1 : 0) +
-    (durationFilter ? 1 : 0);
+    (timeLeftFilter ? 1 : 0);
 
   const closedTimeLogs = useMemo(() => timeLogs.filter(isClosedTimeLog), [timeLogs]);
+  const sortedMedicationEntries = useMemo(() => {
+    return medicationEntries
+      .slice()
+      .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+  }, [medicationEntries]);
+  const todaysMedicationEntries = useMemo(() => {
+    const today = clientToday || todayISO();
+    return sortedMedicationEntries
+      .filter((entry) => medicationLocalDate(entry) === today)
+      .slice()
+      .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+  }, [clientToday, sortedMedicationEntries]);
+  const medsVisibleRange = useMemo(
+    () => buildMedsRange(medsLevelRange, medsRangeOffset, clientNowMs || Date.now()),
+    [clientNowMs, medsLevelRange, medsRangeOffset]
+  );
+  const vyvanseEntries = useMemo(
+    () => sortedMedicationEntries.filter(isVyvanseEntry),
+    [sortedMedicationEntries]
+  );
+  const caffeineEntries = useMemo(
+    () => sortedMedicationEntries.filter(isCaffeineEntry),
+    [sortedMedicationEntries]
+  );
+  const vyvanseCurveEntries = useMemo(
+    () =>
+      vyvanseEntries.filter((entry) => {
+        const timestamp = Date.parse(entry.timestamp);
+        return (
+          Number.isFinite(timestamp) &&
+          timestamp >= medsVisibleRange.startMs - VYVANSE_VISUAL_MODEL.visibleHours * 60 * 60 * 1000 &&
+          timestamp <= medsVisibleRange.endMs
+        );
+      }),
+    [medsVisibleRange.endMs, medsVisibleRange.startMs, vyvanseEntries]
+  );
+  const caffeineCurveEntries = useMemo(
+    () =>
+      caffeineEntries.filter((entry) => {
+        const timestamp = Date.parse(entry.timestamp);
+        return (
+          Number.isFinite(timestamp) &&
+          timestamp >= medsVisibleRange.startMs - CAFFEINE_VISUAL_MODEL.visibleHours * 60 * 60 * 1000 &&
+          timestamp <= medsVisibleRange.endMs
+        );
+      }),
+    [caffeineEntries, medsVisibleRange.endMs, medsVisibleRange.startMs]
+  );
+  const vyvanseChartSeries = useMemo(
+    () =>
+      buildMedsCurveSeries({
+        entries: vyvanseCurveEntries,
+        startMs: medsVisibleRange.startMs,
+        endMs: medsVisibleRange.endMs,
+        kind: "vyvanse",
+      }),
+    [medsVisibleRange.endMs, medsVisibleRange.startMs, vyvanseCurveEntries]
+  );
+  const caffeineChartSeries = useMemo(
+    () =>
+      buildMedsCurveSeries({
+        entries: caffeineCurveEntries,
+        startMs: medsVisibleRange.startMs,
+        endMs: medsVisibleRange.endMs,
+        kind: "caffeine",
+      }),
+    [caffeineCurveEntries, medsVisibleRange.endMs, medsVisibleRange.startMs]
+  );
+  const vyvanseChartDots = useMemo(
+    () =>
+      medChartDots({
+        entries: vyvanseEntries,
+        startMs: medsVisibleRange.startMs,
+        endMs: medsVisibleRange.endMs,
+        kind: "vyvanse",
+        maxPercent: vyvanseChartSeries.maxPercent,
+      }),
+    [medsVisibleRange.endMs, medsVisibleRange.startMs, vyvanseChartSeries.maxPercent, vyvanseEntries]
+  );
+  const caffeineChartDots = useMemo(
+    () =>
+      medChartDots({
+        entries: caffeineEntries,
+        startMs: medsVisibleRange.startMs,
+        endMs: medsVisibleRange.endMs,
+        kind: "caffeine",
+        maxPercent: caffeineChartSeries.maxPercent,
+      }),
+    [caffeineChartSeries.maxPercent, caffeineEntries, medsVisibleRange.endMs, medsVisibleRange.startMs]
+  );
+  const medsNowX =
+    clientNowMs >= medsVisibleRange.startMs && clientNowMs <= medsVisibleRange.endMs
+      ? medicationChartX(clientNowMs, medsVisibleRange.startMs, medsVisibleRange.endMs)
+      : null;
+  const medsAxisLabels = useMemo(
+    () =>
+      Array.from({ length: 5 }, (_, index) =>
+        formatMedsRangeTimeLabel(
+          medsVisibleRange.startMs + ((medsVisibleRange.endMs - medsVisibleRange.startMs) * index) / 4,
+          medsLevelRange
+        )
+      ),
+    [medsLevelRange, medsVisibleRange.endMs, medsVisibleRange.startMs]
+  );
+  const latestVyvanseInRange = useMemo(
+    () =>
+      vyvanseEntries.find((entry) => {
+        const timestamp = Date.parse(entry.timestamp);
+        return Number.isFinite(timestamp) && timestamp >= medsVisibleRange.startMs && timestamp <= medsVisibleRange.endMs;
+      }) ?? null,
+    [medsVisibleRange.endMs, medsVisibleRange.startMs, vyvanseEntries]
+  );
+  const caffeineTotalInRange = useMemo(
+    () =>
+      caffeineEntries.reduce((sum, entry) => {
+        const timestamp = Date.parse(entry.timestamp);
+        if (!Number.isFinite(timestamp) || timestamp < medsVisibleRange.startMs || timestamp > medsVisibleRange.endMs) return sum;
+        return sum + (entry.amount ?? 0);
+      }, 0),
+    [caffeineEntries, medsVisibleRange.endMs, medsVisibleRange.startMs]
+  );
+  const medicationHistoryEntries = useMemo(() => {
+    return sortedMedicationEntries.filter((entry) => {
+      if (medsHistoryFilter === "all") return true;
+      if (medsHistoryFilter === "feelings") return entry.entryType === "observation";
+      return entry.entryType === "input" && entry.medication === medsHistoryFilter;
+    });
+  }, [medsHistoryFilter, sortedMedicationEntries]);
+
+  function openDoseModal() {
+    const now = new Date();
+    setMedsError(null);
+    setEditingMedicationEntry(null);
+    setMedsDeleteConfirm(false);
+    setDoseMedicationKind("Vyvanse");
+    setDoseCustomMedication("");
+    setDoseAmount("");
+    setDoseUnit("mg");
+    setDoseWhenMode("now");
+    setDoseDate(localDateISO(now));
+    setDoseTime(timeInputFromTimestamp(now.toISOString()));
+    setMedsModalMode("dose");
+  }
+
+  function openFeelingModal() {
+    const now = new Date();
+    setMedsError(null);
+    setEditingMedicationEntry(null);
+    setMedsDeleteConfirm(false);
+    setFeelingChoice("Sharp focus");
+    setFeelingCustom("");
+    setFeelingValence("");
+    setFeelingIntensity("");
+    setFeelingDaypart("");
+    setFeelingWhenMode("now");
+    setFeelingDate(localDateISO(now));
+    setFeelingTime(timeInputFromTimestamp(now.toISOString()));
+    setMedsModalMode("feeling");
+  }
+
+  function applyCaffeineDrinkDefaults(drinkId: CaffeineDrinkId, size: "S" | "M" | "L" = caffeineSize) {
+    const drink = CAFFEINE_DRINK_DEFAULTS.find((option) => option.id === drinkId) ?? CAFFEINE_DRINK_DEFAULTS[0];
+    const sizeMultiplier = size === "S" ? 0.75 : size === "L" ? 1.25 : 1;
+    setCaffeineDrinkId(drinkId);
+    setCaffeineMg(String(Math.round(drink.mg * sizeMultiplier)));
+  }
+
+  function openCaffeineSheet() {
+    const now = new Date();
+    setMedsError(null);
+    setCaffeineSheetOpen(true);
+    setCaffeineSize("M");
+    setCaffeineWhenMode("now");
+    setCaffeineDate(localDateISO(now));
+    setCaffeineTime(timeInputFromTimestamp(now.toISOString()));
+    setCaffeineNote("");
+    applyCaffeineDrinkDefaults("iced_latte", "M");
+  }
+
+  async function quickLogVyvanse() {
+    if (medsSaving) return;
+
+    const entry: MedicationEntry = {
+      id: createMedicationEntryId(),
+      entryType: "input",
+      timestamp: new Date().toISOString(),
+      medication: "Vyvanse",
+      amount: 30,
+      unit: "mg",
+      metadata: { source: "meds_m2_quick_log" },
+    };
+
+    setMedsSaving(true);
+    const saved = await saveMedicationEntry(entry, SYNC_CODE);
+    setMedsSaving(false);
+
+    if (!saved) {
+      setMedsError("Could not save Vyvanse. Existing Meds history was kept.");
+      return;
+    }
+
+    setMedicationEntries((prev) => [entry, ...prev]);
+  }
+
+  async function submitCaffeineEntry() {
+    if (medsSaving) return;
+
+    const drink = CAFFEINE_DRINK_DEFAULTS.find((option) => option.id === caffeineDrinkId) ?? CAFFEINE_DRINK_DEFAULTS[0];
+    const mg = Number(caffeineMg);
+    const timestamp =
+      caffeineWhenMode === "now" ? new Date().toISOString() : medicationTimestampFromInputs(caffeineDate, caffeineTime);
+
+    if (!timestamp || !Number.isFinite(mg) || mg <= 0) {
+      setMedsError("Add a valid caffeine amount and time.");
+      return;
+    }
+
+    const entry: MedicationEntry = {
+      id: createMedicationEntryId(),
+      entryType: "input",
+      timestamp,
+      medication: "Coffee",
+      amount: mg,
+      unit: "mg",
+      metadata: {
+        source: "meds_m2_caffeine",
+        drinkType: caffeineDrinkId,
+        drinkLabel: drink.label,
+        size: caffeineSize,
+        shots: drink.shots ?? null,
+        note: caffeineNote.trim() || null,
+      },
+    };
+
+    setMedsSaving(true);
+    const saved = await saveMedicationEntry(entry, SYNC_CODE);
+    setMedsSaving(false);
+
+    if (!saved) {
+      setMedsError("Could not save caffeine. Existing Meds history was kept.");
+      return;
+    }
+
+    setMedicationEntries((prev) => [entry, ...prev]);
+    setCaffeineSheetOpen(false);
+    setMedsError(null);
+  }
+
+  function openMedicationEntryEditor(entry: MedicationEntry) {
+    const timestamp = new Date(entry.timestamp);
+    setMedsError(null);
+    setEditingMedicationEntry(entry);
+    setMedsDeleteConfirm(false);
+
+    if (entry.entryType === "input") {
+      const knownMedication = MEDICATION_OPTIONS.find(
+        (option) => option.id !== "Custom" && option.id === entry.medication
+      );
+
+      setDoseMedicationKind(knownMedication?.id ?? "Custom");
+      setDoseCustomMedication(knownMedication ? "" : entry.medication ?? "");
+      setDoseAmount(entry.amount !== null && entry.amount !== undefined ? formatMedicationAmount(entry.amount) : "");
+      setDoseUnit(entry.unit ?? knownMedication?.unit ?? "");
+      setDoseWhenMode("manual");
+      setDoseDate(localDateISO(timestamp));
+      setDoseTime(timeInputFromTimestamp(entry.timestamp));
+      setMedsModalMode("dose");
+      return;
+    }
+
+    const knownFeeling = FEELING_OPTIONS.includes(entry.feeling ?? "") && entry.feeling !== "+ Custom";
+    setFeelingChoice(knownFeeling ? entry.feeling ?? "Sharp focus" : "+ Custom");
+    setFeelingCustom(knownFeeling ? "" : entry.feeling ?? "");
+    setFeelingValence(entry.valence ?? "");
+    setFeelingIntensity(entry.intensity ?? "");
+    setFeelingDaypart(entry.daypart ?? "");
+    setFeelingWhenMode("manual");
+    setFeelingDate(localDateISO(timestamp));
+    setFeelingTime(timeInputFromTimestamp(entry.timestamp));
+    setMedsModalMode("feeling");
+  }
+
+  function closeMedsModal() {
+    if (medsSaving) return;
+    setMedsModalMode(null);
+    setMedsError(null);
+    setEditingMedicationEntry(null);
+    setMedsDeleteConfirm(false);
+  }
+
+  async function submitDose() {
+    if (medsSaving) return;
+
+    const editingInput = editingMedicationEntry?.entryType === "input" ? editingMedicationEntry : null;
+    const selected = MEDICATION_OPTIONS.find((option) => option.id === doseMedicationKind);
+    const medication = doseMedicationKind === "Custom" ? doseCustomMedication.trim() : doseMedicationKind;
+    const unit = doseUnit.trim() || selected?.unit || null;
+    const amount = doseAmount.trim() ? Number(doseAmount) : null;
+    const timestamp =
+      doseWhenMode === "now" ? new Date().toISOString() : medicationTimestampFromInputs(doseDate, doseTime);
+
+    if (!medication || !timestamp || (amount !== null && (!Number.isFinite(amount) || amount <= 0))) {
+      setMedsError("Add what you took, and use a valid amount/time.");
+      return;
+    }
+
+    const entry: MedicationEntry = {
+      id: editingInput?.id ?? createMedicationEntryId(),
+      entryType: "input",
+      timestamp,
+      medication,
+      amount,
+      unit,
+      metadata: editingInput?.metadata ?? { source: "meds_v1" },
+      createdAt: editingInput?.createdAt,
+      updatedAt: editingInput?.updatedAt,
+    };
+
+    setMedsSaving(true);
+    const saved = editingInput
+      ? await updateMedicationEntry(entry, SYNC_CODE)
+      : await saveMedicationEntry(entry, SYNC_CODE);
+    setMedsSaving(false);
+
+    if (!saved) {
+      setMedsError(
+        editingInput ? "Could not update dose. Existing Meds history was kept." : "Could not save dose. Existing Meds history was kept."
+      );
+      return;
+    }
+
+    setMedicationEntries((prev) =>
+      editingInput ? prev.map((existing) => (existing.id === entry.id ? entry : existing)) : [entry, ...prev]
+    );
+    setEditingMedicationEntry(null);
+    setMedsDeleteConfirm(false);
+    setMedsModalMode(null);
+  }
+
+  async function submitFeeling() {
+    if (medsSaving) return;
+
+    const editingObservation =
+      editingMedicationEntry?.entryType === "observation" ? editingMedicationEntry : null;
+    const feeling = feelingChoice === "+ Custom" ? feelingCustom.trim() : feelingChoice;
+    const timestamp =
+      feelingWhenMode === "now" ? new Date().toISOString() : medicationTimestampFromInputs(feelingDate, feelingTime);
+
+    if (!feeling || !timestamp) {
+      setMedsError("Add a feeling and a valid time.");
+      return;
+    }
+
+    const entry: MedicationEntry = {
+      id: editingObservation?.id ?? createMedicationEntryId(),
+      entryType: "observation",
+      timestamp,
+      feeling,
+      valence: feelingValence || null,
+      intensity: feelingIntensity || null,
+      daypart: feelingDaypart || null,
+      metadata: editingObservation?.metadata ?? { source: "meds_v1" },
+      createdAt: editingObservation?.createdAt,
+      updatedAt: editingObservation?.updatedAt,
+    };
+
+    setMedsSaving(true);
+    const saved = editingObservation
+      ? await updateMedicationEntry(entry, SYNC_CODE)
+      : await saveMedicationEntry(entry, SYNC_CODE);
+    setMedsSaving(false);
+
+    if (!saved) {
+      setMedsError(
+        editingObservation
+          ? "Could not update feeling. Existing Meds history was kept."
+          : "Could not save feeling. Existing Meds history was kept."
+      );
+      return;
+    }
+
+    setMedicationEntries((prev) =>
+      editingObservation ? prev.map((existing) => (existing.id === entry.id ? entry : existing)) : [entry, ...prev]
+    );
+    setEditingMedicationEntry(null);
+    setMedsDeleteConfirm(false);
+    setMedsModalMode(null);
+  }
+
+  async function deleteEditingMedicationEntry() {
+    if (!editingMedicationEntry || medsSaving) return;
+
+    setMedsSaving(true);
+    const deleted = await deleteMedicationEntry(editingMedicationEntry.id, SYNC_CODE);
+    setMedsSaving(false);
+
+    if (!deleted) {
+      setMedsError("Could not delete entry. Existing Meds history was kept.");
+      return;
+    }
+
+    setMedicationEntries((prev) => prev.filter((entry) => entry.id !== editingMedicationEntry.id));
+    setEditingMedicationEntry(null);
+    setMedsDeleteConfirm(false);
+    setMedsError(null);
+    setMedsModalMode(null);
+  }
 
   const byCourse = useMemo(() => {
     const map: Record<string, Task[]> = Object.fromEntries(activeCategories.map((c) => [c.id, []]));
@@ -3460,6 +4671,9 @@ useEffect(() => {
   const plannerWeekLabel = useMemo(() => formatPlannerWeekRange(plannerWeekDays), [plannerWeekDays]);
   const plannerMonthDays = useMemo(() => plannerMonthDaysForAnchor(plannerAnchor), [plannerAnchor]);
   const plannerMonthLabel = useMemo(() => formatPlannerMonthLabel(plannerAnchor), [plannerAnchor]);
+  const plannerThreeMonths = useMemo(() => plannerThreeMonthsForAnchor(plannerAnchor), [plannerAnchor]);
+  const plannerThreeMonthLabel = useMemo(() => formatPlannerThreeMonthLabel(plannerThreeMonths), [plannerThreeMonths]);
+  const plannerThreeMonthVisibleRange = useMemo(() => plannerMonthsVisibleRange(plannerThreeMonths), [plannerThreeMonths]);
   const plannerYearMonths = useMemo(() => plannerYearMonthsForAnchor(plannerAnchor), [plannerAnchor]);
   const plannerYearLabel = useMemo(() => formatPlannerYearLabel(plannerAnchor), [plannerAnchor]);
   const plannerHours = useMemo(() => plannerHourLabels(), []);
@@ -3473,8 +4687,17 @@ useEffect(() => {
         end: plannerMonthDays[plannerMonthDays.length - 1]?.date ?? plannerAnchor,
       };
     }
+    if (plannerView === "three_month") return plannerThreeMonthVisibleRange;
     return { start: `${plannerYearLabel}-01-01`, end: `${plannerYearLabel}-12-31` };
-  }, [plannerAnchor, plannerMonthDays, plannerView, plannerWeekEnd, plannerWeekStart, plannerYearLabel]);
+  }, [
+    plannerAnchor,
+    plannerMonthDays,
+    plannerThreeMonthVisibleRange,
+    plannerView,
+    plannerWeekEnd,
+    plannerWeekStart,
+    plannerYearLabel,
+  ]);
   const plannerCalendarBaseEventsForRender = useMemo(() => {
     if (!plannerInteraction) return calendarEvents;
     const hasRealEvent = calendarEvents.some((event) => event.id === plannerInteraction.eventId);
@@ -3519,7 +4742,7 @@ useEffect(() => {
   const plannerWeekAllDaySpans = useMemo(() => {
     const items: PlannerDateItem[] = [
       ...plannerWeekEvents
-        .filter((event) => event.allDay && event.startDate)
+        .filter((event) => plannerEventRendersAsAllDaySpan(event) && event.startDate)
         .map((event) => ({ sourceType: "calendar_event" as const, event })),
       ...plannerWeekDays.flatMap((day) =>
         (plannerTaskDeadlinesInWeekByDate[day] ?? []).map((task) => ({
@@ -3536,6 +4759,9 @@ useEffect(() => {
       Record<string, Array<ReturnType<typeof layoutPlannerTimedEvents>[number]>>
     >((groups, day) => {
       const dayEvents = plannerWeekEvents.filter((event) => {
+        if (getCalendarEventTimeMode(event) === "daypart") {
+          return event.startDate === day;
+        }
         if (event.allDay || !event.startAt) return false;
         const startDate = eventLocalDate(event.startAt);
         const endDate = eventLocalDate(event.endAt) || startDate;
@@ -3560,43 +4786,26 @@ useEffect(() => {
   const plannerMobileAllDayItems = useMemo(() => {
     return plannerMobileWeekItems.filter((item) => {
       if (item.sourceType === "task_deadline") return true;
-      return item.event.allDay || !item.event.startAt;
+      return (
+        plannerEventRendersAsAllDaySpan(item.event) ||
+        (!item.event.startAt && getCalendarEventTimeMode(item.event) !== "daypart")
+      );
     });
   }, [plannerMobileWeekItems]);
   const plannerMobileTimedLayouts = plannerTimedLayoutsByDate[plannerMobileWeekDate] ?? [];
-  const plannerMonthEventsByDate = useMemo(() => {
-    return plannerMonthDays.reduce<Record<string, PlannerDateItem[]>>((groups, day) => {
-      groups[day.date] = plannerItemsForDate(
-        day.date,
-        plannerCalendarEventsForRender,
-        plannerTaskDeadlinesByDate
-      );
-      return groups;
-    }, {});
-  }, [plannerCalendarEventsForRender, plannerMonthDays, plannerTaskDeadlinesByDate]);
-  const plannerMonthWeeks = useMemo(() => {
-    const weeks: Array<typeof plannerMonthDays> = [];
-    for (let index = 0; index < plannerMonthDays.length; index += 7) {
-      weeks.push(plannerMonthDays.slice(index, index + 7));
-    }
-    return weeks;
-  }, [plannerMonthDays]);
-  const plannerMonthAllDaySpansByWeek = useMemo(() => {
-    return plannerMonthWeeks.map((week) => {
-      const days = week.map((day) => day.date);
-      const weekStart = days[0];
-      const weekEnd = days[days.length - 1];
-      const items: PlannerDateItem[] = plannerCalendarEventsForRender
-        .filter((event) => {
-          if (!event.allDay || !event.startDate || !weekStart || !weekEnd) return false;
-          const endDate = event.endDate || event.startDate;
-          return event.startDate <= weekEnd && endDate >= weekStart;
-        })
-        .map((event) => ({ sourceType: "calendar_event" as const, event }));
-
-      return plannerAllDaySpansForDays(days, items);
-    });
-  }, [plannerCalendarEventsForRender, plannerMonthWeeks]);
+  const plannerMonthGrid = useMemo(() => {
+    const month = plannerThreeMonths[0];
+    return buildPlannerMonthGridData(
+      month,
+      plannerCalendarEventsForRender,
+      plannerTaskDeadlinesByDate
+    );
+  }, [plannerCalendarEventsForRender, plannerTaskDeadlinesByDate, plannerThreeMonths]);
+  const plannerThreeMonthGrids = useMemo(() => {
+    return plannerThreeMonths.map((month) =>
+      buildPlannerMonthGridData(month, plannerCalendarEventsForRender, plannerTaskDeadlinesByDate)
+    );
+  }, [plannerCalendarEventsForRender, plannerTaskDeadlinesByDate, plannerThreeMonths]);
   const plannerYearEventsByDate = useMemo(() => {
     const yearStart = `${plannerYearLabel}-01-01`;
     const yearEnd = `${plannerYearLabel}-12-31`;
@@ -3640,6 +4849,11 @@ useEffect(() => {
 
     return options;
   }, [plannerEventDraft?.taskId, tasks]);
+  const plannerDraftShowsEndDate = Boolean(
+    plannerEventDraft &&
+      (plannerEventDraft.eventType === "travel" ||
+        plannerEventDraft.endDate > plannerEventDraft.date)
+  );
   const plannerIsCurrentWeek = Boolean(clientToday && plannerWeekDays.includes(clientToday));
   const currentTimeTop =
     plannerIsCurrentWeek && clientNowMs
@@ -3742,9 +4956,9 @@ useEffect(() => {
 
         void (async () => {
           const eventToSave = exceptionEventForPlannerOccurrence(current.previewEvent);
-          const saved = await saveCalendarEvent(eventToSave, SYNC_CODE);
+          const savedEvent = await savePlannerCalendarEvent(eventToSave);
 
-          if (!saved) {
+          if (!savedEvent) {
             console.warn("Failed to save moved/resized calendar event. Reverting preview.", {
               id: current.eventId,
             });
@@ -3752,10 +4966,10 @@ useEffect(() => {
           }
 
           setCalendarEvents((prev) => {
-            const exists = prev.some((event) => event.id === eventToSave.id);
+            const exists = prev.some((event) => event.id === savedEvent.id);
             return exists
-              ? prev.map((event) => (event.id === eventToSave.id ? eventToSave : event))
-              : [...prev, eventToSave];
+              ? prev.map((event) => (event.id === savedEvent.id ? savedEvent : event))
+              : [...prev, savedEvent];
           });
         })();
 
@@ -3860,6 +5074,10 @@ useEffect(() => {
     return Object.fromEntries(tasks.map((task) => [task.id, task]));
   }, [tasks]);
 
+  const categoryById = useMemo(() => {
+    return Object.fromEntries([...fallbackCategories, ...categories].map((category) => [category.id, category]));
+  }, [categories]);
+
   const logTaskOptions = useMemo(() => {
     const options = tasks
       .filter((task) => task.status !== "completed")
@@ -3873,6 +5091,65 @@ useEffect(() => {
 
     return options;
   }, [logTaskId, tasks]);
+
+  const temporalLogRows = useMemo(() => {
+    return logsInRange
+      .filter((log) => loggerTaskFilter === "all" || log.taskId === loggerTaskFilter)
+      .map((log) => {
+        const task = taskById[log.taskId] ?? null;
+        const category = task ? categoryById[task.courseId] ?? null : null;
+        const exactDuration = exactTimeLogDuration(log);
+        const startMinutes = timeLogTimeToMinutes(log.startTime);
+        const bucket = exactDuration !== null ? timeOfDayBucketForLog(log) : null;
+        return {
+          log,
+          task,
+          taskTitle: task?.title ?? "Archived task",
+          categoryLabel: category ? categoryDisplayLabel(category) : task ? courseLabel(task.courseId) : "Archived task",
+          tone: loggerCategoryTone(category?.colour),
+          exactDuration,
+          startMinutes: startMinutes ?? Number.POSITIVE_INFINITY,
+          bucket,
+        };
+      })
+      .sort((a, b) => {
+        const dateCompare = a.log.date.localeCompare(b.log.date);
+        if (dateCompare !== 0) return dateCompare;
+        if (a.startMinutes !== b.startMinutes) return a.startMinutes - b.startMinutes;
+        return a.taskTitle.localeCompare(b.taskTitle);
+      });
+  }, [categoryById, courseLabel, loggerTaskFilter, logsInRange, taskById]);
+
+  const dayTemporalRows = useMemo(() => {
+    const dayRows = temporalLogRows.filter((row) => row.log.date === loggerDateRange.start);
+    return {
+      exactByBucket: Object.fromEntries(
+        LOGGER_TIME_OF_DAY_BUCKETS.map((bucket) => [
+          bucket.id,
+          dayRows.filter((row) => row.bucket === bucket.id),
+        ])
+      ) as Record<LoggerTimeOfDayBucket, typeof temporalLogRows>,
+      unscheduled: dayRows.filter((row) => row.exactDuration === null),
+    };
+  }, [loggerDateRange.start, temporalLogRows]);
+
+  const weekTemporalRows = useMemo(() => {
+    const days = loggerRangeMode === "week" ? loggerDays : [];
+    const daySet = new Set(days);
+    const rows = temporalLogRows.filter((row) => daySet.has(row.log.date));
+    return {
+      days,
+      exactByBucketAndDay: Object.fromEntries(
+        LOGGER_TIME_OF_DAY_BUCKETS.map((bucket) => [
+          bucket.id,
+          Object.fromEntries(days.map((day) => [day, rows.filter((row) => row.log.date === day && row.bucket === bucket.id)])),
+        ])
+      ) as Record<LoggerTimeOfDayBucket, Record<string, typeof temporalLogRows>>,
+      unscheduledByDay: Object.fromEntries(
+        days.map((day) => [day, rows.filter((row) => row.log.date === day && row.exactDuration === null)])
+      ) as Record<string, typeof temporalLogRows>,
+    };
+  }, [loggerDays, loggerRangeMode, temporalLogRows]);
 
   const logsByTaskDate = useMemo(() => {
     const map: Record<string, TimeLog[]> = {};
@@ -3954,9 +5231,10 @@ useEffect(() => {
     };
   }, [courseLabel, logsInRange, taskById]);
 
-  const workCalendar = useMemo(() => {
+  const activityMap = useMemo(() => {
+    const activityLogs = logsInRange.filter((log) => loggerTaskFilter === "all" || log.taskId === loggerTaskFilter);
     const totals = new Map<string, number>();
-    for (const log of logsInRange) {
+    for (const log of activityLogs) {
       totals.set(log.date, (totals.get(log.date) ?? 0) + (log.hours ?? 0));
     }
 
@@ -3966,10 +5244,16 @@ useEffect(() => {
       date,
       hours: totals.get(date) ?? 0,
     }));
+    const nonZeroHours = days.map((day) => day.hours).filter((hours) => hours > 0);
+    const thresholds = loggerActivityThresholds(nonZeroHours);
     const compact = loggerRangeMode === "year" || days.length > 62;
-    const alignStart = compact || loggerRangeMode === "month"
-      ? addDaysISO(rawStart, -new Date(rawStart + "T00:00:00").getDay())
-      : rawStart;
+    const displayMode =
+      loggerRangeMode === "week" || (loggerRangeMode === "custom" && days.length <= 14)
+        ? "strip"
+        : loggerRangeMode === "month" || (loggerRangeMode === "custom" && days.length <= 62)
+          ? "month"
+          : "contribution";
+    const alignStart = displayMode === "strip" ? rawStart : startOfLoggerWeek(rawStart);
     const weeks: { weekStart: string; days: { date: string; hours: number }[] }[] = [];
     let cursor = alignStart;
 
@@ -3986,36 +5270,68 @@ useEffect(() => {
       cursor = addDaysISO(cursor, 7);
     }
 
-    return { rawStart, end, days, weeks, compact };
-  }, [loggerDateRange, loggerRangeMode, logsInRange]);
+    const selectedTask = loggerTaskFilter === "all" ? null : taskById[loggerTaskFilter] ?? null;
+    const selectedCategory = selectedTask ? categoryById[selectedTask.courseId] ?? null : null;
+    const colour = loggerTaskFilter === "all" ? null : selectedCategory?.colour ?? null;
 
-  const topWorkedTasks = useMemo(() => {
-    const totals = new Map<string, number>();
-    for (const log of logsInRange) {
+    return { rawStart, end, days, weeks, compact, displayMode, thresholds, colour };
+  }, [categoryById, loggerDateRange, loggerRangeMode, loggerTaskFilter, logsInRange, taskById]);
+
+  const loggerBreakdown = useMemo(() => {
+    const scopedLogs = logsInRange.filter((log) => loggerTaskFilter === "all" || log.taskId === loggerTaskFilter);
+    const totalHours = scopedLogs.reduce((sum, log) => sum + (log.hours ?? 0), 0);
+    const taskTotals = new Map<string, number>();
+    const categoryTotals = new Map<string, number>();
+
+    for (const log of scopedLogs) {
       const taskKey = log.taskId || "archived";
-      totals.set(taskKey, (totals.get(taskKey) ?? 0) + (log.hours ?? 0));
+      taskTotals.set(taskKey, (taskTotals.get(taskKey) ?? 0) + (log.hours ?? 0));
+
+      const task = taskById[log.taskId];
+      const categoryKey = task?.courseId ?? "archived";
+      categoryTotals.set(categoryKey, (categoryTotals.get(categoryKey) ?? 0) + (log.hours ?? 0));
     }
 
-    const rows = Array.from(totals.entries())
+    const taskRows = Array.from(taskTotals.entries())
       .map(([taskId, hours]) => {
         const task = taskById[taskId];
+        const category = task ? categoryById[task.courseId] ?? null : null;
         return {
-          taskId,
+          id: taskId,
           title: task?.title ?? "Archived task",
-          category: task ? courseLabel(task.courseId) : "Archived task",
-          courseId: task?.courseId,
+          subtitle: category ? categoryDisplayLabel(category) : task ? courseLabel(task.courseId) : "Archived / unknown category",
           hours,
+          colour: category?.colour ?? null,
         };
       })
       .filter((row) => row.hours > 0)
-      .sort((a, b) => b.hours - a.hours)
-      .slice(0, 10);
+      .sort((a, b) => b.hours - a.hours || a.title.localeCompare(b.title));
 
+    const categoryRows = Array.from(categoryTotals.entries())
+      .map(([categoryId, hours]) => {
+        const category = categoryById[categoryId] ?? null;
+        return {
+          id: categoryId,
+          title: category ? categoryDisplayLabel(category) : "Archived / unknown category",
+          subtitle: categoryId === "archived" ? "Historical logs" : "Category",
+          hours,
+          colour: category?.colour ?? null,
+        };
+      })
+      .filter((row) => row.hours > 0)
+      .sort((a, b) => b.hours - a.hours || a.title.localeCompare(b.title));
+
+    const rows = loggerBreakdownMode === "tasks" ? taskRows : categoryRows;
     return {
+      totalHours,
       rows,
       maxHours: rows[0]?.hours ?? 0,
-  };
-}, [logsInRange, taskById]);
+    };
+  }, [categoryById, courseLabel, loggerBreakdownMode, loggerTaskFilter, logsInRange, taskById]);
+
+  useEffect(() => {
+    setLoggerBreakdownExpanded(false);
+  }, [loggerBreakdownMode, loggerDateRange.end, loggerDateRange.start, loggerTaskFilter]);
 
   function openNewTaskForCourse(courseId: string) {
     setNewCourseId(courseId);
@@ -4224,6 +5540,10 @@ useEffect(() => {
     setPlannerAnchorDate(addMonthsISO(plannerAnchor, direction));
   }
 
+  function movePlannerThreeMonth(direction: -1 | 1) {
+    setPlannerAnchorDate(addMonthsISO(plannerAnchor, direction));
+  }
+
   function movePlannerYear(direction: -1 | 1) {
     setPlannerAnchorDate(addYearsISO(plannerAnchor, direction));
   }
@@ -4237,7 +5557,9 @@ useEffect(() => {
 
   function openPlannerEventTypeChooser() {
     setPlannerEventModalMode("create");
-    setPlannerEventDraft(null);
+    setPlannerEventDraft(defaultPlannerEventDraft("admin", clientToday || plannerWeekDays[0] || todayISO()));
+    setPlannerEventMoreDetailsOpen(false);
+    setPlannerEventTypeChooserOpen(false);
     setPlannerEventError(null);
     setPlannerEventModalOpen(true);
   }
@@ -4311,18 +5633,18 @@ useEffect(() => {
         continue;
       }
 
-      const saved = await saveCalendarEvent(event, SYNC_CODE);
-      if (!saved) {
+      const savedEvent = await savePlannerCalendarEvent(event);
+      if (!savedEvent) {
         failedIds.push(proposal.id);
         continue;
       }
 
       savedCount += 1;
-      setCalendarEvents((prev) => [...prev, event]);
+      setCalendarEvents((prev) => [...prev, savedEvent]);
       setSmartImportProposals((prev) =>
         prev.map((item) =>
           item.id === proposal.id
-            ? { ...item, savedEventId: event.id, include: false }
+            ? { ...item, savedEventId: savedEvent.id, include: false }
             : item
         )
       );
@@ -4339,6 +5661,8 @@ useEffect(() => {
   function startPlannerEventCreate(eventType: CalendarEventType) {
     setPlannerEventModalMode("create");
     setPlannerEventDraft(defaultPlannerEventDraft(eventType, clientToday || plannerWeekDays[0] || todayISO()));
+    setPlannerEventMoreDetailsOpen(false);
+    setPlannerEventTypeChooserOpen(false);
     setPlannerEventError(null);
   }
 
@@ -4349,17 +5673,19 @@ useEffect(() => {
     const draft = plannerDraftFromEvent(event);
 
     setPlannerEventModalMode("edit");
-    setPlannerEventDraft(
-      parentRule
-        ? {
-            ...draft,
-            repeat: "weekly",
-            recurrenceWeekday: parentRule.weekday,
-            recurrenceStartDate: parentRule.startDate,
-            recurrenceEndDate: parentRule.endDate,
-          }
-        : draft
-    );
+    const nextDraft = parentRule
+      ? {
+          ...draft,
+          repeat: "weekly" as const,
+          recurrenceWeekday: parentRule.weekday,
+          recurrenceStartDate: parentRule.startDate,
+          recurrenceEndDate: parentRule.endDate,
+        }
+      : draft;
+
+    setPlannerEventDraft(nextDraft);
+    setPlannerEventMoreDetailsOpen(plannerDraftHasMoreDetails(nextDraft));
+    setPlannerEventTypeChooserOpen(false);
     setPlannerEventError(null);
     setPlannerEventModalOpen(true);
   }
@@ -4368,6 +5694,8 @@ useEffect(() => {
     if (plannerEventSaving) return;
     setPlannerEventModalOpen(false);
     setPlannerEventDraft(null);
+    setPlannerEventMoreDetailsOpen(false);
+    setPlannerEventTypeChooserOpen(false);
     setPlannerEventError(null);
   }
 
@@ -4408,15 +5736,15 @@ useEffect(() => {
         recurrenceStatus: null,
         recurrenceRule: nextRule,
       };
-      const saved = await saveCalendarEvent(eventToSave, SYNC_CODE);
+      const savedEvent = await savePlannerCalendarEvent(eventToSave);
       setPlannerEventSaving(false);
 
-      if (!saved) {
+      if (!savedEvent) {
         setPlannerEventError("Could not save series. Please check the console for details.");
         return;
       }
 
-      setCalendarEvents((prev) => prev.map((item) => (item.id === eventToSave.id ? eventToSave : item)));
+      setCalendarEvents((prev) => prev.map((item) => (item.id === savedEvent.id ? savedEvent : item)));
       setPlannerEventModalOpen(false);
       setPlannerEventDraft(null);
       return;
@@ -4457,8 +5785,8 @@ useEffect(() => {
         }),
       };
 
-      const savedNew = await saveCalendarEvent(newParent, SYNC_CODE);
-      const savedOld = savedNew ? await saveCalendarEvent(oldParent, SYNC_CODE) : false;
+      const savedNew = await savePlannerCalendarEvent(newParent);
+      const savedOld = savedNew ? await savePlannerCalendarEvent(oldParent) : null;
       setPlannerEventSaving(false);
 
       if (!savedNew || !savedOld) {
@@ -4470,8 +5798,8 @@ useEffect(() => {
       }
 
       setCalendarEvents((prev) => [
-        ...prev.map((item) => (item.id === oldParent.id ? oldParent : item)),
-        newParent,
+        ...prev.map((item) => (item.id === savedOld.id ? savedOld : item)),
+        savedNew,
       ]);
       setPlannerEventModalOpen(false);
       setPlannerEventDraft(null);
@@ -4481,19 +5809,19 @@ useEffect(() => {
     const eventToSave = plannerEventDraft.recurrenceParentId
       ? exceptionEventForPlannerOccurrence(event)
       : event;
-    const saved = await saveCalendarEvent(eventToSave, SYNC_CODE);
+    const savedEvent = await savePlannerCalendarEvent(eventToSave);
     setPlannerEventSaving(false);
 
-    if (!saved) {
+    if (!savedEvent) {
       setPlannerEventError("Could not save event. Please check the console for details.");
       return;
     }
 
     setCalendarEvents((prev) => {
-      const exists = prev.some((item) => item.id === eventToSave.id);
+      const exists = prev.some((item) => item.id === savedEvent.id);
       return exists
-        ? prev.map((item) => (item.id === eventToSave.id ? eventToSave : item))
-        : [...prev, eventToSave];
+        ? prev.map((item) => (item.id === savedEvent.id ? savedEvent : item))
+        : [...prev, savedEvent];
     });
     setPlannerEventModalOpen(false);
     setPlannerEventDraft(null);
@@ -4549,19 +5877,19 @@ useEffect(() => {
 
     setPlannerEventSaving(true);
     setPlannerEventError(null);
-    const saved = await saveCalendarEvent(cancellation, SYNC_CODE);
+    const savedEvent = await savePlannerCalendarEvent(cancellation);
     setPlannerEventSaving(false);
 
-    if (!saved) {
+    if (!savedEvent) {
       setPlannerEventError("Could not cancel occurrence. Please check the console for details.");
       return;
     }
 
     setCalendarEvents((prev) => {
-      const exists = prev.some((item) => item.id === cancellation.id);
+      const exists = prev.some((item) => item.id === savedEvent.id);
       return exists
-        ? prev.map((item) => (item.id === cancellation.id ? cancellation : item))
-        : [...prev, cancellation];
+        ? prev.map((item) => (item.id === savedEvent.id ? savedEvent : item))
+        : [...prev, savedEvent];
     });
     setPlannerEventModalOpen(false);
     setPlannerEventDraft(null);
@@ -4659,25 +5987,25 @@ useEffect(() => {
   async function savePlannerWorkResolution(
     event: CalendarEvent,
     status: PlannerWorkResolutionStatus,
-    loggedTimeLogId: string | null = null
-  ) {
-    const resolvedEvent = withPlannerWorkResolution(event, status, loggedTimeLogId);
-    const saved = await saveCalendarEvent(resolvedEvent, SYNC_CODE);
+  loggedTimeLogId: string | null = null
+) {
+  const resolvedEvent = withPlannerWorkResolution(event, status, loggedTimeLogId);
+  const savedEvent = await savePlannerCalendarEvent(resolvedEvent);
 
-    if (!saved) {
-      console.warn("Failed to save Planner work resolution", {
-        eventId: event.id,
-        status,
+  if (!savedEvent) {
+    console.warn("Failed to save Planner work resolution", {
+      eventId: event.id,
+      status,
         loggedTimeLogId,
       });
       return false;
-    }
-
-    setCalendarEvents((prev) =>
-      prev.map((item) => (item.id === resolvedEvent.id ? resolvedEvent : item))
-    );
-    return true;
   }
+
+  setCalendarEvents((prev) =>
+    prev.map((item) => (item.id === savedEvent.id ? savedEvent : item))
+  );
+  return true;
+}
 
   async function logPlannerWorkAsPlanned(event: CalendarEvent) {
     if (plannerWorkActionSavingId || plannerWorkResolutionStatus(event)) return;
@@ -4751,7 +6079,9 @@ useEffect(() => {
         ? clientToday
         : todayISO();
     const nextAnchor =
-      loggerRangeMode === "week"
+      loggerRangeMode === "day"
+        ? addDaysISO(anchor, direction)
+        : loggerRangeMode === "week"
         ? addDaysISO(anchor, direction * 7)
         : loggerRangeMode === "month"
           ? addMonthsISO(anchor, direction)
@@ -4855,15 +6185,60 @@ useEffect(() => {
     }
   }
 
-  function deleteTimeLog(id: string) {
-    setTimeLogs((prev) => prev.filter((log) => log.id !== id));
-    void deleteSupabaseTimeLog(SYNC_CODE, id).catch((error) => {
-      console.warn("Unexpected Supabase time log delete failure:", {
+  async function endOpenTimeLogNow(log: TimeLog) {
+    if (endingOpenLogId) return;
+
+    const now = new Date();
+    const endDate = localDateISO(now);
+    const endTime = localTimeInput(now);
+    const hours = calculateTimeLogDurationHours(log.date, log.startTime ?? "", endDate, endTime);
+
+    if (hours === null) {
+      setLoggerActionError("Could not end this session safely. Use Adjust to enter the end time.");
+      return;
+    }
+
+    const next: TimeLog = {
+      ...log,
+      endDate,
+      endTime,
+      hours,
+    };
+
+    setEndingOpenLogId(log.id);
+    setLoggerActionError(null);
+    try {
+      const saved = await saveSupabaseTimeLog(SYNC_CODE, next);
+      if (!saved) {
+        setLoggerActionError("Could not end session. The open session was kept.");
+        return;
+      }
+      setTimeLogs((prev) => prev.map((entry) => (entry.id === log.id ? next : entry)));
+    } finally {
+      setEndingOpenLogId(null);
+    }
+  }
+
+  async function deleteTimeLog(id: string) {
+    if (deletingTimeLogId) return;
+    const existing = timeLogs.find((log) => log.id === id);
+    if (!existing) return;
+
+    setDeletingTimeLogId(id);
+    setLoggerActionError(null);
+    const deleted = await deleteSupabaseTimeLog(SYNC_CODE, id);
+    setDeletingTimeLogId(null);
+
+    if (!deleted) {
+      console.warn("Time log delete failed. Local state was left unchanged.", {
         operation: "delete",
         id,
-        error,
       });
-    });
+      setLoggerActionError("Could not delete time log. Existing Logger history was kept.");
+      return;
+    }
+
+    setTimeLogs((prev) => prev.filter((log) => log.id !== id));
     if (editingLogId === id) {
       setEditingLogId(null);
       setLogOpen(false);
@@ -5012,7 +6387,7 @@ useEffect(() => {
     resetLabel,
     step = 1,
   }: {
-    id: Extract<ListFilterMenu, "timeLeft" | "duration">;
+    id: Extract<ListFilterMenu, "timeLeft">;
     buttonLabel: string;
     title: string;
     range: { min: number; max: number } | null;
@@ -5183,27 +6558,246 @@ useEffect(() => {
     });
   }
 
-  function renderDurationFilterMenu() {
-    const range = durationFilter ?? { min: DURATION_MIN_HOURS, max: DURATION_MAX_HOURS };
-    return renderRangeFilterMenu({
-      id: "duration",
-      buttonLabel: durationFilter
-        ? `Duration · ${formatDurationFilterLabel(range.min)}-${formatDurationFilterLabel(range.max)}`
-        : "Duration",
-      title: "Duration",
-      range: durationFilter,
-      defaultRange: { min: DURATION_MIN_HOURS, max: DURATION_MAX_HOURS },
-      minValue: DURATION_MIN_HOURS,
-      maxValue: DURATION_MAX_HOURS,
-      formatValue: formatDurationFilterLabel,
-      setRange: setDurationFilter,
-      resetLabel: "Reset duration",
-      step: 1 / 12,
-    });
+  function renderTemporalLogButton(row: (typeof temporalLogRows)[number], density: "day" | "week" = "day") {
+    const isWeek = density === "week";
+    const duration = formatDuration(row.log.hours ?? row.exactDuration ?? 0);
+    const timeLabel =
+      row.log.startTime && row.log.endTime
+        ? `${row.log.startTime}-${row.log.endTime}`
+        : row.log.startTime
+          ? row.log.startTime
+          : "Manual";
+
+    return (
+      <button
+        key={row.log.id}
+        type="button"
+        onClick={() => openLogTime(row.log.taskId, row.log.date, row.log)}
+        className={`group grid w-full grid-cols-[4px_1fr] overflow-hidden rounded-2xl border text-left transition-colors hover:bg-white ${
+          row.tone.border
+        } ${row.tone.bg} ${isWeek ? "min-h-16" : ""}`}
+      >
+        <span className={row.tone.accent} aria-hidden="true" />
+        <span className={isWeek ? "min-w-0 px-2.5 py-2" : "min-w-0 px-3 py-2"}>
+          {isWeek ? (
+            <>
+              <span className={`block truncate text-xs font-semibold ${row.tone.text}`}>
+                {row.taskTitle}
+              </span>
+              <span className={`mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] tabular-nums ${row.tone.muted}`}>
+                <span>{timeLabel}</span>
+                <span>{duration}</span>
+              </span>
+            </>
+          ) : (
+            <>
+              <span className={`flex items-baseline justify-between gap-3 text-xs tabular-nums ${row.tone.muted}`}>
+                <span>{timeLabel}</span>
+                <span className="font-semibold">{duration}</span>
+              </span>
+              <span className={`mt-1 block truncate text-sm font-semibold ${row.tone.text}`}>
+                {row.taskTitle}
+              </span>
+              <span className="mt-0.5 hidden truncate text-xs text-slate-400 sm:block">{row.categoryLabel}</span>
+            </>
+          )}
+        </span>
+      </button>
+    );
   }
 
   const pageTitle = modeLabel(mode);
   const pageSubtitle = modeSubtitle(mode);
+
+  function renderPlannerEventLegend() {
+    return (
+      <div className="flex items-center gap-x-3 gap-y-1 overflow-x-auto px-1 pb-1 text-[10px] font-medium text-slate-500 sm:flex-wrap sm:overflow-visible sm:pb-0">
+        {PLANNER_EVENT_TYPES.map((option) => (
+          <div key={option.id} className="inline-flex shrink-0 items-center gap-1.5">
+            <span
+              className={`flex h-4 w-4 items-center justify-center rounded-full ${plannerYearMarkerTone(
+                option.id
+              )}`}
+            >
+              <PlannerYearMarkerIcon eventType={option.id} />
+            </span>
+            <span>{option.label}</span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  function renderPlannerMonthGrid(grid: PlannerMonthGridData, density: "normal" | "three_month" = "normal") {
+    const compact = density === "three_month";
+    const visibleLimit = compact ? 3 : 4;
+
+    return (
+      <div className="overflow-hidden rounded-[18px] border border-slate-200/70 bg-white">
+        <div className="grid grid-cols-7 border-b border-slate-100/80 bg-slate-50/40">
+          {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((weekday) => (
+            <div
+              key={`${grid.month.id}-${weekday}`}
+              className={`border-r border-slate-100/70 text-center text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400 last:border-r-0 ${
+                compact ? "px-1 py-1.5" : "px-2 py-1.5"
+              }`}
+            >
+              {weekday}
+            </div>
+          ))}
+        </div>
+
+        <div>
+          {grid.weeks.map((week, weekIndex) => {
+            const weekSpans = grid.allDaySpansByWeek[weekIndex] ?? [];
+            return (
+              <div key={`${grid.month.id}-week-${week[0]?.date ?? weekIndex}`} className="relative grid grid-cols-7">
+                {week.map((day) => {
+                  const events = (grid.eventsByDate[day.date] ?? []).filter(
+                    (item) =>
+                      !(
+                        item.sourceType === "calendar_event" &&
+                        plannerEventRendersAsAllDaySpan(item.event)
+                      )
+                  );
+                  const visibleEvents = events.slice(0, visibleLimit);
+                  const hiddenCount = Math.max(0, events.length - visibleEvents.length);
+                  const isToday = day.date === clientToday;
+                  const dayTemporalState = plannerTemporalStateForDate(day.date, clientToday);
+
+                  return (
+                    <div
+                      key={day.date}
+                      className={`border-r border-b border-slate-100/70 px-1.5 py-1.5 [&:nth-child(7n)]:border-r-0 ${
+                        compact ? "min-h-[82px]" : "min-h-[96px]"
+                      } ${
+                        isToday
+                          ? "bg-slate-50/80 ring-1 ring-inset ring-slate-200/80"
+                          : day.isCurrentMonth
+                            ? "bg-white"
+                            : "bg-slate-50/40"
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPlannerAnchorDate(day.date);
+                          setPlannerView("week");
+                        }}
+                        className={`flex items-center justify-center rounded-full font-semibold tabular-nums hover:bg-slate-100 ${
+                          compact ? "h-4 w-4 text-[10px]" : "h-5 w-5 text-[11px]"
+                        } ${
+                          isToday
+                            ? "bg-slate-900 text-white hover:bg-slate-800"
+                            : day.isCurrentMonth
+                              ? dayTemporalState === "past"
+                                ? "text-slate-400"
+                                : "text-slate-700"
+                              : "text-slate-300"
+                        }`}
+                        aria-label={`Open week containing ${day.date}`}
+                      >
+                        {Number(day.date.slice(8, 10))}
+                      </button>
+
+                      <div
+                        className="space-y-0.5"
+                        style={{ marginTop: weekSpans.length ? weekSpans.length * (compact ? 16 : 18) + 6 : 4 }}
+                      >
+                        {visibleEvents.map((item) => {
+                          const prefix = plannerItemPrefix(item, day.date);
+                          const temporalState = plannerItemTemporalState(item, clientToday, day.date);
+                          return (
+                            <button
+                              key={`${grid.month.id}-${day.date}-${item.sourceType === "calendar_event" ? item.event.id : item.task.id}`}
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (item.sourceType === "calendar_event") openPlannerEventEdit(item.event);
+                                else openEdit(item.task);
+                              }}
+                              className={`flex w-full min-w-0 items-center gap-1 rounded-lg border px-1.5 py-0.5 text-left font-medium leading-4 ${
+                                compact ? "text-[9px]" : "text-[10px]"
+                              } ${
+                                item.sourceType === "calendar_event"
+                                  ? plannerEventTone(item.event.eventType, temporalState)
+                                  : plannerDeadlineTone(item.task, temporalState)
+                              }`}
+                              title={plannerItemTitle(item)}
+                            >
+                              {prefix ? (
+                                <span className="shrink-0 tabular-nums opacity-65">{prefix}</span>
+                              ) : item.sourceType === "task_deadline" ? (
+                                <Flag className="h-3 w-3 shrink-0" aria-hidden="true" />
+                              ) : (
+                                <PlannerEventTypeIcon eventType={item.event.eventType} />
+                              )}
+                              <span className="truncate">{plannerItemTitle(item)}</span>
+                            </button>
+                          );
+                        })}
+                        {hiddenCount ? (
+                          <div className="px-1 pt-0.5 text-[10px] font-medium text-slate-400">
+                            +{hiddenCount} more
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })}
+                {weekSpans.length ? (
+                  <div
+                    className="pointer-events-none absolute inset-x-0 top-7 grid grid-cols-7 gap-y-0.5 px-1.5"
+                    style={{ gridTemplateRows: `repeat(${weekSpans.length}, ${compact ? 14 : 16}px)` }}
+                  >
+                    {weekSpans.map((span, index) => {
+                      const timingLabel = plannerItemTimingLabel(span.item);
+                      const temporalState = plannerItemTemporalState(span.item, clientToday);
+                      return (
+                        <button
+                          key={plannerAllDaySpanKey(span, `${grid.month.id}-month-${weekIndex}`)}
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (span.item.sourceType === "calendar_event") openPlannerEventEdit(span.item.event);
+                            else openEdit(span.item.task);
+                          }}
+                          className={`pointer-events-auto flex min-w-0 items-center gap-1 border px-1.5 py-0.5 text-left font-medium leading-4 ${
+                            compact ? "text-[9px]" : "text-[10px]"
+                          } ${span.startsBefore ? "rounded-l-sm" : "rounded-l-lg"} ${
+                            span.endsAfter ? "rounded-r-sm" : "rounded-r-lg"
+                          } ${
+                            span.item.sourceType === "calendar_event"
+                              ? plannerEventTone(span.item.event.eventType, temporalState)
+                              : plannerDeadlineTone(span.item.task, temporalState)
+                          }`}
+                          style={{
+                            gridColumn: `${span.startIndex + 1} / span ${span.span}`,
+                            gridRow: index + 1,
+                          }}
+                          title={plannerItemTitle(span.item)}
+                        >
+                          {span.item.sourceType === "calendar_event" ? (
+                            <PlannerEventTypeIcon eventType={span.item.event.eventType} />
+                          ) : (
+                            <Flag className="h-3 w-3 shrink-0" aria-hidden="true" />
+                          )}
+                          {timingLabel ? (
+                            <span className="shrink-0 opacity-70">{timingLabel}</span>
+                          ) : null}
+                          <span className="truncate">{plannerItemTitle(span.item)}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen w-full bg-[#f7f8f8] text-slate-900">
@@ -5279,7 +6873,7 @@ useEffect(() => {
 
       <nav className="fixed inset-x-0 bottom-0 z-50 border-t border-slate-200 bg-white/95 px-3 pb-[calc(env(safe-area-inset-bottom)+0.35rem)] pt-2 backdrop-blur md:hidden">
         <div className="grid grid-cols-4 gap-1">
-          {APP_NAV_ITEMS.map((item) => {
+          {MOBILE_PRIMARY_NAV_ITEMS.map((item) => {
             const Icon = item.icon;
             const active = mode === item.id;
             return (
@@ -5296,11 +6890,46 @@ useEffect(() => {
               </button>
             );
           })}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setMobileMoreNavOpen((open) => !open)}
+              className={`flex w-full flex-col items-center gap-1 rounded-xl px-2 py-1.5 text-[11px] transition-colors ${
+                MOBILE_MORE_NAV_ITEMS.some((item) => item.id === mode)
+                  ? "bg-slate-900 text-white"
+                  : "text-slate-500 hover:bg-slate-100"
+              }`}
+            >
+              <Ellipsis className="h-4 w-4" aria-hidden />
+              <span>More</span>
+            </button>
+            {mobileMoreNavOpen ? (
+              <div className="absolute bottom-full right-0 mb-2 w-36 rounded-2xl border border-slate-200 bg-white p-1.5 text-sm shadow-xl">
+                {MOBILE_MORE_NAV_ITEMS.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setMode(item.id)}
+                      className={`flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left ${
+                        mode === item.id ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"
+                      }`}
+                    >
+                      <Icon className="h-4 w-4" aria-hidden />
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
         </div>
       </nav>
 
       <main className={`min-h-screen pb-24 transition-[margin] duration-200 md:pb-8 ${sidebarCollapsed ? "md:ml-16" : "md:ml-60"}`}>
-        <div className="mx-auto max-w-[1440px] px-4 py-5 sm:px-6 lg:px-8">
+        <div className="mx-auto max-w-[1440px] px-4 pb-5 pt-[calc(env(safe-area-inset-top)+1rem)] sm:px-6 sm:py-5 lg:px-8">
+          {mode === "meds" ? null : (
           <div className="border-b border-slate-200/70 pb-4">
             <div className="space-y-1">
               <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400">
@@ -5310,9 +6939,313 @@ useEffect(() => {
               <p className="max-w-xl text-sm text-slate-500">{pageSubtitle}</p>
             </div>
         </div>
+          )}
 
         {/* Main */}
-        {mode === "list" ? (
+        {mode === "meds" ? (
+          <div className="mx-auto max-w-[430px] md:mt-2">
+            <div className="flex items-start justify-between gap-4 pt-2">
+              <div>
+                <h1 className="text-[1.65rem] font-semibold leading-tight tracking-tight text-slate-950">Meds</h1>
+                <p className="mt-1 text-sm text-slate-500">Medication, caffeine and how you feel.</p>
+              </div>
+              <button
+                type="button"
+                onClick={openDoseModal}
+                className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-slate-950 text-white shadow-sm"
+                aria-label="Add medication entry"
+              >
+                <Plus className="h-6 w-6" aria-hidden />
+              </button>
+            </div>
+
+            <div className="mt-5">
+              <div className="grid grid-cols-2 rounded-full border border-slate-200 bg-white p-1 shadow-[0_8px_24px_rgba(15,23,42,0.035)]">
+                {[
+                  { id: "today", label: "Today" },
+                  { id: "history", label: "History" },
+                ].map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => setMedsView(option.id as MedsView)}
+                    className={`rounded-full px-5 py-2.5 text-sm font-semibold transition-colors ${
+                      medsView === option.id
+                        ? "bg-slate-900 text-white shadow-sm"
+                        : "text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {medsView === "today" ? (
+              <div className="mt-6 space-y-5">
+                <section>
+                  <div className="mb-3 text-sm font-semibold text-slate-950">Quick log</div>
+                  <div className="-mx-4 flex gap-2.5 overflow-x-auto px-4 pb-1">
+                    <button
+                      type="button"
+                      onClick={quickLogVyvanse}
+                      disabled={medsSaving}
+                      className="flex shrink-0 items-center gap-2 rounded-[16px] border border-orange-300 bg-orange-50/50 px-3.5 py-3 text-sm font-semibold text-orange-950"
+                    >
+                      <span className="grid h-6 w-6 place-items-center rounded-full bg-orange-500 text-white">
+                        <Plus className="h-3.5 w-3.5" aria-hidden />
+                      </span>
+                      Vyvanse 30mg
+                    </button>
+                    <button
+                      type="button"
+                      onClick={openCaffeineSheet}
+                      className="flex shrink-0 items-center gap-2 rounded-[16px] border border-amber-300 bg-amber-50/60 px-3.5 py-3 text-sm font-semibold text-amber-950"
+                    >
+                      <span className="grid h-6 w-6 place-items-center rounded-full bg-amber-500 text-white">
+                        <Plus className="h-3.5 w-3.5" aria-hidden />
+                      </span>
+                      Coffee
+                    </button>
+                    <button
+                      type="button"
+                      onClick={openFeelingModal}
+                      className="flex shrink-0 items-center gap-2 rounded-[16px] border border-slate-200 bg-white px-3.5 py-3 text-sm font-semibold text-slate-600"
+                    >
+                      <span className="grid h-6 w-6 place-items-center rounded-full bg-slate-50 text-slate-700">
+                        <HeartPulse className="h-4 w-4" aria-hidden />
+                      </span>
+                      Feeling?
+                    </button>
+                  </div>
+                  {medsError ? (
+                    <div className="mt-3 rounded-2xl border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                      {medsError}
+                    </div>
+                  ) : null}
+                </section>
+
+                <section>
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-base font-semibold text-slate-950">Estimated levels</div>
+                      <div className="mt-0.5 text-[11px] text-slate-400">{medsRangeLabel(medsVisibleRange.startMs, medsVisibleRange.endMs)}</div>
+                    </div>
+                    <div className="grid grid-cols-4 rounded-xl bg-slate-100 p-1 text-xs font-semibold text-slate-600">
+                      {(Object.keys(MEDS_RANGE_CONFIG) as MedsLevelRange[]).map((range) => (
+                        <button
+                          key={range}
+                          type="button"
+                          onClick={() => {
+                            setMedsLevelRange(range);
+                            setMedsRangeOffset(0);
+                          }}
+                          className={`rounded-lg px-2.5 py-1.5 ${medsLevelRange === range ? "bg-slate-950 text-white shadow-sm" : ""}`}
+                        >
+                          {MEDS_RANGE_CONFIG[range].label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="mb-3 flex items-center justify-end gap-2 text-xs font-medium">
+                    <button
+                      type="button"
+                      onClick={() => setMedsRangeOffset((value) => value + 1)}
+                      className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-slate-600"
+                    >
+                      Previous
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMedsRangeOffset(0)}
+                      className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-slate-600"
+                    >
+                      Current
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMedsRangeOffset((value) => Math.max(0, value - 1))}
+                      disabled={medsRangeOffset === 0}
+                      className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-slate-600 disabled:opacity-40"
+                    >
+                      Next
+                    </button>
+                  </div>
+
+                  <div className="space-y-3">
+                    <MedsChartCard
+                      title="Vyvanse"
+                      subtitle={
+                        latestVyvanseInRange
+                          ? `${formatMedicationAmount(latestVyvanseInRange.amount ?? 30)} ${latestVyvanseInRange.unit ?? "mg"} · ${formatMedicationTime(latestVyvanseInRange.timestamp)}`
+                          : "No intake in this window"
+                      }
+                      meta="Estimated · peak ~ 4–6h"
+                      tone="#ff6b1a"
+                      softTone="#fff0e7"
+                      icon={<PillIcon className="h-4 w-4" aria-hidden />}
+                      points={vyvanseChartSeries.points}
+                      dots={vyvanseChartDots}
+                      nowX={medsNowX}
+                      axisLabels={medsAxisLabels}
+                      maxPercent={vyvanseChartSeries.maxPercent}
+                    />
+
+                    <MedsChartCard
+                      title="Caffeine"
+                      subtitle={caffeineTotalInRange > 0 ? `~ ${Math.round(caffeineTotalInRange)} mg in view` : "No caffeine in this window"}
+                      meta="Half-life ~ 5h"
+                      tone="#f2aa12"
+                      softTone="#fff7df"
+                      icon={<Coffee className="h-4 w-4" aria-hidden />}
+                      points={caffeineChartSeries.points}
+                      dots={caffeineChartDots}
+                      nowX={medsNowX}
+                      axisLabels={medsAxisLabels}
+                      maxPercent={caffeineChartSeries.maxPercent}
+                    />
+                  </div>
+                </section>
+
+                <section className="pb-3">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div className="text-base font-semibold text-slate-950">Today's log</div>
+                    <button type="button" className="text-sm font-medium text-slate-500">
+                      See all
+                    </button>
+                  </div>
+                  <div className="divide-y divide-slate-200/70">
+                    {todaysMedicationEntries.length ? todaysMedicationEntries.map((entry) => {
+                      const isCaffeine = isCaffeineEntry(entry);
+                      const title = entry.entryType === "observation" ? entry.feeling ?? "Feeling" : isCaffeine ? caffeineDrinkLabel(entry) : entry.medication ?? "Dose";
+                      const detail =
+                        entry.entryType === "observation"
+                          ? [entry.intensity ? titleCase(entry.intensity) : "", entry.valence ? titleCase(entry.valence) : ""].filter(Boolean).join(" · ") || "Feeling"
+                          : isCaffeine
+                            ? `Coffee · ~${formatMedicationAmount(entry.amount ?? 0)} mg caffeine`
+                            : [entry.amount ? formatMedicationAmount(entry.amount) : "", entry.unit ?? ""].filter(Boolean).join(" ");
+                      return (
+                      <button
+                        key={entry.id}
+                        type="button"
+                        onClick={() => openMedicationEntryEditor(entry)}
+                        className="grid w-full grid-cols-[64px_42px_1fr_auto] items-center gap-3 py-3 text-left"
+                      >
+                        <div className="text-xs tabular-nums text-slate-400">{formatMedicationTime(entry.timestamp)}</div>
+                        <div className="grid h-10 w-10 place-items-center rounded-full bg-slate-100 text-slate-900">
+                          {entry.entryType === "observation" ? (
+                            <HeartPulse className="h-5 w-5 text-blue-600" aria-hidden />
+                          ) : isCaffeine ? (
+                            <Coffee className="h-5 w-5" aria-hidden />
+                          ) : (
+                            <PillIcon className="h-5 w-5 text-orange-500" aria-hidden />
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-semibold text-slate-950">{title}</div>
+                          <div className="truncate text-xs text-slate-500">{detail}</div>
+                        </div>
+                        <Ellipsis className="h-5 w-5 text-slate-400" aria-hidden />
+                      </button>
+                      );
+                    }) : (
+                      <div className="py-5 text-sm text-slate-400">No Meds entries logged today.</div>
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    className="mt-3 flex w-full items-center gap-3 rounded-[18px] border border-slate-200 bg-slate-50/80 p-3 text-left"
+                  >
+                    <span className="grid h-12 w-12 place-items-center rounded-2xl bg-white text-blue-600">
+                      <HeartPulse className="h-6 w-6" aria-hidden />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-semibold text-slate-950">How is it working?</span>
+                      <span className="block truncate text-xs text-slate-500">Log focus, energy, appetite...</span>
+                    </span>
+                    <ChevronRight className="h-5 w-5 text-slate-500" aria-hidden />
+                  </button>
+                </section>
+              </div>
+            ) : (
+              <div className="-mx-1 mt-4 space-y-3 px-1 sm:mx-0 sm:px-0">
+                <div className="space-y-2 border-b border-slate-200/70 pb-3">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">History</div>
+                  <div className="flex flex-wrap gap-x-3 gap-y-1">
+                    {[
+                      { id: "all", label: "All" },
+                      { id: "Vyvanse", label: "Vyvanse" },
+                      { id: "Prozac", label: "Prozac" },
+                      { id: "Coffee", label: "Coffee" },
+                      { id: "feelings", label: "Feelings" },
+                    ].map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => setMedsHistoryFilter(option.id as typeof medsHistoryFilter)}
+                        className={`border-b py-1 text-xs font-medium transition-colors ${
+                          medsHistoryFilter === option.id
+                            ? "border-slate-900 text-slate-900"
+                            : "border-transparent text-slate-500 hover:text-slate-800"
+                        }`}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="space-y-5">
+                  {medicationHistoryEntries.length ? (
+                    Object.entries(
+                      medicationHistoryEntries.reduce<Record<string, MedicationEntry[]>>((groups, entry) => {
+                        const key = medicationLocalDate(entry);
+                        groups[key] = [...(groups[key] ?? []), entry];
+                        return groups;
+                      }, {})
+                    ).map(([date, entries]) => (
+                      <div key={date}>
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+                          {formatMedicationDate(entries[0]?.timestamp ?? date)}
+                        </div>
+                        <div className="mt-2 divide-y divide-slate-200/60 border-t border-slate-200/60">
+                          {entries
+                            .slice()
+                            .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp))
+                            .map((entry) => (
+                              <button
+                                key={entry.id}
+                                type="button"
+                                onClick={() => openMedicationEntryEditor(entry)}
+                                className="grid w-full grid-cols-[48px_1fr] items-center gap-3 rounded-lg px-1 py-2 text-left text-sm transition-colors hover:bg-slate-50/80"
+                              >
+                                <div className="tabular-nums text-[12px] text-slate-400">{formatMedicationTime(entry.timestamp)}</div>
+                                <div className={`flex min-w-0 items-center gap-2 ${
+                                  entry.entryType === "input" ? "text-cyan-800" : "text-violet-800"
+                                }`}>
+                                  {entry.entryType === "input" ? (
+                                    entry.medication === "Coffee" ? <Coffee className="h-4 w-4 text-cyan-600" aria-hidden /> : <PillIcon className="h-4 w-4 text-cyan-600" aria-hidden />
+                                  ) : (
+                                    <HeartPulse className="h-4 w-4 text-violet-600" aria-hidden />
+                                  )}
+                                  <span className="truncate">{medicationLabel(entry)}</span>
+                                </div>
+                              </button>
+                            ))}
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="border-y border-dashed border-slate-200 px-1 py-5 text-sm text-slate-400">
+                      No medication history for this filter.
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        ) : mode === "list" ? (
           <>
             <div className="mt-5 hidden items-center justify-end gap-2 rounded-[18px] border border-slate-200/70 bg-white p-2 md:flex md:flex-wrap">
               <select
@@ -5356,7 +7289,6 @@ useEffect(() => {
               })}
 
               {renderTimeLeftFilterMenu()}
-              {renderDurationFilterMenu()}
 
               <div className="relative">
                 <input
@@ -5449,7 +7381,6 @@ useEffect(() => {
                       })}
 
                       {renderTimeLeftFilterMenu()}
-                      {renderDurationFilterMenu()}
                     </div>
                   </div>
                 </div>
@@ -5689,6 +7620,7 @@ useEffect(() => {
                   {([
                     { id: "week", label: "Week" },
                     { id: "month", label: "Month" },
+                    { id: "three_month", label: "3 Months" },
                     { id: "year", label: "Year" },
                   ] as Array<{ id: PlannerView; label: string }>).map((option) => (
                     <button
@@ -5755,15 +7687,17 @@ useEffect(() => {
                     >
                       &gt;
                     </button>
-                  </div>
-                </div>
+	                  </div>
+	                </div>
+	                <div className="mb-3">{renderPlannerEventLegend()}</div>
 
-                <div className="md:hidden">
+	                <div className="md:hidden">
                   <div className="grid grid-cols-7 gap-1">
                     {plannerWeekDays.map((day) => {
                       const date = new Date(day + "T00:00:00");
                       const isToday = day === clientToday;
                       const isSelected = day === plannerMobileWeekDate;
+                      const dayTemporalState = plannerTemporalStateForDate(day, clientToday);
 
                       return (
                         <button
@@ -5781,7 +7715,11 @@ useEffect(() => {
                           </div>
                           <div
                             className={`mx-auto mt-1 flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold tabular-nums ${
-                              isToday ? "bg-slate-900 text-white" : ""
+                              isToday
+                                ? "bg-slate-900 text-white"
+                                : dayTemporalState === "past"
+                                  ? "text-slate-400"
+                                  : ""
                             }`}
                           >
                             {date.getDate()}
@@ -5798,50 +7736,70 @@ useEffect(() => {
                       <>
                         {plannerMobileAllDayItems.length ? (
                           <div className="mb-3 space-y-1.5">
-                            {plannerMobileAllDayItems.map((item) => (
-                              <button
-                                key={`mobile-all-day-${plannerMobileWeekDate}-${item.sourceType === "calendar_event" ? item.event.id : item.task.id}`}
-                                type="button"
-                                onClick={() =>
-                                  item.sourceType === "calendar_event"
-                                    ? openPlannerEventEdit(item.event)
-                                    : openEdit(item.task)
-                                }
-                                className={`flex w-full min-w-0 items-center gap-2 rounded-xl border px-2 py-1.5 text-left text-xs font-medium ${
-                                  item.sourceType === "calendar_event"
-                                    ? plannerEventTone(item.event.eventType)
-                                    : plannerDeadlineTone(item.task)
-                                }`}
-                              >
-                                {item.sourceType === "calendar_event" ? (
-                                  <PlannerEventTypeIcon eventType={item.event.eventType} />
-                                ) : (
-                                  <Flag className="h-3 w-3 shrink-0" aria-hidden="true" />
-                                )}
-                                <span className="truncate">{plannerItemTitle(item)}</span>
-                              </button>
-                            ))}
+                            {plannerMobileAllDayItems.map((item) => {
+                              const timingLabel = plannerItemTimingLabel(item);
+                              const temporalState = plannerItemTemporalState(item, clientToday, plannerMobileWeekDate);
+                              return (
+                                <button
+                                  key={`mobile-all-day-${plannerMobileWeekDate}-${item.sourceType === "calendar_event" ? item.event.id : item.task.id}`}
+                                  type="button"
+                                  onClick={() =>
+                                    item.sourceType === "calendar_event"
+                                      ? openPlannerEventEdit(item.event)
+                                      : openEdit(item.task)
+                                  }
+                                  className={`flex w-full min-w-0 items-center gap-2 rounded-xl border px-2 py-1.5 text-left text-xs font-medium ${
+                                    item.sourceType === "calendar_event"
+                                      ? plannerEventTone(item.event.eventType, temporalState)
+                                      : plannerDeadlineTone(item.task, temporalState)
+                                  }`}
+                                >
+                                  {item.sourceType === "calendar_event" ? (
+                                    <PlannerEventTypeIcon eventType={item.event.eventType} />
+                                  ) : (
+                                    <Flag className="h-3 w-3 shrink-0" aria-hidden="true" />
+                                  )}
+                                  {timingLabel ? (
+                                    <span className="shrink-0 opacity-70">{timingLabel}</span>
+                                  ) : null}
+                                  <span className="truncate">{plannerItemTitle(item)}</span>
+                                </button>
+                              );
+                            })}
                           </div>
                         ) : null}
 
                         <div className="space-y-2">
                           {plannerMobileTimedLayouts.map((layout) => {
-                            const timeRange = `${formatPlannerEventTime(layout.event.startAt)}${
-                              layout.event.endAt ? `-${formatPlannerEventTime(layout.event.endAt)}` : ""
-                            }`;
+                            const timeRange = layout.displayOnly
+                              ? ""
+                              : `${formatPlannerEventTime(layout.event.startAt)}${
+                                  layout.event.endAt ? `-${formatPlannerEventTime(layout.event.endAt)}` : ""
+                                }`;
+                            const inlineStartTime =
+                              !layout.displayOnly && layout.event.startAt && !layout.event.endAt
+                                ? formatPlannerEventTime(layout.event.startAt)
+                                : "";
+                            const temporalState = plannerEventTemporalState(layout.event, clientToday);
                             return (
                               <button
                                 key={`mobile-timed-${plannerMobileWeekDate}-${layout.event.id}`}
                                 type="button"
                                 onClick={() => openPlannerEventEdit(layout.event)}
                                 className={`flex w-full min-w-0 items-start gap-2 rounded-2xl border px-3 py-2 text-left text-xs ${plannerEventTone(
-                                  layout.event.eventType
+                                  layout.event.eventType,
+                                  temporalState
                                 )}`}
                               >
                                 <PlannerEventTypeIcon eventType={layout.event.eventType} />
                                 <span className="min-w-0 flex-1">
-                                  <span className="block truncate font-medium">{layout.event.title}</span>
-                                  {timeRange ? <span className="mt-0.5 block text-[11px] opacity-70">{timeRange}</span> : null}
+                                  <span className="block truncate font-medium">
+                                    {inlineStartTime ? <span className="mr-1 tabular-nums opacity-70">{inlineStartTime}</span> : null}
+                                    {layout.event.title}
+                                  </span>
+                                  {timeRange && layout.event.endAt ? (
+                                    <span className="mt-0.5 block text-[11px] opacity-70">{timeRange}</span>
+                                  ) : null}
                                 </span>
                               </button>
                             );
@@ -5859,12 +7817,13 @@ useEffect(() => {
                       {plannerWeekDays.map((day) => {
                         const date = new Date(day + "T00:00:00");
                         const isToday = day === clientToday;
+                        const dayTemporalState = plannerTemporalStateForDate(day, clientToday);
 
                         return (
                           <div
                             key={day}
                             className={`border-r border-slate-100/80 px-2 py-3 text-center last:border-r-0 ${
-                              isToday ? "bg-slate-50" : ""
+                              isToday ? "bg-slate-50/80 ring-1 ring-inset ring-slate-200/80" : ""
                             }`}
                           >
                             <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">
@@ -5872,7 +7831,11 @@ useEffect(() => {
                             </div>
                             <div
                               className={`mx-auto mt-1 flex h-7 w-7 items-center justify-center rounded-full text-sm font-semibold tabular-nums ${
-                                isToday ? "bg-slate-900 text-white" : "text-slate-700"
+                                isToday
+                                  ? "bg-slate-900 text-white"
+                                  : dayTemporalState === "past"
+                                    ? "text-slate-400"
+                                    : "text-slate-700"
                               }`}
                             >
                               {date.getDate()}
@@ -5894,7 +7857,7 @@ useEffect(() => {
                           <div
                             key={`all-day-bg-${day}`}
                             className={`border-r border-slate-100/80 px-2 py-2 text-center text-sm text-slate-300 last:border-r-0 ${
-                              day === clientToday ? "bg-slate-100/50" : ""
+                              day === clientToday ? "bg-slate-100/60 ring-1 ring-inset ring-slate-200/70" : ""
                             }`}
                           >
                             {!plannerWeekAllDaySpans.length ? "·" : null}
@@ -5907,36 +7870,43 @@ useEffect(() => {
                               gridTemplateRows: `repeat(${plannerWeekAllDaySpans.length}, 22px)`,
                             }}
                           >
-                            {plannerWeekAllDaySpans.map((span, index) => (
-                              <button
-                                key={plannerAllDaySpanKey(span, "week")}
-                                type="button"
-                                onClick={() =>
-                                  span.item.sourceType === "calendar_event"
-                                    ? openPlannerEventEdit(span.item.event)
-                                    : openEdit(span.item.task)
-                                }
-                                className={`flex min-w-0 items-center gap-1 border px-2 py-1 text-left text-[11px] font-medium ${
-                                  span.startsBefore ? "rounded-l-sm" : "rounded-l-lg"
-                                } ${span.endsAfter ? "rounded-r-sm" : "rounded-r-lg"} ${
-                                  span.item.sourceType === "calendar_event"
-                                    ? plannerEventTone(span.item.event.eventType)
-                                    : plannerDeadlineTone(span.item.task)
-                                }`}
-                                style={{
-                                  gridColumn: `${span.startIndex + 1} / span ${span.span}`,
-                                  gridRow: index + 1,
-                                }}
-                                title={plannerItemTitle(span.item)}
-                              >
-                                {span.item.sourceType === "calendar_event" ? (
-                                  <PlannerEventTypeIcon eventType={span.item.event.eventType} />
-                                ) : (
-                                  <Flag className="h-3 w-3 shrink-0" aria-hidden="true" />
-                                )}
-                                <span className="truncate">{plannerItemTitle(span.item)}</span>
-                              </button>
-                            ))}
+                            {plannerWeekAllDaySpans.map((span, index) => {
+                              const timingLabel = plannerItemTimingLabel(span.item);
+                              const temporalState = plannerItemTemporalState(span.item, clientToday);
+                              return (
+                                <button
+                                  key={plannerAllDaySpanKey(span, "week")}
+                                  type="button"
+                                  onClick={() =>
+                                    span.item.sourceType === "calendar_event"
+                                      ? openPlannerEventEdit(span.item.event)
+                                      : openEdit(span.item.task)
+                                  }
+                                  className={`flex min-w-0 items-center gap-1 border px-2 py-1 text-left text-[11px] font-medium ${
+                                    span.startsBefore ? "rounded-l-sm" : "rounded-l-lg"
+                                  } ${span.endsAfter ? "rounded-r-sm" : "rounded-r-lg"} ${
+                                    span.item.sourceType === "calendar_event"
+                                      ? plannerEventTone(span.item.event.eventType, temporalState)
+                                      : plannerDeadlineTone(span.item.task, temporalState)
+                                  }`}
+                                  style={{
+                                    gridColumn: `${span.startIndex + 1} / span ${span.span}`,
+                                    gridRow: index + 1,
+                                  }}
+                                  title={plannerItemTitle(span.item)}
+                                >
+                                  {span.item.sourceType === "calendar_event" ? (
+                                    <PlannerEventTypeIcon eventType={span.item.event.eventType} />
+                                  ) : (
+                                    <Flag className="h-3 w-3 shrink-0" aria-hidden="true" />
+                                  )}
+                                  {timingLabel ? (
+                                    <span className="shrink-0 opacity-70">{timingLabel}</span>
+                                  ) : null}
+                                  <span className="truncate">{plannerItemTitle(span.item)}</span>
+                                </button>
+                              );
+                            })}
                           </div>
                         ) : null}
                       </div>
@@ -5964,7 +7934,7 @@ useEffect(() => {
                           <div
                             key={`timed-${day}`}
                             className={`relative border-r border-slate-100/80 last:border-r-0 ${
-                              day === clientToday ? "bg-slate-50/40" : "bg-white"
+                              day === clientToday ? "bg-slate-50/70 ring-1 ring-inset ring-slate-200/70" : "bg-white"
                             }`}
                           >
                             {plannerHours.slice(0, -1).map((hour, index) => (
@@ -5986,25 +7956,35 @@ useEffect(() => {
                               const gutter = 8;
                               const width = `calc(${100 / layout.columnCount}% - ${gutter}px)`;
                               const left = `calc(${(layout.columnIndex * 100) / layout.columnCount}% + ${gutter / 2}px)`;
-                              const timeRange = `${formatPlannerEventTime(layout.event.startAt)}${
-                                layout.event.endAt ? `-${formatPlannerEventTime(layout.event.endAt)}` : ""
-                              }`;
+                              const timeRange = layout.displayOnly
+                                ? ""
+                                : `${formatPlannerEventTime(layout.event.startAt)}${
+                                    layout.event.endAt ? `-${formatPlannerEventTime(layout.event.endAt)}` : ""
+                                  }`;
+                              const inlineStartTime =
+                                !layout.displayOnly && layout.event.startAt && !layout.event.endAt
+                                  ? formatPlannerEventTime(layout.event.startAt)
+                                  : "";
                               const workResolution = plannerWorkResolutionStatus(layout.event);
                               const showWorkResolutionActions = isPastUnresolvedPlannerWorkEvent(
                                 layout.event,
                                 clientNowMs
                               );
                               const workActionSaving = plannerWorkActionSavingId === layout.event.id;
+                              const temporalState = plannerEventTemporalState(layout.event, clientToday);
 
                               return (
                                 <div
                                   key={`${day}-${layout.event.id}`}
                                   role="button"
                                   tabIndex={0}
-                                  className={`absolute z-20 cursor-grab select-none overflow-hidden rounded-xl border px-2 py-1.5 text-[11px] active:cursor-grabbing ${
+                                  className={`absolute z-20 select-none overflow-hidden rounded-xl border px-2 py-1.5 text-[11px] ${
+                                    layout.displayOnly ? "cursor-pointer" : "cursor-grab active:cursor-grabbing"
+                                  } ${
                                     plannerInteraction?.eventId === layout.event.id ? "ring-2 ring-slate-300" : ""
                                   } ${plannerEventTone(
-                                    layout.event.eventType
+                                    layout.event.eventType,
+                                    temporalState
                                   )}`}
                                   style={{
                                     top: layout.top,
@@ -6013,7 +7993,11 @@ useEffect(() => {
                                     width,
                                   }}
                                   title={`${layout.event.title}${timeRange ? ` • ${timeRange}` : ""}`}
-                                  onPointerDown={(e) => beginPlannerEventInteraction(e, layout.event, "move")}
+                                  onPointerDown={
+                                    layout.displayOnly
+                                      ? undefined
+                                      : (e) => beginPlannerEventInteraction(e, layout.event, "move")
+                                  }
                                   onClick={() => {
                                     if (suppressPlannerEventClickRef.current) return;
                                     openPlannerEventEdit(layout.event);
@@ -6024,6 +8008,9 @@ useEffect(() => {
                                 >
                                   <div className="flex min-w-0 items-center gap-1 font-medium leading-tight">
                                     <PlannerEventTypeIcon eventType={layout.event.eventType} />
+                                    {inlineStartTime ? (
+                                      <span className="shrink-0 tabular-nums opacity-70">{inlineStartTime}</span>
+                                    ) : null}
                                     <span className="truncate">{layout.event.title}</span>
                                   </div>
                                   {layout.height >= 42 && timeRange ? (
@@ -6079,16 +8066,18 @@ useEffect(() => {
                                       </button>
                                     </div>
                                   ) : null}
-                                  <div
-                                    className="absolute inset-x-2 bottom-0 h-2 cursor-ns-resize rounded-full"
-                                    onPointerDown={(e) => {
-                                      e.stopPropagation();
-                                      beginPlannerEventInteraction(e, layout.event, "resize");
-                                    }}
-                                    aria-hidden="true"
-                                  >
-                                    <span className="mx-auto mt-1 block h-0.5 w-6 rounded-full bg-current opacity-25" />
-                                  </div>
+                                  {!layout.displayOnly ? (
+                                    <div
+                                      className="absolute inset-x-2 bottom-0 h-2 cursor-ns-resize rounded-full"
+                                      onPointerDown={(e) => {
+                                        e.stopPropagation();
+                                        beginPlannerEventInteraction(e, layout.event, "resize");
+                                      }}
+                                      aria-hidden="true"
+                                    >
+                                      <span className="mx-auto mt-1 block h-0.5 w-6 rounded-full bg-current opacity-25" />
+                                    </div>
+                                  ) : null}
                                 </div>
                               );
                             })}
@@ -6101,8 +8090,8 @@ useEffect(() => {
               </div>
             ) : plannerView === "month" ? (
               <div className="pt-3">
-                <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="px-1 text-xs font-semibold text-slate-600">{plannerMonthLabel}</div>
+	                <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+	                  <div className="px-1 text-xs font-semibold text-slate-600">{plannerMonthLabel}</div>
                   <div className="inline-flex w-fit rounded-full border border-slate-200 bg-white p-1">
                     <button
                       type="button"
@@ -6127,142 +8116,53 @@ useEffect(() => {
                     >
                       &gt;
                     </button>
-                  </div>
-                </div>
+	                  </div>
+	                </div>
+	                <div className="mb-3">{renderPlannerEventLegend()}</div>
 
-                <div className="overflow-hidden rounded-[18px] border border-slate-200/70 bg-white">
-                  <div className="grid grid-cols-7 border-b border-slate-100/80 bg-slate-50/40">
-                    {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((weekday) => (
-                      <div
-                        key={weekday}
-                        className="border-r border-slate-100/70 px-2 py-1.5 text-center text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400 last:border-r-0"
-                      >
-                        {weekday}
+	                {renderPlannerMonthGrid(plannerMonthGrid)}
+              </div>
+            ) : plannerView === "three_month" ? (
+              <div className="pt-3">
+                <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="px-1 text-xs font-semibold text-slate-600">{plannerThreeMonthLabel}</div>
+                  <div className="inline-flex w-fit rounded-full border border-slate-200 bg-white p-1">
+                    <button
+                      type="button"
+                      onClick={() => movePlannerThreeMonth(-1)}
+                      className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                      aria-label="Previous three-month window"
+                    >
+                      &lt;
+                    </button>
+                    <button
+                      type="button"
+                      onClick={returnPlannerToToday}
+                      className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                    >
+                      Today
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => movePlannerThreeMonth(1)}
+                      className="rounded-full px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                      aria-label="Next three-month window"
+                    >
+                      &gt;
+                    </button>
+	                  </div>
+	                </div>
+	                <div className="mb-3">{renderPlannerEventLegend()}</div>
+
+	                <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+                  {plannerThreeMonthGrids.map((grid) => (
+                    <div key={grid.month.id} className="min-w-0">
+                      <div className="mb-1.5 px-1 text-xs font-semibold text-slate-600">
+                        {formatPlannerMonthLabel(grid.month.anchorDate)}
                       </div>
-                    ))}
-                  </div>
-
-                  <div>
-                    {plannerMonthWeeks.map((week, weekIndex) => {
-                      const weekSpans = plannerMonthAllDaySpansByWeek[weekIndex] ?? [];
-                      return (
-                        <div key={`month-week-${week[0]?.date ?? weekIndex}`} className="relative grid grid-cols-7">
-                          {week.map((day) => {
-                            const events = (plannerMonthEventsByDate[day.date] ?? []).filter(
-                              (item) => !(item.sourceType === "calendar_event" && item.event.allDay)
-                            );
-                            const visibleEvents = events.slice(0, 4);
-                            const hiddenCount = Math.max(0, events.length - visibleEvents.length);
-                            const isToday = day.date === clientToday;
-
-                            return (
-                              <div
-                                key={day.date}
-                                className={`min-h-[96px] border-r border-b border-slate-100/70 px-1.5 py-1.5 [&:nth-child(7n)]:border-r-0 ${
-                                  day.isCurrentMonth ? "bg-white" : "bg-slate-50/40"
-                                }`}
-                              >
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setPlannerAnchorDate(day.date);
-                                    setPlannerView("week");
-                                  }}
-                                  className={`flex h-5 w-5 items-center justify-center rounded-full text-[11px] font-semibold tabular-nums hover:bg-slate-100 ${
-                                    isToday
-                                      ? "bg-slate-900 text-white hover:bg-slate-800"
-                                      : day.isCurrentMonth
-                                        ? "text-slate-700"
-                                        : "text-slate-300"
-                                  }`}
-                                  aria-label={`Open week containing ${day.date}`}
-                                >
-                                  {Number(day.date.slice(8, 10))}
-                                </button>
-
-                                <div
-                                  className="space-y-0.5"
-                                  style={{ marginTop: weekSpans.length ? weekSpans.length * 18 + 6 : 4 }}
-                                >
-                                  {visibleEvents.map((item) => {
-                                    const prefix = plannerItemPrefix(item, day.date);
-                                    return (
-                                      <button
-                                        key={`${day.date}-${item.sourceType === "calendar_event" ? item.event.id : item.task.id}`}
-                                        type="button"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          if (item.sourceType === "calendar_event") openPlannerEventEdit(item.event);
-                                          else openEdit(item.task);
-                                        }}
-                                        className={`flex w-full min-w-0 items-center gap-1 rounded-lg border px-1.5 py-0.5 text-left text-[10px] font-medium leading-4 ${
-                                          item.sourceType === "calendar_event"
-                                            ? plannerEventTone(item.event.eventType)
-                                            : plannerDeadlineTone(item.task)
-                                        }`}
-                                        title={plannerItemTitle(item)}
-                                      >
-                                        {prefix ? (
-                                          <span className="shrink-0 tabular-nums opacity-65">{prefix}</span>
-                                        ) : item.sourceType === "task_deadline" ? (
-                                          <Flag className="h-3 w-3 shrink-0" aria-hidden="true" />
-                                        ) : (
-                                          <PlannerEventTypeIcon eventType={item.event.eventType} />
-                                        )}
-                                        <span className="truncate">{plannerItemTitle(item)}</span>
-                                      </button>
-                                    );
-                                  })}
-                                  {hiddenCount ? (
-                                    <div className="px-1 pt-0.5 text-[10px] font-medium text-slate-400">
-                                      +{hiddenCount} more
-                                    </div>
-                                  ) : null}
-                                </div>
-                              </div>
-                            );
-                          })}
-                          {weekSpans.length ? (
-                            <div
-                              className="pointer-events-none absolute inset-x-0 top-7 grid grid-cols-7 gap-y-0.5 px-1.5"
-                              style={{ gridTemplateRows: `repeat(${weekSpans.length}, 16px)` }}
-                            >
-                              {weekSpans.map((span, index) => (
-                                <button
-                                  key={plannerAllDaySpanKey(span, `month-${weekIndex}`)}
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    if (span.item.sourceType === "calendar_event") openPlannerEventEdit(span.item.event);
-                                    else openEdit(span.item.task);
-                                  }}
-                                  className={`pointer-events-auto flex min-w-0 items-center gap-1 border px-1.5 py-0.5 text-left text-[10px] font-medium leading-4 ${
-                                    span.startsBefore ? "rounded-l-sm" : "rounded-l-lg"
-                                  } ${span.endsAfter ? "rounded-r-sm" : "rounded-r-lg"} ${
-                                    span.item.sourceType === "calendar_event"
-                                      ? plannerEventTone(span.item.event.eventType)
-                                      : plannerDeadlineTone(span.item.task)
-                                  }`}
-                                  style={{
-                                    gridColumn: `${span.startIndex + 1} / span ${span.span}`,
-                                    gridRow: index + 1,
-                                  }}
-                                  title={plannerItemTitle(span.item)}
-                                >
-                                  {span.item.sourceType === "calendar_event" ? (
-                                    <PlannerEventTypeIcon eventType={span.item.event.eventType} />
-                                  ) : (
-                                    <Flag className="h-3 w-3 shrink-0" aria-hidden="true" />
-                                  )}
-                                  <span className="truncate">{plannerItemTitle(span.item)}</span>
-                                </button>
-                              ))}
-                            </div>
-                          ) : null}
-                        </div>
-                      );
-                    })}
-                  </div>
+                      {renderPlannerMonthGrid(grid, "three_month")}
+                    </div>
+                  ))}
                 </div>
               </div>
             ) : (
@@ -6296,20 +8196,7 @@ useEffect(() => {
                   </div>
                 </div>
 
-                <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-[10px] font-medium text-slate-500">
-                  {PLANNER_EVENT_TYPES.map((option) => (
-                    <div key={option.id} className="inline-flex items-center gap-1.5">
-                      <span
-                        className={`flex h-4 w-4 items-center justify-center rounded-full ${plannerYearMarkerTone(
-                          option.id
-                        )}`}
-                      >
-                        <PlannerYearMarkerIcon eventType={option.id} />
-                      </span>
-                      <span>{option.label}</span>
-                    </div>
-                  ))}
-                </div>
+	                <div className="mb-3">{renderPlannerEventLegend()}</div>
 
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                   {plannerYearMonths.map((month) => (
@@ -6376,7 +8263,14 @@ useEffect(() => {
                                   return !span || span.start === span.end;
                                 });
                                 const markerTypes = Array.from(new Set(items.map(plannerYearItemEventType))).slice(0, 3);
+                                const markerTemporalStates = new Map(
+                                  markerTypes.map((eventType) => {
+                                    const item = items.find((candidate) => plannerYearItemEventType(candidate) === eventType);
+                                    return [eventType, item ? plannerItemTemporalState(item, clientToday, day.date) : plannerTemporalStateForDate(day.date, clientToday)];
+                                  })
+                                );
                                 const isToday = day.date === clientToday;
+                                const dayTemporalState = plannerTemporalStateForDate(day.date, clientToday);
 
                                 if (!day.isCurrentMonth) {
                                   return (
@@ -6399,7 +8293,9 @@ useEffect(() => {
                                     className={`group relative mx-auto flex h-7 w-7 items-center justify-center rounded-full text-[10px] tabular-nums hover:bg-slate-100 ${
                                       isToday
                                         ? "bg-slate-900 text-white hover:bg-slate-800"
-                                        : "text-slate-600"
+                                        : dayTemporalState === "past"
+                                          ? "text-slate-400"
+                                          : "text-slate-600"
                                     }`}
                                     title={
                                       items.length
@@ -6414,8 +8310,9 @@ useEffect(() => {
                                         {markerTypes.map((eventType) => (
                                           <span
                                             key={eventType}
-                                            className={`flex h-3 w-3 items-center justify-center rounded-full ${plannerYearMarkerTone(
-                                              eventType
+                                            className={`inline-flex ${plannerYearMarkerTone(
+                                              eventType,
+                                              markerTemporalStates.get(eventType) ?? plannerTemporalStateForDate(day.date, clientToday)
                                             )}`}
                                           >
                                             <PlannerYearMarkerIcon eventType={eventType} />
@@ -6428,12 +8325,13 @@ useEffect(() => {
                               })}
                               {visibleSpanItems.map((span, spanIndex) => {
                                 const eventType = plannerYearItemEventType(span.item);
+                                const temporalState = plannerItemTemporalState(span.item, clientToday);
                                 return (
                                   <div
                                     key={plannerAllDaySpanKey(span, `${month.id}-year-${weekIndex}`)}
                                     className={`absolute grid h-3.5 min-w-0 grid-cols-[auto_1fr] items-center gap-0.5 overflow-hidden border px-1 text-[8px] font-medium leading-none ${
                                       span.startsBefore ? "rounded-l-sm" : "rounded-l-full"
-                                    } ${span.endsAfter ? "rounded-r-sm" : "rounded-r-full"} ${plannerYearPillTone(eventType)}`}
+                                    } ${span.endsAfter ? "rounded-r-sm" : "rounded-r-full"} ${plannerYearPillTone(eventType, temporalState)}`}
                                     style={{
                                       left: `calc(${(span.startIndex / 7) * 100}% + 2px)`,
                                       right: `calc(${((7 - span.startIndex - span.span) / 7) * 100}% + 2px)`,
@@ -6457,13 +8355,16 @@ useEffect(() => {
             )}
           </div>
         ) : mode === "logger" ? (
-          <div className="mt-4">
-            <div className="flex flex-col gap-3 rounded-[18px] border border-slate-200/70 bg-white p-3">
-              <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
-                <div className="flex flex-wrap items-center gap-2">
-                  <div className="text-xs font-medium text-slate-500">{loggerPeriodLabel}</div>
-                  <div className="inline-flex rounded-xl border border-slate-200 bg-white p-1">
+          <div className="mt-3 flex flex-col overflow-x-hidden pb-24 md:mt-4 md:flex md:flex-col md:pb-0">
+            <div className="flex flex-col gap-2 rounded-[18px] border border-slate-200/70 bg-white p-2.5 md:gap-3 md:p-3">
+              <div className="grid gap-2 xl:flex xl:items-center xl:justify-between">
+                <div className="grid gap-2 md:flex md:flex-wrap md:items-center">
+                  <div className="order-2 text-center text-xs font-medium text-slate-500 md:order-none md:text-left">
+                    {loggerPeriodLabel}
+                  </div>
+                  <div className="order-1 grid grid-cols-5 rounded-xl border border-slate-200 bg-white p-1 md:order-none md:inline-flex">
                   {[
+                    { id: "day", label: "Day" },
                     { id: "week", label: "Week" },
                     { id: "month", label: "Month" },
                     { id: "year", label: "Year" },
@@ -6473,7 +8374,7 @@ useEffect(() => {
                       key={option.id}
                       type="button"
                       onClick={() => setLoggerRangeMode(option.id as LoggerRangeMode)}
-                      className={`rounded-lg px-3 py-1.5 text-sm ${
+                      className={`rounded-lg px-2 py-1.5 text-xs font-medium md:px-3 md:text-sm ${
                         loggerRangeMode === option.id
                           ? "bg-slate-900 text-white"
                           : "text-slate-600 hover:bg-slate-50"
@@ -6484,32 +8385,13 @@ useEffect(() => {
                   ))}
                 </div>
 
-                  <div className="inline-flex rounded-xl border border-slate-200 bg-white p-1">
-                    {[
-                      { id: "hours", label: "Hours logged" },
-                      { id: "times", label: "Times logged" },
-                    ].map((option) => (
-                      <button
-                        key={option.id}
-                        type="button"
-                        onClick={() => setLoggerValueMode(option.id as LoggerValueMode)}
-                        className={`rounded-lg px-3 py-1.5 text-sm ${
-                          loggerValueMode === option.id
-                            ? "bg-slate-900 text-white"
-                            : "text-slate-600 hover:bg-slate-50"
-                        }`}
-                      >
-                        {option.label}
-                      </button>
-                    ))}
-                  </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="grid grid-cols-[1fr_auto] items-center gap-2 md:flex md:flex-wrap md:items-center">
                 <select
                   value={loggerTaskFilter}
                   onChange={(e) => setLoggerTaskFilter(e.target.value)}
-                  className="h-9 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200 sm:w-[220px]"
+                  className="h-9 min-w-0 rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200 md:w-[220px]"
                 >
                   <option value="all">All tasks</option>
                   {filtered.map((task) => (
@@ -6519,12 +8401,20 @@ useEffect(() => {
                   ))}
                 </select>
 
-                <div className="inline-flex h-9 rounded-xl border border-slate-200 bg-white p-1">
+                <button
+                  type="button"
+                  onClick={() => openLogTime()}
+                  className="h-9 rounded-xl bg-slate-900 px-3 text-sm font-medium text-white hover:bg-slate-800 md:px-4"
+                >
+                  Log time
+                </button>
+
+                <div className="col-span-2 inline-flex h-9 w-full rounded-xl border border-slate-200 bg-white p-1 md:col-span-1 md:w-auto">
                   <button
                     type="button"
                     onClick={() => moveLoggerSelectedRange(-1)}
                     disabled={loggerRangeMode === "custom"}
-                    className="rounded-lg px-2.5 text-sm text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
+                    className="flex-1 rounded-lg px-2.5 text-sm text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300 md:flex-none"
                     aria-label="Previous Logger range"
                   >
                     &lt;
@@ -6532,7 +8422,7 @@ useEffect(() => {
                   <button
                     type="button"
                     onClick={returnLoggerRangeToToday}
-                    className="rounded-lg px-3 text-sm text-slate-600 hover:bg-slate-50"
+                    className="flex-1 rounded-lg px-3 text-sm text-slate-600 hover:bg-slate-50 md:flex-none"
                   >
                     Today
                   </button>
@@ -6540,20 +8430,13 @@ useEffect(() => {
                     type="button"
                     onClick={() => moveLoggerSelectedRange(1)}
                     disabled={loggerRangeMode === "custom"}
-                    className="rounded-lg px-2.5 text-sm text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
+                    className="flex-1 rounded-lg px-2.5 text-sm text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300 md:flex-none"
                     aria-label="Next Logger range"
                   >
                     &gt;
                   </button>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => openLogTime()}
-                  className="h-9 rounded-xl bg-slate-900 px-4 text-sm font-medium text-white hover:bg-slate-800"
-                >
-                  Log time
-                </button>
                 </div>
               </div>
 
@@ -6595,55 +8478,51 @@ useEffect(() => {
                 </label>
               </div>
             ) : null}
+
             </div>
 
-            <div className="mt-3 grid grid-cols-2 overflow-hidden rounded-[18px] border border-slate-200/70 bg-white lg:grid-cols-4">
-              <div className="border-b border-r border-slate-100/80 p-2.5 sm:p-3 lg:border-b-0">
-                <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">Total hours</div>
-                <div className="mt-2 text-lg font-semibold tabular-nums text-slate-900">
-                  {formatLoggedTime(loggerRangeSummary.totalHours)}
-                </div>
-              </div>
-              <div className="border-b border-slate-100/80 p-2.5 sm:p-3 lg:border-r lg:border-b-0">
-                <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">
-                  Avg / active day
-                </div>
-                <div className="mt-2 text-lg font-semibold tabular-nums text-slate-900">
+            <div className="order-5 mt-3 rounded-2xl border border-slate-200/70 bg-white px-3 py-2.5 text-sm text-slate-600 md:order-5">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="font-semibold tabular-nums text-slate-900">
+                  {formatLoggedTime(loggerRangeSummary.totalHours)} worked
+                </span>
+                <span className="text-slate-300">·</span>
+                <span>
                   {loggerRangeSummary.activeDayCount
                     ? formatLoggedTime(loggerRangeSummary.averageHoursPerActiveDay)
-                  : "—"}
-                </div>
+                    : "0m"}{" "}
+                  / active day
+                </span>
+                <span className="text-slate-300">·</span>
+                <span>
+                  {loggerRangeSummary.activeDayCount} active day
+                  {loggerRangeSummary.activeDayCount === 1 ? "" : "s"}
+                </span>
               </div>
-              <div className="border-r border-slate-100/80 p-2.5 sm:p-3 lg:border-b-0">
-                <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">
-                  Most worked task
-                </div>
-                <div className="mt-2 truncate text-sm font-semibold text-slate-900">
-                  {loggerRangeSummary.mostWorkedTask?.title ?? "—"}
-                </div>
-                {loggerRangeSummary.mostWorkedTask ? (
-                  <div className="mt-1 text-xs tabular-nums text-slate-500">
-                    {formatLoggedTime(loggerRangeSummary.mostWorkedTask.hours)}
-                  </div>
-                ) : null}
-              </div>
-              <div className="p-2.5 sm:p-3">
-                <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">
-                  Most worked category
-                </div>
-                <div className="mt-2 truncate text-sm font-semibold text-slate-900">
-                  {loggerRangeSummary.mostWorkedCategory?.label ?? "—"}
-                </div>
-                {loggerRangeSummary.mostWorkedCategory ? (
-                  <div className="mt-1 text-xs tabular-nums text-slate-500">
-                    {formatLoggedTime(loggerRangeSummary.mostWorkedCategory.hours)}
-                  </div>
-                ) : null}
+              <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-500">
+                <span>
+                  Top task:{" "}
+                  <span className="text-slate-700">
+                    {loggerRangeSummary.mostWorkedTask?.title ?? "—"}
+                  </span>
+                </span>
+                <span>
+                  Top category:{" "}
+                  <span className="text-slate-700">
+                    {loggerRangeSummary.mostWorkedCategory?.label ?? "—"}
+                  </span>
+                </span>
               </div>
             </div>
 
+            {loggerActionError ? (
+              <div className="order-2 mt-3 rounded-xl border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700 md:order-2">
+                {loggerActionError}
+              </div>
+            ) : null}
+
             {openTimeLogs.length ? (
-              <div className="mt-3 rounded-[18px] border border-cyan-100 bg-cyan-50/40 px-3 py-3">
+              <div className="order-3 mt-3 rounded-[18px] border border-cyan-100 bg-cyan-50/35 px-2.5 py-2.5 md:order-3 md:px-3 md:py-3">
                 <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.14em] text-cyan-700/70">
                   Open sessions
                 </div>
@@ -6651,7 +8530,7 @@ useEffect(() => {
                   {openTimeLogs.map((log) => (
                     <div
                       key={log.id}
-                      className="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-white/80 px-3 py-2 text-sm"
+                      className="grid gap-2 rounded-2xl bg-white/80 px-3 py-2 text-sm sm:flex sm:flex-wrap sm:items-center sm:justify-between"
                     >
                       <div className="flex min-w-0 items-center gap-2">
                         <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white text-cyan-700">
@@ -6666,24 +8545,265 @@ useEffect(() => {
                           </div>
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => openLogTime(log.taskId, log.date, log)}
-                        className="rounded-full border border-cyan-100 bg-white px-3 py-1.5 text-xs font-medium text-cyan-700 hover:bg-cyan-50"
-                      >
-                        Add end time
-                      </button>
+                      <div className="grid grid-cols-3 gap-1.5 sm:flex sm:items-center">
+                        <button
+                          type="button"
+                          onClick={() => endOpenTimeLogNow(log)}
+                          disabled={endingOpenLogId === log.id}
+                          className="rounded-full bg-cyan-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-cyan-300"
+                        >
+                          {endingOpenLogId === log.id ? "Ending" : "End now"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openLogTime(log.taskId, log.date, log)}
+                          className="rounded-full border border-cyan-100 bg-white px-3 py-1.5 text-xs font-medium text-cyan-700 hover:bg-cyan-50"
+                        >
+                          Adjust
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => deleteTimeLog(log.id)}
+                          disabled={deletingTimeLogId === log.id}
+                          className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-400 hover:bg-slate-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {deletingTimeLogId === log.id ? "Deleting" : "Delete"}
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
               </div>
             ) : null}
 
-            {loggerRangeMode === "year" ? (
-              <div className="border-b border-slate-100 px-4 py-8 text-center text-sm text-slate-400">
-                Detailed daily view is available in Week, Month or Custom.
+            {loggerRangeMode === "day" ? (
+              <section className="order-2 mt-3 rounded-[18px] border border-slate-200/70 bg-white p-3 sm:p-4 md:order-2">
+                <div className="flex items-baseline justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-slate-900">Temporal map</div>
+                    <div className="mt-0.5 text-xs text-slate-400">
+                      Work logged chronologically by time of day.
+                    </div>
+                  </div>
+                  <div className="text-xs font-medium text-slate-500">{formatLoggerDate(loggerDateRange.start)}</div>
+                </div>
+
+                <div className="mt-4 grid gap-4">
+                  {LOGGER_TIME_OF_DAY_BUCKETS.map((bucket) => {
+                    const rows = dayTemporalRows.exactByBucket[bucket.id] ?? [];
+                    return (
+                      <div key={`day-temporal-${bucket.id}`} className="grid gap-2 sm:grid-cols-[92px_1fr]">
+                        <div className="pt-1 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+                          {bucket.label}
+                        </div>
+                        <div className="grid gap-2">
+                          {rows.length ? (
+                            rows.map((row) => renderTemporalLogButton(row))
+                          ) : (
+                            <div className="rounded-2xl border border-dashed border-slate-100 px-3 py-2 text-xs text-slate-300">
+                              No timed logs
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {dayTemporalRows.unscheduled.length ? (
+                    <div className="grid gap-2 border-t border-slate-100 pt-4 sm:grid-cols-[92px_1fr]">
+                      <div className="pt-1 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+                        Unscheduled
+                      </div>
+                      <div className="grid gap-2">
+                        {dayTemporalRows.unscheduled.map((row) => renderTemporalLogButton(row))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {!temporalLogRows.some((row) => row.log.date === loggerDateRange.start) ? (
+                    <div className="rounded-2xl border border-dashed border-slate-200 px-3 py-6 text-center text-sm text-slate-400">
+                      No closed time logs for this day.
+                    </div>
+                  ) : null}
+                </div>
+              </section>
+            ) : null}
+
+            {loggerRangeMode === "week" ? (
+              <section className="order-2 mt-3 rounded-[18px] border border-slate-200/70 bg-white p-3 sm:p-4 md:order-2">
+                <div className="flex items-baseline justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-slate-900">Temporal map</div>
+                    <div className="mt-0.5 text-xs text-slate-400">
+                      Work grouped by weekday and time of day.
+                    </div>
+                  </div>
+                  <div className="text-xs font-medium text-slate-500">{loggerPeriodLabel}</div>
+                </div>
+
+                <div className="mt-4 grid gap-3 md:hidden">
+                  {weekTemporalRows.days.map((day) => {
+                    const hasLogs =
+                      LOGGER_TIME_OF_DAY_BUCKETS.some((bucket) =>
+                        Boolean(weekTemporalRows.exactByBucketAndDay[bucket.id]?.[day]?.length)
+                      ) || Boolean(weekTemporalRows.unscheduledByDay[day]?.length);
+                    return (
+                      <div key={`week-temporal-mobile-${day}`} className="rounded-2xl border border-slate-100 bg-slate-50/60 p-2">
+                        <div className="mb-2 flex items-center justify-between gap-3 px-1">
+                          <div className="text-xs font-semibold text-slate-700">
+                            {formatLoggerWeekday(day)} {new Date(day + "T00:00:00").getDate()}
+                          </div>
+                          {day === clientToday ? (
+                            <div className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] font-semibold text-white">
+                              Today
+                            </div>
+                          ) : null}
+                        </div>
+                        {hasLogs ? (
+                          <div className="grid gap-2">
+                            {LOGGER_TIME_OF_DAY_BUCKETS.map((bucket) => {
+                              const rows = weekTemporalRows.exactByBucketAndDay[bucket.id]?.[day] ?? [];
+                              if (!rows.length) return null;
+                              return (
+                                <div key={`${day}-${bucket.id}-mobile`} className="grid gap-1.5">
+                                  <div className="px-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                                    {bucket.label}
+                                  </div>
+                                  {rows.map((row) => renderTemporalLogButton(row))}
+                                </div>
+                              );
+                            })}
+                            {(weekTemporalRows.unscheduledByDay[day] ?? []).length ? (
+                              <div className="grid gap-1.5">
+                                <div className="px-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                                  Unscheduled
+                                </div>
+                                {(weekTemporalRows.unscheduledByDay[day] ?? []).map((row) => renderTemporalLogButton(row))}
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <div className="px-1 py-3 text-sm text-slate-300">No logged work</div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-4 hidden overflow-x-auto pb-1 md:block">
+                  <div className="min-w-[920px]">
+                    <div className="grid grid-cols-[96px_repeat(7,minmax(108px,1fr))] gap-1">
+                      <div />
+                      {weekTemporalRows.days.map((day) => (
+                        <div
+                          key={`week-temporal-heading-${day}`}
+                          className={`rounded-xl px-2 py-2 text-center ${
+                            day === clientToday ? "bg-slate-100 text-slate-900" : "bg-slate-50 text-slate-500"
+                          }`}
+                        >
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">
+                            {formatLoggerWeekday(day)}
+                          </div>
+                          <div className="mt-0.5 text-sm font-semibold tabular-nums">
+                            {new Date(day + "T00:00:00").getDate()}
+                          </div>
+                        </div>
+                      ))}
+
+                      {LOGGER_TIME_OF_DAY_BUCKETS.map((bucket) => (
+                        <React.Fragment key={`week-temporal-${bucket.id}`}>
+                          <div className="px-1 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+                            {bucket.label}
+                          </div>
+                          {weekTemporalRows.days.map((day) => {
+                            const rows = weekTemporalRows.exactByBucketAndDay[bucket.id]?.[day] ?? [];
+                            return (
+                              <div
+                                key={`${bucket.id}-${day}`}
+                                className={`min-h-[84px] rounded-2xl p-1.5 ${
+                                  rows.length
+                                    ? "bg-slate-50/60"
+                                    : "border border-dashed border-slate-100/70 bg-transparent"
+                                }`}
+                              >
+                                <div className="grid gap-1.5">
+                                  {rows.map((row) => renderTemporalLogButton(row, "week"))}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </React.Fragment>
+                      ))}
+
+                      <div className="px-1 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+                        Unscheduled
+                      </div>
+                      {weekTemporalRows.days.map((day) => {
+                        const rows = weekTemporalRows.unscheduledByDay[day] ?? [];
+                        return (
+                          <div
+                            key={`unscheduled-${day}`}
+                            className={`min-h-[70px] rounded-2xl p-1.5 ${
+                              rows.length
+                                ? "bg-slate-50/60"
+                                : "border border-dashed border-slate-100/70 bg-transparent"
+                            }`}
+                          >
+                            <div className="grid gap-1.5">
+                              {rows.map((row) => renderTemporalLogButton(row, "week"))}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </section>
+            ) : null}
+
+            <section className="order-6 mt-3 overflow-hidden rounded-[18px] border border-slate-200/70 bg-white md:order-6">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-3 py-2.5">
+                <button
+                  type="button"
+                  onClick={() => setLoggerDetailsOpen((open) => !open)}
+                  className="flex items-center gap-2 text-sm font-semibold text-slate-800 hover:text-slate-950"
+                  aria-expanded={loggerDetailsOpen}
+                >
+                  <ChevronRight
+                    className={`h-4 w-4 text-slate-400 transition-transform ${
+                      loggerDetailsOpen ? "rotate-90" : ""
+                    }`}
+                    aria-hidden="true"
+                  />
+                  Detailed logs
+                </button>
+                <div className="inline-flex rounded-xl border border-slate-200 bg-white p-1">
+                  {[
+                    { id: "hours", label: "Hours" },
+                    { id: "times", label: "Times" },
+                  ].map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => setLoggerValueMode(option.id as LoggerValueMode)}
+                      className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
+                        loggerValueMode === option.id
+                          ? "bg-slate-900 text-white"
+                          : "text-slate-500 hover:bg-slate-50"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
               </div>
-            ) : (
+
+              {loggerDetailsOpen ? (
+                loggerRangeMode === "year" ? (
+                  <div className="px-4 py-8 text-center text-sm text-slate-400">
+                    Detailed daily view is available in Week, Month or Custom.
+                  </div>
+                ) : (
               <>
               <div className="mt-3 md:hidden">
                 <div className="overflow-x-auto pb-2">
@@ -6763,7 +8883,7 @@ useEffect(() => {
 
               <div
                 ref={loggerGridScrollRef}
-                className="mt-3 hidden max-w-full overflow-x-auto rounded-[18px] border border-slate-200/70 bg-white p-2 md:block"
+                className="mt-3 hidden max-w-full overflow-x-auto p-2 md:block"
               >
                 <table
                   className={`min-w-max border-separate text-sm ${
@@ -6928,37 +9048,47 @@ useEffect(() => {
                 </table>
               </div>
               </>
-            )}
+                )
+              ) : (
+                <div className="px-3 py-3 text-xs text-slate-400">
+                  Expand to inspect task-by-day logs and edit individual entries.
+                </div>
+              )}
+            </section>
 
-            <div className="space-y-4 border-t border-slate-100 px-4 py-4">
-              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="order-4 space-y-4 border-t border-slate-100 px-0 py-3 md:order-4 md:px-4 md:py-4">
+              <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white p-3 md:p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <div className="text-sm font-semibold">Daily work</div>
+                    <div className="text-sm font-semibold">Activity</div>
                   </div>
                   <div className="flex items-center gap-1 text-[11px] text-slate-500">
                     <span>Less</span>
-                    {[0, 0.5, 1.5, 3, 5].map((hours) => (
+                    {[0, 1, 2, 3, 4].map((level) => (
                       <span
-                        key={hours}
-                        className={`h-3 w-3 rounded-[3px] ${calendarCellTone(hours)}`}
-                        aria-label={`${formatLoggedTime(hours)} logged`}
+                        key={level}
+                        className={`h-3 w-3 rounded-[3px] border ${loggerActivityCellTone(activityMap.colour, level)}`}
+                        aria-label={`Activity intensity ${level}`}
                       />
                     ))}
                     <span>More</span>
                   </div>
                 </div>
 
-                <div className="mt-4 overflow-x-auto pb-1">
-                  {loggerRangeMode === "week" || (loggerRangeMode === "custom" && workCalendar.days.length <= 14) ? (
-                    <div className="flex min-w-max gap-2">
-                      {workCalendar.days.map((day) => (
-                        <div key={day.date} className="grid gap-1 text-center">
+                <div className="mt-4 max-w-full overflow-x-auto overscroll-x-contain pb-1">
+                  {activityMap.displayMode === "strip" ? (
+                    <div className="grid grid-cols-7 gap-1.5 sm:gap-2">
+                      {activityMap.days.map((day) => {
+                        const level = loggerActivityLevel(day.hours, activityMap.thresholds);
+                        return (
+                        <div key={day.date} className="grid min-w-0 gap-1 text-center">
                           <span className="text-[10px] uppercase tracking-[0.12em] text-slate-400">
                             {formatLoggerWeekday(day.date).slice(0, 3)}
                           </span>
                           <span
-                            className={`h-10 w-10 rounded-lg ${calendarCellTone(day.hours)}`}
+                            className={`mx-auto h-9 w-full max-w-11 rounded-lg border ${loggerActivityCellTone(activityMap.colour, level)} ${
+                              day.date === clientToday ? "ring-1 ring-slate-400 ring-offset-1" : ""
+                            }`}
                             title={`${formatLoggerDate(day.date)} • ${
                               day.hours > 0 ? `${formatLoggedTime(day.hours)} worked` : "No time logged"
                             }`}
@@ -6970,25 +9100,64 @@ useEffect(() => {
                             {new Date(day.date + "T00:00:00").getDate()}
                           </span>
                         </div>
-                      ))}
+                        );
+                      })}
+                    </div>
+                  ) : activityMap.displayMode === "month" ? (
+                    <div className="w-max">
+                      <div className="grid grid-cols-7 gap-1 text-center text-[10px] font-medium uppercase tracking-[0.12em] text-slate-400">
+                        {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((label) => (
+                          <div key={`logger-activity-month-heading-${label}`} className="w-6">
+                            {label.slice(0, 1)}
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-1 grid gap-1">
+                        {activityMap.weeks.map((week) => (
+                          <div key={week.weekStart} className="grid grid-cols-7 gap-1">
+                            {week.days.map((day) => {
+                              const isInRange = day.date >= activityMap.rawStart && day.date <= activityMap.end;
+                              const level = isInRange ? loggerActivityLevel(day.hours, activityMap.thresholds) : 0;
+                              return (
+                                <span
+                                  key={day.date}
+                                  className={`h-6 w-6 rounded-md border ${
+                                    isInRange
+                                      ? loggerActivityCellTone(activityMap.colour, level)
+                                      : "border-transparent bg-transparent"
+                                  } ${
+                                    isInRange && day.date === clientToday ? "ring-1 ring-slate-400 ring-offset-1" : ""
+                                  }`}
+                                  title={`${formatLoggerDate(day.date)} • ${
+                                    isInRange && day.hours > 0 ? `${formatLoggedTime(day.hours)} worked` : "No time logged"
+                                  }`}
+                                  aria-label={`${day.date}: ${
+                                    isInRange && day.hours > 0 ? `${formatLoggedTime(day.hours)} worked` : "No time logged"
+                                  }`}
+                                />
+                              );
+                            })}
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   ) : (
-                    <div className="min-w-max">
+                    <div className={activityMap.displayMode === "contribution" ? "min-w-max" : "w-full"}>
                       <div className="grid grid-cols-[28px_1fr] gap-x-2">
                         <div />
                         <div
                           className="grid h-4 text-[10px] text-slate-400"
                           style={{
-                            gridTemplateColumns: `repeat(${workCalendar.weeks.length}, ${
-                              workCalendar.compact ? "12px" : "22px"
+                            gridTemplateColumns: `repeat(${activityMap.weeks.length}, ${
+                              activityMap.compact ? "12px" : "minmax(0, 1fr)"
                             })`,
                           }}
                         >
-                          {workCalendar.weeks.map((week, index) => {
+                          {activityMap.weeks.map((week, index) => {
                             const month = new Date(week.weekStart + "T00:00:00").getMonth();
                             const previousMonth =
                               index > 0
-                                ? new Date(workCalendar.weeks[index - 1].weekStart + "T00:00:00").getMonth()
+                                ? new Date(activityMap.weeks[index - 1].weekStart + "T00:00:00").getMonth()
                                 : null;
                             return (
                               <div key={week.weekStart} className="relative">
@@ -7006,28 +9175,33 @@ useEffect(() => {
 
                         <div
                           className={`grid grid-rows-7 ${
-                            workCalendar.compact ? "gap-[3px]" : "gap-1"
+                            activityMap.compact ? "gap-[3px]" : "gap-1"
                           } pt-[3px] text-[10px] leading-3 text-slate-400`}
                         >
                           {["", "Mon", "", "Wed", "", "Fri", ""].map((label, index) => (
-                            <div key={`${label}-${index}`} className={workCalendar.compact ? "h-3" : "h-5"}>
+                            <div key={`${label}-${index}`} className={activityMap.compact ? "h-3" : "h-5"}>
                               {label}
                             </div>
                           ))}
                         </div>
-                        <div className={`flex ${workCalendar.compact ? "gap-[3px]" : "gap-1"}`}>
-                          {workCalendar.weeks.map((week) => (
+                        <div className={`flex ${activityMap.compact ? "gap-[3px]" : "gap-1"}`}>
+                          {activityMap.weeks.map((week) => (
                             <div
                               key={week.weekStart}
-                              className={`grid grid-rows-7 ${workCalendar.compact ? "gap-[3px]" : "gap-1"}`}
+                              className={`grid grid-rows-7 ${activityMap.compact ? "gap-[3px]" : "gap-1"}`}
                             >
                               {week.days.map((day) => {
-                                const isInRange = day.date >= workCalendar.rawStart && day.date <= workCalendar.end;
+                                const isInRange = day.date >= activityMap.rawStart && day.date <= activityMap.end;
+                                const level = isInRange ? loggerActivityLevel(day.hours, activityMap.thresholds) : 0;
                                 return (
                                   <span
                                     key={day.date}
-                                    className={`${workCalendar.compact ? "h-3 w-3 rounded-[3px]" : "h-5 w-5 rounded-md"} ${
-                                      isInRange ? calendarCellTone(day.hours) : "bg-transparent"
+                                    className={`border ${
+                                      activityMap.compact ? "h-3 w-3 rounded-[3px]" : "h-5 w-full rounded-md"
+                                    } ${
+                                      isInRange ? loggerActivityCellTone(activityMap.colour, level) : "border-transparent bg-transparent"
+                                    } ${
+                                      isInRange && day.date === clientToday ? "ring-1 ring-slate-400 ring-offset-1" : ""
                                     }`}
                                     title={`${formatLoggerDate(day.date)} • ${
                                       isInRange && day.hours > 0 ? `${formatLoggedTime(day.hours)} worked` : "No time logged"
@@ -7047,37 +9221,76 @@ useEffect(() => {
                 </div>
               </div>
 
-              <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                <div className="text-sm font-semibold">Most worked tasks</div>
-                <div className="mt-3 space-y-3">
-                  {topWorkedTasks.rows.length ? (
-                    topWorkedTasks.rows.map((row, index) => {
-                      const percent = topWorkedTasks.maxHours
-                        ? Math.max(4, (row.hours / topWorkedTasks.maxHours) * 100)
-                        : 0;
+              <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white p-3 md:p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-sm font-semibold">Where my time went</div>
+                  <div className="inline-flex rounded-xl border border-slate-200 bg-white p-1">
+                    {[
+                      { id: "tasks", label: "Tasks" },
+                      { id: "categories", label: "Categories" },
+                    ].map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => setLoggerBreakdownMode(option.id as LoggerBreakdownMode)}
+                        className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
+                          loggerBreakdownMode === option.id
+                            ? "bg-slate-900 text-white"
+                            : "text-slate-500 hover:bg-slate-50"
+                        }`}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
 
-                      return (
-                        <div key={row.taskId} className="grid gap-1">
-                          <div className="grid grid-cols-[28px_1fr_auto] items-baseline gap-3 text-xs">
-                            <div className="tabular-nums text-slate-400">{index + 1}</div>
-                            <div className="min-w-0">
-                              <div className="truncate font-medium text-slate-800">{row.title}</div>
-                              <div className="truncate text-[11px] text-slate-500">{row.category}</div>
+                <div className="mt-3 max-w-3xl space-y-3">
+                  {loggerBreakdown.rows.length ? (
+                    <>
+                      {(loggerBreakdownExpanded ? loggerBreakdown.rows : loggerBreakdown.rows.slice(0, 10)).map((row, index) => {
+                        const share = loggerBreakdown.totalHours > 0 ? (row.hours / loggerBreakdown.totalHours) * 100 : 0;
+                        const barPercent = loggerBreakdown.maxHours > 0 ? (row.hours / loggerBreakdown.maxHours) * 100 : 0;
+                        const tone = loggerCategoryTone(row.colour);
+                        return (
+                          <div key={row.id} className="grid gap-1.5">
+                            <div className="grid grid-cols-[24px_1fr] gap-2 text-xs sm:grid-cols-[28px_1fr_auto_auto] sm:items-baseline sm:gap-3">
+                              <div className="tabular-nums text-slate-400">{index + 1}</div>
+                              <div className="min-w-0">
+                                <div className="truncate font-medium text-slate-800">{row.title}</div>
+                                <div className="truncate text-[11px] text-slate-500">{row.subtitle}</div>
+                              </div>
+                              <div className="col-start-2 flex items-center justify-between gap-3 tabular-nums text-slate-600 sm:col-start-auto sm:block">
+                                <span>{formatDuration(row.hours)}</span>
+                                <span className="sm:hidden">{Math.round(share)}%</span>
+                              </div>
+                              <div className="hidden tabular-nums text-slate-500 sm:block">{Math.round(share)}%</div>
                             </div>
-                            <div className="tabular-nums text-slate-600">{formatDuration(row.hours)}</div>
+                            <div className="ml-8 h-2 rounded-full bg-slate-100 sm:ml-10">
+                              <div
+                                className={`h-2 rounded-full ${tone.accent}`}
+                                style={{ width: `${barPercent > 0 ? Math.max(3, barPercent) : 0}%` }}
+                              />
+                            </div>
                           </div>
-                          <div className="ml-10 h-2 rounded-full bg-slate-100">
-                            <div
-                              className={`h-2 rounded-full ${courseBarClass(row.courseId)}`}
-                              style={{ width: `${percent}%` }}
-                            />
-                          </div>
-                        </div>
-                      );
-                    })
+                        );
+                      })}
+
+                      {loggerBreakdown.rows.length > 10 ? (
+                        <button
+                          type="button"
+                          onClick={() => setLoggerBreakdownExpanded((expanded) => !expanded)}
+                          className="rounded-full px-2 py-1 text-xs font-medium text-slate-500 hover:bg-slate-50 hover:text-slate-700"
+                        >
+                          {loggerBreakdownExpanded
+                            ? "Show less"
+                            : `Show ${loggerBreakdown.rows.length - 10} more`}
+                        </button>
+                      ) : null}
+                    </>
                   ) : (
                     <div className="rounded-xl border border-dashed border-slate-200 px-3 py-4 text-sm text-slate-400">
-                      No logged task activity yet.
+                      No logged time in this period.
                     </div>
                   )}
                 </div>
@@ -7356,6 +9569,7 @@ useEffect(() => {
         )}
 
         {/* Keyboard reminder */}
+        {mode !== "meds" ? (
         <div className="mt-10 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-600">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div>
@@ -7399,8 +9613,503 @@ useEffect(() => {
             </div>
           </div>
         </div>
+        ) : null}
         </div>
       </main>
+
+      {caffeineSheetOpen ? (
+        <div className="fixed inset-0 z-50 flex items-end justify-center px-3 sm:px-4">
+          <div className="absolute inset-0 bg-slate-950/45 backdrop-blur-[1px]" onClick={() => !medsSaving && setCaffeineSheetOpen(false)} aria-hidden="true" />
+          <div className="relative mb-3 flex max-h-[88vh] w-full max-w-[430px] flex-col overflow-hidden rounded-t-[28px] rounded-b-[24px] border border-slate-200 bg-white shadow-2xl">
+            <div className="mx-auto mt-3 h-1.5 w-12 rounded-full bg-slate-300" />
+            <div className="flex items-center justify-between px-5 pb-3 pt-5">
+              <div className="text-xl font-semibold tracking-tight text-slate-950">Log caffeine</div>
+              <button
+                type="button"
+                onClick={() => setCaffeineSheetOpen(false)}
+                disabled={medsSaving}
+                className="grid h-10 w-10 place-items-center rounded-full bg-slate-50 text-slate-700 disabled:opacity-50"
+                aria-label="Close caffeine logger"
+              >
+                <X className="h-5 w-5" aria-hidden />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto px-5 pb-5">
+              {medsError ? (
+                <div className="mb-4 rounded-2xl border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                  {medsError}
+                </div>
+              ) : null}
+
+              <div className="grid gap-5">
+                <Field label="Drink type">
+                  <div className="grid grid-cols-3 gap-2">
+                    {CAFFEINE_DRINK_DEFAULTS.map((drink) => (
+                      <button
+                        key={drink.id}
+                        type="button"
+                        onClick={() => applyCaffeineDrinkDefaults(drink.id)}
+                        className={`grid min-h-[74px] place-items-center gap-1 rounded-[16px] border px-2 py-2 text-center text-[12px] font-medium ${
+                          caffeineDrinkId === drink.id
+                            ? "border-amber-300 bg-amber-50 text-slate-950"
+                            : "border-slate-200 bg-white text-slate-700"
+                        }`}
+                      >
+                        <Coffee className="h-5 w-5" aria-hidden />
+                        <span>{drink.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </Field>
+
+                <Field label="Size">
+                  <div className="grid grid-cols-3 gap-2">
+                    {(["S", "M", "L"] as const).map((size) => (
+                      <button
+                        key={size}
+                        type="button"
+                        onClick={() => {
+                          setCaffeineSize(size);
+                          applyCaffeineDrinkDefaults(caffeineDrinkId, size);
+                        }}
+                        className={`h-12 rounded-[16px] border text-sm font-semibold ${
+                          caffeineSize === size
+                            ? "border-slate-950 bg-slate-950 text-white"
+                            : "border-slate-200 bg-white text-slate-600"
+                        }`}
+                      >
+                        {size}
+                      </button>
+                    ))}
+                  </div>
+                </Field>
+
+                <div className="border-t border-slate-100 pt-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <div className="text-base font-semibold text-slate-950">Estimated caffeine</div>
+                      <div className="mt-1 text-xs text-slate-500">Editable estimate. Coffee varies a lot.</div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg font-semibold tabular-nums text-slate-950">~</span>
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={caffeineMg}
+                        onChange={(e) => setCaffeineMg(e.target.value)}
+                        className="h-10 w-20 rounded-[14px] border border-slate-200 bg-white px-2 text-right text-lg font-semibold tabular-nums outline-none focus:ring-2 focus:ring-slate-200"
+                      />
+                      <span className="text-lg font-semibold text-slate-950">mg</span>
+                    </div>
+                  </div>
+                </div>
+
+                <Field label="Time">
+                  <div className="grid grid-cols-[1fr_auto] gap-2">
+                    {caffeineWhenMode === "manual" ? (
+                      <div className="grid grid-cols-2 gap-2">
+                        <input
+                          type="date"
+                          value={caffeineDate}
+                          onChange={(e) => setCaffeineDate(e.target.value)}
+                          className="h-12 min-w-0 rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                        />
+                        <input
+                          type="time"
+                          value={caffeineTime}
+                          onChange={(e) => setCaffeineTime(e.target.value)}
+                          className="h-12 min-w-0 rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                        />
+                      </div>
+                    ) : (
+                      <div className="flex h-12 items-center rounded-[16px] border border-slate-200 bg-white px-3 text-sm font-medium text-slate-800">
+                        {new Intl.DateTimeFormat("en", { weekday: "short", hour: "numeric", minute: "2-digit" }).format(new Date())}
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setCaffeineWhenMode((mode) => (mode === "now" ? "manual" : "now"))}
+                      className="flex h-12 items-center gap-2 rounded-[16px] border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700"
+                    >
+                      <Clock className="h-4 w-4" aria-hidden />
+                      {caffeineWhenMode === "now" ? "Choose" : "Now"}
+                    </button>
+                  </div>
+                </Field>
+
+                <Field label="Notes (optional)">
+                  <input
+                    value={caffeineNote}
+                    onChange={(e) => setCaffeineNote(e.target.value)}
+                    className="h-12 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                    placeholder="E.g. oat milk, extra shot..."
+                  />
+                </Field>
+
+                <button
+                  type="button"
+                  onClick={submitCaffeineEntry}
+                  disabled={medsSaving}
+                  className="h-14 rounded-[18px] bg-slate-950 text-base font-semibold text-white shadow-sm disabled:bg-slate-300"
+                >
+                  {medsSaving ? "Logging caffeine" : "Log caffeine"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Medication dose modal */}
+      <Modal
+        open={medsModalMode === "dose"}
+        title={editingMedicationEntry?.entryType === "input" ? "Edit dose" : "Add dose"}
+        onClose={closeMedsModal}
+      >
+        <div className="grid gap-4">
+          {medsError ? (
+            <div className="rounded-2xl border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+              {medsError}
+            </div>
+          ) : null}
+
+          <Field label="What">
+            <div className="grid grid-cols-2 gap-2">
+              {MEDICATION_OPTIONS.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => {
+                    setDoseMedicationKind(option.id);
+                    setDoseUnit(option.unit);
+                  }}
+                  className={`flex h-12 items-center justify-center gap-2 rounded-[18px] border text-sm font-medium ${
+                    doseMedicationKind === option.id
+                      ? "border-slate-900 bg-slate-900 text-white"
+                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                  }`}
+                >
+                  {option.id === "Coffee" ? <Coffee className="h-4 w-4" aria-hidden /> : <PillIcon className="h-4 w-4" aria-hidden />}
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </Field>
+
+          {doseMedicationKind === "Custom" ? (
+            <Field label="Custom name">
+              <input
+                value={doseCustomMedication}
+                onChange={(e) => setDoseCustomMedication(e.target.value)}
+                className="h-11 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                placeholder="Name"
+              />
+            </Field>
+          ) : null}
+
+          <div className="grid grid-cols-[1fr_96px] gap-3">
+            <Field label="Amount">
+              <input
+                type="number"
+                min="0"
+                step="any"
+                value={doseAmount}
+                onChange={(e) => setDoseAmount(e.target.value)}
+                className="h-11 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                placeholder="30"
+              />
+            </Field>
+            <Field label="Unit">
+              <input
+                value={doseUnit}
+                onChange={(e) => setDoseUnit(e.target.value)}
+                className="h-11 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                placeholder="mg"
+              />
+            </Field>
+          </div>
+
+          <Field label="When">
+            <div className="grid gap-2">
+              <div className="inline-flex w-fit rounded-full border border-slate-200 bg-slate-50 p-1">
+                {[
+                  { id: "now", label: "Now" },
+                  { id: "manual", label: "Choose time" },
+                ].map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => setDoseWhenMode(option.id as "now" | "manual")}
+                    className={`rounded-full px-3 py-1.5 text-sm font-medium ${
+                      doseWhenMode === option.id ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              {doseWhenMode === "manual" ? (
+                <div className="grid grid-cols-2 gap-3">
+                  <input
+                    type="date"
+                    value={doseDate}
+                    onChange={(e) => setDoseDate(e.target.value)}
+                    className="h-11 rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                  <input
+                    type="time"
+                    value={doseTime}
+                    onChange={(e) => setDoseTime(e.target.value)}
+                    className="h-11 rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </div>
+              ) : null}
+            </div>
+          </Field>
+
+          <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
+            <button
+              type="button"
+              onClick={closeMedsModal}
+              disabled={medsSaving}
+              className="rounded-full border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={submitDose}
+              disabled={medsSaving}
+              className="rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:bg-slate-300"
+            >
+              {medsSaving ? "Saving" : editingMedicationEntry?.entryType === "input" ? "Save changes" : "Save"}
+            </button>
+          </div>
+
+          {editingMedicationEntry?.entryType === "input" ? (
+            <div className="border-t border-slate-100 pt-3">
+              {medsDeleteConfirm ? (
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <span className="text-sm text-slate-600">Delete this entry?</span>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setMedsDeleteConfirm(false)}
+                      disabled={medsSaving}
+                      className="rounded-full border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={deleteEditingMedicationEntry}
+                      disabled={medsSaving}
+                      className="rounded-full bg-rose-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-rose-700 disabled:bg-rose-200"
+                    >
+                      {medsSaving ? "Deleting" : "Delete"}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setMedsDeleteConfirm(true)}
+                  disabled={medsSaving}
+                  className="text-sm font-medium text-rose-600 hover:text-rose-700 disabled:opacity-50"
+                >
+                  Delete entry
+                </button>
+              )}
+            </div>
+          ) : null}
+        </div>
+      </Modal>
+
+      {/* Medication feeling modal */}
+      <Modal
+        open={medsModalMode === "feeling"}
+        title={editingMedicationEntry?.entryType === "observation" ? "Edit feeling" : "Add feeling"}
+        onClose={closeMedsModal}
+      >
+        <div className="grid gap-4">
+          {medsError ? (
+            <div className="rounded-2xl border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+              {medsError}
+            </div>
+          ) : null}
+
+          <Field label="Feeling">
+            <div className="grid grid-cols-2 gap-2">
+              {FEELING_OPTIONS.map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  onClick={() => setFeelingChoice(option)}
+                  className={`min-h-11 rounded-[18px] border px-3 text-sm font-medium ${
+                    feelingChoice === option
+                      ? "border-slate-900 bg-slate-900 text-white"
+                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                  }`}
+                >
+                  {option}
+                </button>
+              ))}
+            </div>
+          </Field>
+
+          {feelingChoice === "+ Custom" ? (
+            <Field label="Custom feeling">
+              <input
+                value={feelingCustom}
+                onChange={(e) => setFeelingCustom(e.target.value)}
+                className="h-11 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                placeholder="Short label"
+              />
+            </Field>
+          ) : null}
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            <Field label="Valence">
+              <select
+                value={feelingValence}
+                onChange={(e) => setFeelingValence(e.target.value as FeelingValence | "")}
+                className="h-11 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+              >
+                <option value="">Optional</option>
+                {FEELING_VALENCES.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Intensity">
+              <select
+                value={feelingIntensity}
+                onChange={(e) => setFeelingIntensity(e.target.value as FeelingIntensity | "")}
+                className="h-11 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+              >
+                <option value="">Optional</option>
+                {FEELING_INTENSITIES.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Part of day (optional)">
+              <select
+                value={feelingDaypart}
+                onChange={(e) => setFeelingDaypart(e.target.value as FeelingDaypart | "")}
+                className="h-11 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+              >
+                <option value="">Optional</option>
+                {FEELING_DAYPARTS.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
+
+          <Field label="Timestamp">
+            <div className="grid gap-2">
+              <div className="inline-flex w-fit rounded-full border border-slate-200 bg-slate-50 p-1">
+                {[
+                  { id: "now", label: "Now" },
+                  { id: "manual", label: "Choose time" },
+                ].map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => setFeelingWhenMode(option.id as "now" | "manual")}
+                    className={`rounded-full px-3 py-1.5 text-sm font-medium ${
+                      feelingWhenMode === option.id ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              {feelingWhenMode === "manual" ? (
+                <div className="grid grid-cols-2 gap-3">
+                  <input
+                    type="date"
+                    value={feelingDate}
+                    onChange={(e) => setFeelingDate(e.target.value)}
+                    className="h-11 rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                  <input
+                    type="time"
+                    value={feelingTime}
+                    onChange={(e) => setFeelingTime(e.target.value)}
+                    className="h-11 rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </div>
+              ) : null}
+            </div>
+          </Field>
+
+          <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
+            <button
+              type="button"
+              onClick={closeMedsModal}
+              disabled={medsSaving}
+              className="rounded-full border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={submitFeeling}
+              disabled={medsSaving}
+              className="rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:bg-slate-300"
+            >
+              {medsSaving ? "Saving" : editingMedicationEntry?.entryType === "observation" ? "Save changes" : "Save"}
+            </button>
+          </div>
+
+          {editingMedicationEntry?.entryType === "observation" ? (
+            <div className="border-t border-slate-100 pt-3">
+              {medsDeleteConfirm ? (
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <span className="text-sm text-slate-600">Delete this entry?</span>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setMedsDeleteConfirm(false)}
+                      disabled={medsSaving}
+                      className="rounded-full border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={deleteEditingMedicationEntry}
+                      disabled={medsSaving}
+                      className="rounded-full bg-rose-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-rose-700 disabled:bg-rose-200"
+                    >
+                      {medsSaving ? "Deleting" : "Delete"}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setMedsDeleteConfirm(true)}
+                  disabled={medsSaving}
+                  className="text-sm font-medium text-rose-600 hover:text-rose-700 disabled:opacity-50"
+                >
+                  Delete entry
+                </button>
+              )}
+            </div>
+          ) : null}
+        </div>
+      </Modal>
 
       {/* Smart schedule import modal */}
       <Modal open={smartImportOpen} title="Smart schedule import" onClose={closeSmartImport}>
@@ -7709,56 +10418,65 @@ useEffect(() => {
         title={plannerEventDraft ? (plannerEventModalMode === "edit" ? "Edit event" : "New event") : "New event"}
         onClose={closePlannerEventModal}
       >
-        {!plannerEventDraft ? (
-          <div className="grid gap-2 sm:grid-cols-2">
-            {PLANNER_EVENT_TYPES.map((option) => (
-              <button
-                key={option.id}
-                type="button"
-                onClick={() => startPlannerEventCreate(option.id)}
-                className={`flex items-center gap-2 rounded-2xl border px-3 py-3 text-left text-sm font-medium transition-colors hover:bg-slate-50 ${plannerEventTone(
-                  option.id
-                )}`}
-              >
-                <PlannerEventTypeIcon eventType={option.id} />
-                {option.label}
-              </button>
-            ))}
-          </div>
-        ) : (
+        {plannerEventDraft ? (
           <div className="grid gap-3">
-            <div
-              className={`flex w-fit items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium ${plannerEventTone(
-                plannerEventDraft.eventType
-              )}`}
-            >
-              <PlannerEventTypeIcon eventType={plannerEventDraft.eventType} />
-              {PLANNER_EVENT_TYPES.find((option) => option.id === plannerEventDraft.eventType)?.label ?? "Event"}
-            </div>
-
-            <Field label="Type">
-              <select
-                value={plannerEventDraft.eventType}
-                onChange={(e) => {
-                  const eventType = e.target.value as CalendarEventType;
-                  setPlannerEventDraft({
-                    ...plannerEventDraft,
-                    eventType,
-                    allDay: eventType === "milestone" ? true : plannerEventDraft.allDay,
-                    repeat: eventType === "class" ? plannerEventDraft.repeat : "none",
-                  });
-                }}
-                className={`h-10 w-full rounded-[16px] border bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200 ${plannerEventTone(
+            <div className="grid gap-2">
+              <button
+                type="button"
+                onClick={() => setPlannerEventTypeChooserOpen((open) => !open)}
+                className={`flex w-fit items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${plannerEventTone(
                   plannerEventDraft.eventType
                 )}`}
               >
-                {PLANNER_EVENT_TYPES.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+                <PlannerEventTypeIcon eventType={plannerEventDraft.eventType} />
+                <span>{plannerEventTypeLabel(plannerEventDraft.eventType)}</span>
+                <ChevronRight
+                  className={`h-3.5 w-3.5 transition-transform ${plannerEventTypeChooserOpen ? "rotate-90" : ""}`}
+                  aria-hidden="true"
+                />
+              </button>
+
+              {plannerEventTypeChooserOpen ? (
+                <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+                  {plannerEventTypeOptionsForDraft(plannerEventDraft).map((option) => {
+                    const selected = plannerEventDraft.eventType === option.id;
+                    return (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => {
+                          setPlannerEventDraft(plannerDraftWithEventType(plannerEventDraft, option.id));
+                          setPlannerEventTypeChooserOpen(false);
+                        }}
+                        className={`flex min-w-0 items-center gap-1.5 rounded-[14px] border px-2.5 py-2 text-left text-xs font-medium transition-colors ${
+                          selected
+                            ? plannerEventTone(option.id)
+                            : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                        }`}
+                      >
+                        <PlannerEventTypeIcon eventType={option.id} />
+                        <span className="truncate">{option.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+
+            <Field label="Title">
+              <input
+                value={plannerEventDraft.title}
+                onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, title: e.target.value })}
+                className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                placeholder="Event title"
+              />
             </Field>
+
+            {plannerEventError ? (
+              <div className="rounded-2xl border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                {plannerEventError}
+              </div>
+            ) : null}
 
             {plannerEventDraft.recurrenceParentId ? (
               <Field label="Apply changes to">
@@ -7790,74 +10508,32 @@ useEffect(() => {
               </Field>
             ) : null}
 
-            {plannerEventError ? (
-              <div className="rounded-2xl border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700">
-                {plannerEventError}
+            <Field label="When">
+              <div className="flex flex-wrap gap-1.5">
+                {PLANNER_WHEN_OPTIONS.map((option) => {
+                  const selected = plannerWhenChoiceFromDraft(plannerEventDraft) === option.id;
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => setPlannerEventDraft(plannerDraftWithWhenChoice(plannerEventDraft, option.id))}
+                      disabled={plannerEventDraft.eventType === "milestone" && option.id !== "all_day"}
+                      className={`rounded-full border px-2.5 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                        selected
+                          ? "border-slate-900 bg-slate-900 text-white"
+                          : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
               </div>
-            ) : null}
-
-            <Field label="Title">
-              <input
-                value={plannerEventDraft.title}
-                onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, title: e.target.value })}
-                className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                placeholder="Event title"
-              />
             </Field>
 
-            {plannerEventDraft.eventType === "work" ? (
-              <>
-                <Field label="Tracker task">
-                  <select
-                    value={plannerEventDraft.taskId}
-                    onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, taskId: e.target.value })}
-                    className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                  >
-                    <option value="">No linked task</option>
-                    {plannerTaskOptions.map((task) => (
-                      <option key={task.id} value={task.id}>
-                        {task.title}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-
-                <Field label="Focus">
-                  <input
-                    value={plannerEventDraft.description}
-                    onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, description: e.target.value })}
-                    className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                    placeholder="Optional focus"
-                  />
-                </Field>
-              </>
-            ) : null}
-
-            {plannerEventDraft.eventType === "meeting" ? (
-              <Field label="Who">
-                <input
-                  value={plannerEventDraft.who}
-                  onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, who: e.target.value })}
-                  className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                />
-              </Field>
-            ) : null}
-
-            {plannerEventDraft.eventType === "deadline" || plannerEventDraft.eventType === "personal" ? (
-              <label className="flex w-fit items-center gap-2 text-sm text-slate-600">
-                <input
-                  type="checkbox"
-                  checked={plannerEventDraft.allDay}
-                  onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, allDay: e.target.checked })}
-                  className="h-4 w-4 rounded border-slate-300"
-                />
-                All day
-              </label>
-            ) : null}
-
-            {plannerEventDraft.eventType === "travel" ? (
+            {plannerDraftShowsEndDate ? (
               <div className="grid gap-3 sm:grid-cols-2">
-                <Field label="Start date">
+                <Field label={plannerEventDraft.eventType === "travel" || plannerEventDraft.allDay ? "Start date" : "Date"}>
                   <input
                     type="date"
                     value={plannerEventDraft.date}
@@ -7877,149 +10553,157 @@ useEffect(() => {
                     type="date"
                     value={plannerEventDraft.endDate}
                     min={plannerEventDraft.date}
-                    onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, endDate: e.target.value })}
+                    onChange={(e) =>
+                      setPlannerEventDraft({
+                        ...plannerEventDraft,
+                        endDate: e.target.value < plannerEventDraft.date ? plannerEventDraft.date : e.target.value,
+                      })
+                    }
                     className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                   />
                 </Field>
               </div>
             ) : (
-              <Field label={plannerEventDraft.allDay ? "Date" : "Date"}>
-                <input
-                  type="date"
-                  value={plannerEventDraft.date}
-                  onChange={(e) => {
-                    const date = e.target.value;
-                    setPlannerEventDraft({
-                      ...plannerEventDraft,
-                      date,
-                      endDate: date,
-                      recurrenceStartDate:
-                        plannerEventDraft.eventType === "class" && plannerEventDraft.repeat === "weekly"
-                          ? date
-                          : plannerEventDraft.recurrenceStartDate,
-                      recurrenceEndDate:
-                        plannerEventDraft.eventType === "class" &&
-                        plannerEventDraft.repeat === "weekly" &&
-                        plannerEventDraft.recurrenceEndDate < date
-                          ? date
-                          : plannerEventDraft.recurrenceEndDate,
-                      recurrenceWeekday:
-                        plannerEventDraft.eventType === "class" && isValidISODate(date)
-                          ? isoWeekday(date)
-                          : plannerEventDraft.recurrenceWeekday,
-                    });
-                  }}
-                  className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                />
-              </Field>
-            )}
-
-            {!plannerEventDraft.allDay ? (
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field label={plannerEventDraft.eventType === "deadline" ? "Time" : "Start time"}>
+              <div className="grid gap-2">
+                <Field label="Date">
                   <input
-                    type="time"
-                    value={plannerEventDraft.startTime}
-                    onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, startTime: e.target.value })}
-                    className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                  />
-                </Field>
-                {plannerEventDraft.eventType !== "deadline" ? (
-                  <Field label="End time">
-                    <input
-                      type="time"
-                      value={plannerEventDraft.endTime}
-                      onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, endTime: e.target.value })}
-                      className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                    />
-                  </Field>
-                ) : null}
-              </div>
-            ) : null}
-
-            {plannerEventDraft.eventType === "class" ? (
-              <div className="grid gap-3 rounded-[18px] border border-slate-100 bg-slate-50/60 p-3">
-                <Field label="Repeat">
-                  <select
-                    value={plannerEventDraft.repeat}
+                    type="date"
+                    value={plannerEventDraft.date}
                     onChange={(e) => {
-                      const repeat = e.target.value as PlannerEventDraft["repeat"];
+                      const date = e.target.value;
                       setPlannerEventDraft({
                         ...plannerEventDraft,
-                        repeat,
-                        recurrenceWeekday: isoWeekday(plannerEventDraft.date),
-                        recurrenceStartDate: plannerEventDraft.date,
+                        date,
+                        endDate: plannerEventDraft.endDate < date ? date : plannerEventDraft.endDate,
+                        recurrenceStartDate:
+                          plannerEventDraft.eventType === "class" && plannerEventDraft.repeat === "weekly"
+                            ? date
+                            : plannerEventDraft.recurrenceStartDate,
                         recurrenceEndDate:
-                          plannerEventDraft.recurrenceEndDate < plannerEventDraft.date
-                            ? plannerEventDraft.date
+                          plannerEventDraft.eventType === "class" &&
+                          plannerEventDraft.repeat === "weekly" &&
+                          plannerEventDraft.recurrenceEndDate < date
+                            ? date
                             : plannerEventDraft.recurrenceEndDate,
+                        recurrenceWeekday:
+                          plannerEventDraft.eventType === "class" && isValidISODate(date)
+                            ? isoWeekday(date)
+                            : plannerEventDraft.recurrenceWeekday,
                       });
                     }}
                     className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                  >
-                    <option value="none">Does not repeat</option>
-                    <option value="weekly">Weekly</option>
-                  </select>
+                  />
                 </Field>
-
-                {plannerEventDraft.repeat === "weekly" ? (
-                  <div className="grid gap-3 sm:grid-cols-3">
-                    <Field label="Weekday">
-                      <select
-                        value={plannerEventDraft.recurrenceWeekday}
-                        onChange={(e) =>
-                          setPlannerEventDraft({
-                            ...plannerEventDraft,
-                            recurrenceWeekday: Number(e.target.value),
-                          })
-                        }
-                        className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                      >
-                        {PLANNER_WEEKDAY_OPTIONS.map((option) => (
-                          <option key={option.id} value={option.id}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-                    </Field>
-                    <Field label="Series start">
-                      <input
-                        type="date"
-                        value={plannerEventDraft.recurrenceStartDate}
-                        onChange={(e) => {
-                          const recurrenceStartDate = e.target.value;
-                          setPlannerEventDraft({
-                            ...plannerEventDraft,
-                            recurrenceStartDate,
-                            recurrenceEndDate:
-                              plannerEventDraft.recurrenceEndDate < recurrenceStartDate
-                                ? recurrenceStartDate
-                                : plannerEventDraft.recurrenceEndDate,
-                          });
-                        }}
-                        className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                      />
-                    </Field>
-                    <Field label="Series end">
-                      <input
-                        type="date"
-                        value={plannerEventDraft.recurrenceEndDate}
-                        min={plannerEventDraft.recurrenceStartDate}
-                        onChange={(e) =>
-                          setPlannerEventDraft({
-                            ...plannerEventDraft,
-                            recurrenceEndDate:
-                              e.target.value < plannerEventDraft.recurrenceStartDate
-                                ? plannerEventDraft.recurrenceStartDate
-                                : e.target.value,
-                          })
-                        }
-                        className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                      />
-                    </Field>
-                  </div>
+                {(plannerEventDraft.eventType === "travel" ||
+                  plannerEventDraft.allDay ||
+                  plannerEventDraft.endDate > plannerEventDraft.date) &&
+                plannerEventDraft.eventType !== "milestone" ? (
+                  <button
+                    type="button"
+                    onClick={() => setPlannerEventDraft({ ...plannerEventDraft, endDate: addDaysISO(plannerEventDraft.date, 1) })}
+                    className="w-fit rounded-full border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-500 hover:bg-slate-50"
+                  >
+                    Add end date
+                  </button>
                 ) : null}
               </div>
+            )}
+
+            {plannerWhenChoiceFromDraft(plannerEventDraft) === "at_time" ? (
+              <Field label={plannerEventDraft.eventType === "deadline" ? "Time" : "Time"}>
+                <input
+                  type="time"
+                  value={plannerEventDraft.startTime}
+                  onChange={(e) =>
+                    setPlannerEventDraft({
+                      ...plannerEventDraft,
+                      startTime: e.target.value,
+                      daypart: "",
+                      allDay: false,
+                    })
+                  }
+                  className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                />
+              </Field>
+            ) : null}
+
+            {plannerWhenChoiceFromDraft(plannerEventDraft) === "time_range" ? (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Start time">
+                  <input
+                    type="time"
+                    value={plannerEventDraft.startTime}
+                    onChange={(e) =>
+                      setPlannerEventDraft({
+                        ...plannerEventDraft,
+                        startTime: e.target.value,
+                        daypart: "",
+                        allDay: false,
+                      })
+                    }
+                    className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </Field>
+                <Field label="End time">
+                  <input
+                    type="time"
+                    value={plannerEventDraft.endTime}
+                    onChange={(e) =>
+                      setPlannerEventDraft({
+                        ...plannerEventDraft,
+                        endTime: e.target.value,
+                        daypart: "",
+                        allDay: false,
+                      })
+                    }
+                    className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </Field>
+              </div>
+            ) : null}
+
+            {plannerEventDraft.eventType === "work" ? (
+              <Field label="Tracker task">
+                <select
+                  value={plannerEventDraft.taskId}
+                  onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, taskId: e.target.value })}
+                  className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                >
+                  <option value="">No linked task</option>
+                  {plannerTaskOptions.map((task) => (
+                    <option key={task.id} value={task.id}>
+                      {task.title}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            ) : null}
+
+            {plannerEventDraft.eventType === "deadline" ? (
+              <Field label="Linked task">
+                <select
+                  value={plannerEventDraft.taskId}
+                  onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, taskId: e.target.value })}
+                  className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                >
+                  <option value="">No linked task</option>
+                  {plannerTaskOptions.map((task) => (
+                    <option key={task.id} value={task.id}>
+                      {task.title}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            ) : null}
+
+            {plannerEventDraft.eventType === "meeting" ? (
+              <Field label="Who">
+                <input
+                  value={plannerEventDraft.who}
+                  onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, who: e.target.value })}
+                  className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                />
+              </Field>
             ) : null}
 
             {plannerEventDraft.eventType === "travel" ? (
@@ -8041,35 +10725,176 @@ useEffect(() => {
               </div>
             ) : null}
 
-            {plannerEventDraft.eventType === "class" ||
-            plannerEventDraft.eventType === "meeting" ||
-            plannerEventDraft.eventType === "personal" ? (
-              <Field label="Location">
-                <input
-                  value={plannerEventDraft.location}
-                  onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, location: e.target.value })}
-                  className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                />
+            {plannerEventDraft.eventType === "active" ? (
+              <Field label="Intensity">
+                <div className="flex flex-wrap gap-1.5">
+                  {PLANNER_ACTIVE_INTENSITY_OPTIONS.map((option) => {
+                    const selected = plannerEventDraft.activeIntensity === option.id;
+                    return (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() =>
+                          setPlannerEventDraft({
+                            ...plannerEventDraft,
+                            activeIntensity: selected ? "" : option.id,
+                          })
+                        }
+                        className={`rounded-full border px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                          selected
+                            ? "border-slate-900 bg-slate-900 text-white"
+                            : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                        }`}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
               </Field>
             ) : null}
 
-            {plannerEventDraft.eventType === "meeting" ? (
-              <Field label="Video link">
-                <input
-                  value={plannerEventDraft.videoUrl}
-                  onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, videoUrl: e.target.value })}
-                  className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                />
-              </Field>
-            ) : null}
+            <button
+              type="button"
+              onClick={() => setPlannerEventMoreDetailsOpen((open) => !open)}
+              className="flex w-fit items-center gap-1 rounded-full border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+            >
+              More details {plannerEventMoreDetailsOpen ? "▲" : "▼"}
+            </button>
 
-            <Field label="Notes">
-              <textarea
-                value={plannerEventDraft.notes}
-                onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, notes: e.target.value })}
-                className="min-h-[72px] w-full rounded-[18px] border border-slate-200 bg-white p-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-              />
-            </Field>
+            {plannerEventMoreDetailsOpen ? (
+              <div className="grid gap-3 border-t border-slate-100 pt-3">
+                {plannerEventDraft.eventType === "work" ? (
+                  <Field label="Focus">
+                    <input
+                      value={plannerEventDraft.description}
+                      onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, description: e.target.value })}
+                      className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                      placeholder="Optional focus"
+                    />
+                  </Field>
+                ) : null}
+
+                {plannerEventDraft.eventType === "class" ? (
+                  <div className="grid gap-3">
+                    <Field label="Repeat">
+                      <select
+                        value={plannerEventDraft.repeat}
+                        onChange={(e) => {
+                          const repeat = e.target.value as PlannerEventDraft["repeat"];
+                          setPlannerEventDraft({
+                            ...plannerEventDraft,
+                            repeat,
+                            recurrenceWeekday: isoWeekday(plannerEventDraft.date),
+                            recurrenceStartDate: plannerEventDraft.date,
+                            recurrenceEndDate:
+                              plannerEventDraft.recurrenceEndDate < plannerEventDraft.date
+                                ? plannerEventDraft.date
+                                : plannerEventDraft.recurrenceEndDate,
+                          });
+                        }}
+                        className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                      >
+                        <option value="none">Does not repeat</option>
+                        <option value="weekly">Weekly</option>
+                      </select>
+                    </Field>
+
+                    {plannerEventDraft.repeat === "weekly" ? (
+                      <div className="grid gap-3 sm:grid-cols-3">
+                        <Field label="Weekday">
+                          <select
+                            value={plannerEventDraft.recurrenceWeekday}
+                            onChange={(e) =>
+                              setPlannerEventDraft({
+                                ...plannerEventDraft,
+                                recurrenceWeekday: Number(e.target.value),
+                              })
+                            }
+                            className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                          >
+                            {PLANNER_WEEKDAY_OPTIONS.map((option) => (
+                              <option key={option.id} value={option.id}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </Field>
+                        <Field label="Series start">
+                          <input
+                            type="date"
+                            value={plannerEventDraft.recurrenceStartDate}
+                            onChange={(e) => {
+                              const recurrenceStartDate = e.target.value;
+                              setPlannerEventDraft({
+                                ...plannerEventDraft,
+                                recurrenceStartDate,
+                                recurrenceEndDate:
+                                  plannerEventDraft.recurrenceEndDate < recurrenceStartDate
+                                    ? recurrenceStartDate
+                                    : plannerEventDraft.recurrenceEndDate,
+                              });
+                            }}
+                            className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                          />
+                        </Field>
+                        <Field label="Series end">
+                          <input
+                            type="date"
+                            value={plannerEventDraft.recurrenceEndDate}
+                            min={plannerEventDraft.recurrenceStartDate}
+                            onChange={(e) =>
+                              setPlannerEventDraft({
+                                ...plannerEventDraft,
+                                recurrenceEndDate:
+                                  e.target.value < plannerEventDraft.recurrenceStartDate
+                                    ? plannerEventDraft.recurrenceStartDate
+                                    : e.target.value,
+                              })
+                            }
+                            className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                          />
+                        </Field>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {plannerEventDraft.eventType === "class" ||
+                plannerEventDraft.eventType === "meeting" ||
+                plannerEventDraft.eventType === "personal" ||
+                plannerEventDraft.eventType === "date" ||
+                plannerEventDraft.eventType === "social" ||
+                plannerEventDraft.eventType === "active" ||
+                plannerEventDraft.eventType === "admin" ? (
+                  <Field label="Location">
+                    <input
+                      value={plannerEventDraft.location}
+                      onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, location: e.target.value })}
+                      className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                    />
+                  </Field>
+                ) : null}
+
+                {plannerEventDraft.eventType === "meeting" ? (
+                  <Field label="Video link">
+                    <input
+                      value={plannerEventDraft.videoUrl}
+                      onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, videoUrl: e.target.value })}
+                      className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                    />
+                  </Field>
+                ) : null}
+
+                <Field label="Notes">
+                  <textarea
+                    value={plannerEventDraft.notes}
+                    onChange={(e) => setPlannerEventDraft({ ...plannerEventDraft, notes: e.target.value })}
+                    className="min-h-[72px] w-full rounded-[18px] border border-slate-200 bg-white p-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </Field>
+              </div>
+            ) : null}
 
             <div className="flex items-center justify-between pt-2">
               {plannerEventModalMode === "edit" ? (
@@ -8109,7 +10934,7 @@ useEffect(() => {
               </div>
             </div>
           </div>
-        )}
+        ) : null}
       </Modal>
 
       {/* New Task modal */}
@@ -8460,10 +11285,11 @@ useEffect(() => {
           <div className="flex items-center justify-between gap-2 pt-1">
             {editingLogId ? (
               <button
-                className="rounded-full border border-slate-200 px-4 py-2 text-sm text-red-600 hover:bg-red-50"
+                className="rounded-full border border-slate-200 px-4 py-2 text-sm text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
                 onClick={() => deleteTimeLog(editingLogId)}
+                disabled={deletingTimeLogId === editingLogId}
               >
-                Delete
+                {deletingTimeLogId === editingLogId ? "Deleting" : "Delete"}
               </button>
             ) : (
               <div />

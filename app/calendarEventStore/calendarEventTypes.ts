@@ -5,7 +5,11 @@ export type CalendarEventType =
   | "deadline"
   | "milestone"
   | "personal"
-  | "travel";
+  | "travel"
+  | "date"
+  | "social"
+  | "active"
+  | "admin";
 
 export type CalendarEvent = {
   id: string;
@@ -40,6 +44,10 @@ const CALENDAR_EVENT_TYPES = new Set<CalendarEventType>([
   "milestone",
   "personal",
   "travel",
+  "date",
+  "social",
+  "active",
+  "admin",
 ]);
 
 const RECURRENCE_STATUSES = new Set(["active", "cancelled", "moved"]);
