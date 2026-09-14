@@ -5,40 +5,62 @@ import {
   Activity,
   ArrowDown,
   ArrowUp,
+  Battery,
   BookOpen,
+  Brain,
   BriefcaseBusiness,
   Check,
   ChevronRight,
   Circle,
+  CircleAlert,
   CircleCheck,
+  Cloud,
   Diamond,
   Ellipsis,
   Clock,
   Clock3,
   CalendarDays,
   Coffee,
+  Eye,
   Flag,
   FileText,
+  Flame,
+  Frown,
   Gauge,
   GraduationCap,
   Heart,
   HeartPulse,
+  Laugh,
   Layers,
   LayoutDashboard,
   ListChecks,
   LoaderCircle,
   Mail,
+  MessageCircle,
+  Meh,
   Minus,
+  Moon,
   PanelLeftClose,
   PanelLeftOpen,
   Pill as PillIcon,
   Plane,
   Plus,
+  Shield,
   Snowflake,
+  Smile,
+  Sparkles,
+  Star,
+  Sun,
+  Target,
+  Timer,
+  TrendingUp,
+  Utensils,
+  UtensilsCrossed,
   UserRound,
   Users,
   WandSparkles,
-  X,
+  Waves,
+  Wind,
   Zap,
 } from "lucide-react";
 import {
@@ -149,7 +171,7 @@ const SYNC_CODE = isDemoMode ? "DEMO-TASKS" : "YAS-TEST-001";
 
 type ViewMode = "board" | "planner" | "list" | "logger" | "meds";
 type PlannerView = "week" | "month" | "three_month" | "year";
-type MedsView = "today" | "history";
+type MedsView = "today" | "history" | "tracker";
 type MedicationModalMode = "dose" | "feeling";
 type PlannerEventModalMode = "create" | "edit";
 type PlannerWhenChoice =
@@ -253,6 +275,57 @@ type MedicationCurvePoint = {
 type MedsLevelRange = "now" | "24h" | "2d" | "week";
 type MedsChartPoint = { x: number; y: number };
 type MedsChartDot = { key: string; x: number; y: number; label: string; sublabel?: string };
+type FeelingValenceStable = "good" | "neutral" | "bad";
+type FeelingCategory = "state" | "symptom";
+type FeelingIconKey =
+  | "target"
+  | "waves"
+  | "zap"
+  | "trending"
+  | "smile"
+  | "minus"
+  | "moon"
+  | "activity"
+  | "alert"
+  | "flame"
+  | "cloud"
+  | "heart"
+  | "heartPulse"
+  | "brain"
+  | "sparkles"
+  | "sun"
+  | "circle"
+  | "eye"
+  | "frown"
+  | "laugh"
+  | "gauge"
+  | "battery"
+  | "wind"
+  | "shield"
+  | "star"
+  | "timer"
+  | "messageCircle"
+  | "utensils"
+  | "utensilsCrossed";
+type FeelingDefinition = {
+  id: string;
+  name: string;
+  icon: FeelingIconKey;
+  valence: FeelingValenceStable;
+  category: FeelingCategory;
+  active: boolean;
+  custom?: boolean;
+};
+type FeelingLogSnapshot = {
+  id: string;
+  name: string;
+  icon: FeelingIconKey;
+  valence: FeelingValenceStable;
+  intensity: number;
+};
+type SelectedFeelingLog = {
+  intensity: number;
+};
 type CaffeineDrinkId =
   | "espresso"
   | "americano"
@@ -411,11 +484,12 @@ const MEDICATION_OPTIONS: { id: MedicationKind; label: string; unit: string }[] 
   { id: "Custom", label: "+ Custom", unit: "" },
 ];
 const MEDS_RANGE_CONFIG: Record<MedsLevelRange, { label: string; durationHours: number; futureHours: number }> = {
-  now: { label: "Now", durationHours: 12, futureHours: 2 },
+  now: { label: "Now", durationHours: 12, futureHours: 0 },
   "24h": { label: "24h", durationHours: 24, futureHours: 0 },
   "2d": { label: "2 Days", durationHours: 48, futureHours: 0 },
   week: { label: "Week", durationHours: 24 * 7, futureHours: 0 },
 };
+const MEDS_CURRENT_WINDOW_FUTURE_HOURS = 6;
 const VYVANSE_VISUAL_MODEL = {
   absorptionRatePerHour: 0.664,
   halfLifeHours: 10.5,
@@ -448,33 +522,69 @@ const CAFFEINE_DRINK_DEFAULTS: {
   { id: "espresso_martini", label: "Espresso martini", mg: 65, shots: 1 },
   { id: "custom", label: "Custom", mg: 100 },
 ];
-const FEELING_OPTIONS = [
-  "Sharp focus",
-  "Calm",
-  "Hyper",
-  "Anxious",
-  "Sleepy",
-  "Can't sleep",
-  "Headache",
-  "+ Custom",
+const DEFAULT_FEELING_DEFINITIONS: FeelingDefinition[] = [
+  { id: "focused", name: "Focused", icon: "target", valence: "good", category: "state", active: true },
+  { id: "distracted", name: "Distracted", icon: "eye", valence: "bad", category: "state", active: true },
+  { id: "brain_fog", name: "Brain fog", icon: "cloud", valence: "neutral", category: "state", active: true },
+  { id: "motivated", name: "Motivated", icon: "trending", valence: "good", category: "state", active: true },
+  { id: "energetic", name: "Energetic", icon: "zap", valence: "good", category: "state", active: true },
+  { id: "tired", name: "Tired", icon: "battery", valence: "neutral", category: "state", active: true },
+  { id: "calm", name: "Calm", icon: "wind", valence: "good", category: "state", active: true },
+  { id: "anxious", name: "Anxious", icon: "activity", valence: "bad", category: "state", active: true },
+  { id: "stressed", name: "Stressed", icon: "gauge", valence: "bad", category: "state", active: true },
+  { id: "happy", name: "Happy", icon: "smile", valence: "good", category: "state", active: true },
+  { id: "low", name: "Low", icon: "frown", valence: "bad", category: "state", active: true },
+  { id: "irritable", name: "Irritable", icon: "flame", valence: "bad", category: "state", active: true },
+  { id: "wired", name: "Wired", icon: "sparkles", valence: "neutral", category: "state", active: true },
+  { id: "socially_weird", name: "Socially weird", icon: "messageCircle", valence: "neutral", category: "state", active: true },
+  { id: "neutral", name: "Neutral", icon: "minus", valence: "neutral", category: "state", active: true },
+  { id: "low_appetite", name: "Low appetite", icon: "utensils", valence: "bad", category: "symptom", active: true },
+  { id: "no_appetite", name: "No appetite", icon: "utensilsCrossed", valence: "bad", category: "symptom", active: true },
+  { id: "sleepy", name: "Sleepy", icon: "moon", valence: "neutral", category: "symptom", active: true },
+  { id: "jittery", name: "Jittery", icon: "waves", valence: "bad", category: "symptom", active: true },
+  { id: "headache", name: "Headache", icon: "brain", valence: "bad", category: "symptom", active: true },
+  { id: "palpitations", name: "Palpitations", icon: "heartPulse", valence: "bad", category: "symptom", active: true },
+  { id: "insomnia", name: "Insomnia", icon: "timer", valence: "bad", category: "symptom", active: true },
 ];
-const FEELING_VALENCES: { id: FeelingValence; label: string }[] = [
-  { id: "positive", label: "Positive" },
+const LEGACY_DEFAULT_FEELING_IDS = new Set(["overstimulated"]);
+const FEELING_ICON_OPTIONS: { id: FeelingIconKey; label: string }[] = [
+  { id: "target", label: "Target" },
+  { id: "waves", label: "Waves" },
+  { id: "zap", label: "Bolt" },
+  { id: "trending", label: "Up" },
+  { id: "smile", label: "Smile" },
+  { id: "minus", label: "Neutral" },
+  { id: "moon", label: "Moon" },
+  { id: "activity", label: "Active" },
+  { id: "alert", label: "Alert" },
+  { id: "flame", label: "Flame" },
+  { id: "cloud", label: "Cloud" },
+  { id: "heart", label: "Heart" },
+  { id: "heartPulse", label: "Heart pulse" },
+  { id: "brain", label: "Brain" },
+  { id: "sparkles", label: "Sparkles" },
+  { id: "sun", label: "Sun" },
+  { id: "circle", label: "Circle" },
+  { id: "eye", label: "Eye" },
+  { id: "frown", label: "Frown" },
+  { id: "laugh", label: "Laugh" },
+  { id: "gauge", label: "Gauge" },
+  { id: "battery", label: "Battery" },
+  { id: "wind", label: "Wind" },
+  { id: "shield", label: "Shield" },
+  { id: "star", label: "Star" },
+  { id: "timer", label: "Timer" },
+  { id: "messageCircle", label: "Conversation" },
+  { id: "utensils", label: "Appetite" },
+  { id: "utensilsCrossed", label: "No appetite" },
+];
+const FEELING_VALENCE_OPTIONS: { id: FeelingValenceStable; label: string }[] = [
+  { id: "good", label: "Good" },
   { id: "neutral", label: "Neutral" },
-  { id: "negative", label: "Negative" },
+  { id: "bad", label: "Bad" },
 ];
-const FEELING_INTENSITIES: { id: FeelingIntensity; label: string }[] = [
-  { id: "low", label: "Low" },
-  { id: "medium", label: "Medium" },
-  { id: "high", label: "High" },
-];
-const FEELING_DAYPARTS: { id: FeelingDaypart; label: string }[] = [
-  { id: "morning", label: "Morning" },
-  { id: "noon", label: "Noon" },
-  { id: "afternoon", label: "Afternoon" },
-  { id: "evening", label: "Evening" },
-  { id: "night", label: "Night" },
-];
+const FEELING_DEFINITIONS_SOURCE = "meds_feeling_definitions";
+const FEELING_DEFINITIONS_MARKER = "__feeling_definitions__";
 
 function statusLabel(id: Status) {
   return STATUSES.find((s) => s.id === id)?.label ?? id;
@@ -2317,6 +2427,249 @@ function medicationLocalDate(entry: MedicationEntry) {
   return localDateISO(date);
 }
 
+function normalizeFeelingDefinitions(value: unknown): FeelingDefinition[] {
+  if (!Array.isArray(value)) return DEFAULT_FEELING_DEFINITIONS;
+  const storedDefinitions = value
+    .map((raw): FeelingDefinition | null => {
+      if (!raw || typeof raw !== "object") return null;
+      const candidate = raw as Record<string, unknown>;
+      const id = typeof candidate.id === "string" ? candidate.id : "";
+      const name = typeof candidate.name === "string" ? candidate.name.trim() : "";
+      const icon = typeof candidate.icon === "string" ? candidate.icon : "smile";
+      const valence = typeof candidate.valence === "string" ? candidate.valence : "neutral";
+      const category = candidate.category === "symptom" ? "symptom" : "state";
+      if (!id || !name) return null;
+      return {
+        id,
+        name,
+        icon: FEELING_ICON_OPTIONS.some((option) => option.id === icon) ? (icon as FeelingIconKey) : "smile",
+        valence: valence === "good" || valence === "bad" ? valence : "neutral",
+        category,
+        active: candidate.active !== false,
+        custom: candidate.custom === true,
+      };
+    })
+    .filter((definition): definition is FeelingDefinition => Boolean(definition));
+  if (!storedDefinitions.length) return DEFAULT_FEELING_DEFINITIONS;
+
+  const storedById = new Map(storedDefinitions.map((definition) => [definition.id, definition]));
+  const defaults = DEFAULT_FEELING_DEFINITIONS.map((definition) => {
+    const stored = storedById.get(definition.id);
+    return stored ? { ...stored, category: definition.category } : definition;
+  });
+  const compatibilityDefinitions = storedDefinitions
+    .filter((definition) => !DEFAULT_FEELING_DEFINITIONS.some((candidate) => candidate.id === definition.id))
+    .map((definition) =>
+      LEGACY_DEFAULT_FEELING_IDS.has(definition.id) ? { ...definition, active: false } : definition
+    );
+  return [...defaults, ...compatibilityDefinitions];
+}
+
+function isFeelingDefinitionsEntry(entry: MedicationEntry) {
+  return (
+    entry.entryType === "observation" &&
+    entry.feeling === FEELING_DEFINITIONS_MARKER &&
+    entry.metadata?.source === FEELING_DEFINITIONS_SOURCE
+  );
+}
+
+function feelingIconComponent(icon: FeelingIconKey) {
+  const icons: Record<FeelingIconKey, React.ComponentType<{ className?: string; "aria-hidden"?: boolean }>> = {
+    target: Target,
+    waves: Waves,
+    zap: Zap,
+    trending: TrendingUp,
+    smile: Smile,
+    minus: Meh,
+    moon: Moon,
+    activity: Activity,
+    alert: CircleAlert,
+    flame: Flame,
+    cloud: Cloud,
+    heart: Heart,
+    heartPulse: HeartPulse,
+    brain: Brain,
+    sparkles: Sparkles,
+    sun: Sun,
+    circle: Circle,
+    eye: Eye,
+    frown: Frown,
+    laugh: Laugh,
+    gauge: Gauge,
+    battery: Battery,
+    wind: Wind,
+    shield: Shield,
+    star: Star,
+    timer: Timer,
+    messageCircle: MessageCircle,
+    utensils: Utensils,
+    utensilsCrossed: UtensilsCrossed,
+  };
+  return icons[icon] ?? HeartPulse;
+}
+
+function FeelingIconPicker({
+  value,
+  onChange,
+}: {
+  value: FeelingIconKey;
+  onChange: (icon: FeelingIconKey) => void;
+}) {
+  return (
+    <div className="grid grid-cols-5 gap-1.5 sm:grid-cols-6">
+      {FEELING_ICON_OPTIONS.map((option) => {
+        const Icon = feelingIconComponent(option.id);
+        const selected = value === option.id;
+        return (
+          <button
+            key={option.id}
+            type="button"
+            onClick={() => onChange(option.id)}
+            title={option.label}
+            aria-label={option.label}
+            className={`grid h-10 min-w-0 place-items-center rounded-[14px] border transition-colors ${
+              selected
+                ? "border-slate-950 bg-slate-950 text-white shadow-sm"
+                : "border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:bg-slate-50 hover:text-slate-800"
+            }`}
+          >
+            <Icon className="h-4 w-4" aria-hidden />
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function FeelingSelectionGrid({
+  definitions,
+  selectedFeelingLogs,
+  onToggle,
+}: {
+  definitions: FeelingDefinition[];
+  selectedFeelingLogs: Record<string, SelectedFeelingLog>;
+  onToggle: (id: string) => void;
+}) {
+  return (
+    <div className="grid w-full max-w-[352px] grid-cols-4 gap-2 justify-self-center">
+      {definitions.map((definition) => {
+        const selected = Boolean(selectedFeelingLogs[definition.id]);
+        const Icon = feelingIconComponent(definition.icon);
+        const iconColor = feelingVisualIconColor(definition);
+        return (
+          <button
+            key={definition.id}
+            type="button"
+            onClick={() => onToggle(definition.id)}
+            className={`relative flex h-[78px] min-w-0 flex-col items-center justify-center gap-1 rounded-[18px] border px-1.5 py-2.5 text-center transition-colors ${
+              selected
+                ? "border-slate-700 bg-slate-200/80 text-slate-950"
+                : "border-transparent bg-slate-100 text-slate-800 hover:bg-slate-200/70"
+            }`}
+          >
+            <span className="grid h-7 w-7 shrink-0 place-items-center">
+              <Icon className={`h-6 w-6 ${iconColor}`} aria-hidden />
+            </span>
+            <span className="line-clamp-2 text-[11px] font-semibold leading-tight text-slate-900">{definition.name}</span>
+            {selected ? (
+              <span className="absolute right-1.5 top-1.5 grid h-3.5 w-3.5 place-items-center rounded-full bg-slate-800 text-white">
+                <Check className="h-2.5 w-2.5" aria-hidden />
+              </span>
+            ) : null}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function feelingValenceTone(valence: FeelingValenceStable) {
+  if (valence === "good") return "border-emerald-100 bg-emerald-50 text-emerald-700";
+  if (valence === "bad") return "border-rose-100 bg-rose-50 text-rose-700";
+  return "border-slate-200 bg-slate-50 text-slate-600";
+}
+
+function feelingVisualIconColor(definition: Pick<FeelingDefinition, "id" | "name" | "valence">) {
+  const palettes: Record<FeelingValenceStable, string[]> = {
+    good: ["text-teal-500", "text-emerald-500", "text-cyan-500", "text-blue-500"],
+    neutral: ["text-slate-500", "text-blue-400", "text-violet-400", "text-slate-600"],
+    bad: ["text-orange-500", "text-rose-500", "text-red-500", "text-pink-500"],
+  };
+  const palette = palettes[definition.valence];
+  const key = `${definition.id}-${definition.name}`;
+  const hash = Array.from(key).reduce((sum, character) => sum + character.charCodeAt(0), 0);
+  return palette[hash % palette.length];
+}
+
+function legacyFeelingValence(value?: FeelingValence | FeelingValenceStable | null): FeelingValenceStable {
+  if (value === "positive" || value === "good") return "good";
+  if (value === "negative" || value === "bad") return "bad";
+  return "neutral";
+}
+
+function legacyFeelingIntensityValue(value?: FeelingIntensity | number | null) {
+  if (typeof value === "number" && Number.isFinite(value)) return clamp(Math.round(value), 1, 5);
+  if (value === "low") return 2;
+  if (value === "high") return 4;
+  return 3;
+}
+
+function feelingLogsFromEntry(entry: MedicationEntry): FeelingLogSnapshot[] {
+  const rawLogs = entry.metadata?.feelingLogs;
+  if (Array.isArray(rawLogs)) {
+    return rawLogs
+      .map((raw) => {
+        if (!raw || typeof raw !== "object") return null;
+        const candidate = raw as Record<string, unknown>;
+        const id =
+          typeof candidate.feelingId === "string"
+            ? candidate.feelingId
+            : typeof candidate.id === "string"
+              ? candidate.id
+              : "";
+        const name =
+          typeof candidate.nameSnapshot === "string"
+            ? candidate.nameSnapshot
+            : typeof candidate.name === "string"
+              ? candidate.name
+              : "";
+        const icon =
+          typeof candidate.iconSnapshot === "string"
+            ? candidate.iconSnapshot
+            : typeof candidate.icon === "string"
+              ? candidate.icon
+              : "smile";
+        const valence =
+          typeof candidate.valenceSnapshot === "string"
+            ? candidate.valenceSnapshot
+            : typeof candidate.valence === "string"
+              ? candidate.valence
+              : "neutral";
+        const intensity = Number(candidate.intensity);
+        if (!id || !name) return null;
+        return {
+          id,
+          name,
+          icon: FEELING_ICON_OPTIONS.some((option) => option.id === icon) ? (icon as FeelingIconKey) : "smile",
+          valence: valence === "good" || valence === "bad" ? valence : "neutral",
+          intensity: Number.isFinite(intensity) ? clamp(Math.round(intensity), 1, 5) : 3,
+        };
+      })
+      .filter((log): log is FeelingLogSnapshot => Boolean(log));
+  }
+
+  if (!entry.feeling) return [];
+  return [
+    {
+      id: String(entry.feeling).toLowerCase().replace(/[^a-z0-9]+/g, "_") || "legacy_feeling",
+      name: entry.feeling,
+      icon: "smile" as FeelingIconKey,
+      valence: legacyFeelingValence(entry.valence),
+      intensity: legacyFeelingIntensityValue(entry.intensity),
+    },
+  ];
+}
+
 function medicationLabel(entry: MedicationEntry) {
   if (entry.entryType === "input") {
     return [entry.medication, entry.amount ? formatMedicationAmount(entry.amount) : "", entry.unit ?? ""]
@@ -2324,13 +2677,10 @@ function medicationLabel(entry: MedicationEntry) {
       .join(" ");
   }
 
-  return [
-    entry.feeling,
-    entry.intensity ? titleCase(entry.intensity) : "",
-    entry.valence ? titleCase(entry.valence) : "",
-  ]
-    .filter(Boolean)
-    .join(" · ");
+  const logs = feelingLogsFromEntry(entry);
+  return logs.length
+    ? logs.map((log) => `${log.name} · ${log.intensity}/5`).join(" · ")
+    : entry.feeling ?? "Feeling";
 }
 
 function formatMedicationAmount(amount: number) {
@@ -2363,6 +2713,136 @@ function isCaffeineEntry(entry: MedicationEntry) {
   const medication = (entry.medication ?? "").toLowerCase();
   const source = medicationMetadataValue(entry, "source").toLowerCase();
   return medication.includes("coffee") || medication.includes("caffeine") || source.includes("caffeine");
+}
+
+function isProzacEntry(entry: MedicationEntry) {
+  if (entry.entryType !== "input") return false;
+  const medication = (entry.medication ?? "").toLowerCase();
+  return medication.includes("prozac") || medication.includes("fluoxetine");
+}
+
+type MedicationTrackerDay = {
+  date: string;
+  count: number;
+  amount: number | null;
+  unit: string | null;
+  intensity: number;
+};
+
+type MedicationTrackerSubstance = {
+  key: string;
+  label: string;
+  color: string;
+  days: Map<string, MedicationTrackerDay>;
+};
+
+const MEDICATION_TRACKER_CUSTOM_COLORS = ["#2098D4", "#7045D8", "#43C995", "#43D4DC", "#D43BD8"];
+
+function medicationTrackerIdentity(entry: MedicationEntry) {
+  if (entry.entryType !== "input" || !entry.medication?.trim()) return null;
+  if (isCaffeineEntry(entry)) return { key: "caffeine", label: "Caffeine" };
+  if (isVyvanseEntry(entry)) return { key: "vyvanse", label: "Vyvanse" };
+  if (isProzacEntry(entry)) return { key: "prozac", label: "Prozac" };
+  const label = entry.medication.trim();
+  return { key: label.toLocaleLowerCase(), label };
+}
+
+function medicationTrackerColor(key: string) {
+  if (key === "vyvanse") return "#ff6b1a";
+  if (key === "caffeine") return "#f2aa12";
+  if (key === "prozac") return "#7045D8";
+  const hash = Array.from(key).reduce((value, character) => (value * 31 + character.charCodeAt(0)) >>> 0, 0);
+  return MEDICATION_TRACKER_CUSTOM_COLORS[hash % MEDICATION_TRACKER_CUSTOM_COLORS.length];
+}
+
+function medicationTrackerDateLabel(date: string) {
+  return new Intl.DateTimeFormat("en", { weekday: "short", month: "short", day: "numeric", year: "numeric" }).format(
+    new Date(`${date}T00:00:00`)
+  );
+}
+
+function MedsTrackerGrid({
+  substance,
+  dates,
+  mobile = false,
+}: {
+  substance: MedicationTrackerSubstance;
+  dates: string[];
+  mobile?: boolean;
+}) {
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const weekCount = Math.ceil(dates.length / 7);
+  const monthLabels = dates.reduce<Array<{ label: string; column: number }>>((labels, date, index) => {
+    const monthKey = date.slice(0, 7);
+    if (labels.some((label) => label.label === monthKey)) return labels;
+    labels.push({ label: monthKey, column: Math.floor(index / 7) + 1 });
+    return labels;
+  }, []);
+  const selectedDay = selectedDate ? substance.days.get(selectedDate) : null;
+  const tooltip = (date: string, day?: MedicationTrackerDay) => {
+    if (!day) return `${medicationTrackerDateLabel(date)} · No intake`;
+    const amount = day.amount !== null ? ` · ${formatMedicationAmount(day.amount)}${day.unit ? ` ${day.unit}` : ""}` : "";
+    const entries = day.count > 1 ? ` · ${day.count} entries` : "";
+    return `${medicationTrackerDateLabel(date)} · ${substance.label}${amount}${entries}`;
+  };
+
+  return (
+    <section className="min-w-0 max-w-full border-b border-slate-200/70 pb-4 last:border-b-0 sm:pb-5">
+      <h2 className="mb-2 text-sm font-semibold text-slate-950">{substance.label}</h2>
+      <div className={`w-full max-w-full pb-1 ${mobile ? "overflow-x-hidden" : "overflow-x-auto overscroll-x-contain"}`}>
+        <div className={mobile ? "w-full max-w-full" : "min-w-max"}>
+          <div
+            className="mb-1 grid h-4 gap-0.5 text-[10px] text-slate-400"
+            style={{ gridTemplateColumns: mobile ? `repeat(${weekCount}, minmax(0, 1fr))` : `repeat(${weekCount}, 11px)` }}
+          >
+            {monthLabels.map(({ label, column }) => (
+              <span key={label} className="whitespace-nowrap" style={{ gridColumnStart: column }}>
+                {new Intl.DateTimeFormat("en", { month: "short" }).format(new Date(`${label}-01T00:00:00`))}
+              </span>
+            ))}
+          </div>
+          <div
+            className="grid grid-flow-col grid-rows-7 gap-0.5"
+            style={mobile ? { gridTemplateColumns: `repeat(${weekCount}, minmax(0, 1fr))` } : undefined}
+            aria-label={`${substance.label} intake activity`}
+          >
+            {dates.map((date) => {
+              const day = substance.days.get(date);
+              const isToday = date === todayISO();
+              const opacity = day ? [0, 0.24, 0.42, 0.65, 0.88][day.intensity] : 1;
+              return (
+                <button
+                  key={date}
+                  type="button"
+                  onClick={() => setSelectedDate(date)}
+                  title={tooltip(date, day)}
+                  aria-label={tooltip(date, day)}
+                  className={`${mobile ? "aspect-square h-auto w-full max-w-[18px] justify-self-center" : "h-[11px] w-[11px]"} rounded-[3px] border transition-transform hover:scale-125 focus:outline-none focus:ring-1 focus:ring-slate-500 ${
+                    day ? "border-transparent" : "border-slate-200/70 bg-slate-100"
+                  } ${isToday ? "ring-1 ring-slate-500 ring-offset-1" : ""}`}
+                  style={day ? { backgroundColor: substance.color, opacity } : undefined}
+                />
+              );
+            })}
+          </div>
+        </div>
+      </div>
+      {selectedDate ? (
+        <div className="mt-2 min-h-4 text-[11px] text-slate-500">{tooltip(selectedDate, selectedDay)}</div>
+      ) : null}
+      <div className="mt-2 flex items-center justify-start gap-1 text-[10px] text-slate-400 sm:justify-end">
+        <span>Less</span>
+        {[0.18, 0.32, 0.5, 0.7, 0.9].map((opacity) => (
+          <span
+            key={opacity}
+            className="h-2.5 w-2.5 rounded-[3px] border border-slate-200/60"
+            style={{ backgroundColor: substance.color, opacity }}
+          />
+        ))}
+        <span>More</span>
+      </div>
+    </section>
+  );
 }
 
 function caffeineDrinkLabel(entry: MedicationEntry) {
@@ -2470,9 +2950,12 @@ function caffeineContribution(entry: MedicationEntry, sampleMs: number) {
 function buildMedsRange(range: MedsLevelRange, offset: number, nowMs: number) {
   const config = MEDS_RANGE_CONFIG[range];
   const durationMs = config.durationHours * 60 * 60 * 1000;
-  const futureMs = config.futureHours * 60 * 60 * 1000;
-  const currentEnd = nowMs + futureMs;
-  const endMs = currentEnd - Math.max(0, offset) * durationMs;
+  const normalizedOffset = Math.max(0, offset);
+  if (normalizedOffset === 0) {
+    const futureMs = MEDS_CURRENT_WINDOW_FUTURE_HOURS * 60 * 60 * 1000;
+    return { startMs: nowMs - durationMs, endMs: nowMs + futureMs, durationMs: durationMs + futureMs };
+  }
+  const endMs = nowMs - normalizedOffset * durationMs;
   return { startMs: endMs - durationMs, endMs, durationMs };
 }
 
@@ -2573,13 +3056,6 @@ function formatMedsRangeTimeLabel(timestampMs: number, range: MedsLevelRange) {
   return new Intl.DateTimeFormat("en", { hour: "numeric", hour12: true }).format(date).replace(" ", "");
 }
 
-function medsRangeLabel(startMs: number, endMs: number) {
-  const start = new Date(startMs);
-  const end = new Date(endMs);
-  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) return "";
-  return `${new Intl.DateTimeFormat("en", { month: "short", day: "numeric", hour: "numeric" }).format(start)} – ${new Intl.DateTimeFormat("en", { month: "short", day: "numeric", hour: "numeric" }).format(end)}`;
-}
-
 function MedsChartCard({
   title,
   subtitle,
@@ -2672,16 +3148,6 @@ function MedsChartCard({
           </g>
         ))}
       </svg>
-
-      <div className="mt-1 flex flex-wrap justify-center gap-x-5 gap-y-2 text-center text-[11px] text-slate-600">
-        {dots.map((dot) => (
-          <div key={`${dot.key}-legend`} className="grid justify-items-center gap-0.5">
-            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: tone }} />
-            <span className="font-medium text-slate-800">{dot.label}</span>
-            {dot.sublabel ? <span className="whitespace-pre-line text-slate-500">{dot.sublabel}</span> : null}
-          </div>
-        ))}
-      </div>
     </section>
   );
 }
@@ -3548,18 +4014,21 @@ export default function MinimalTaskTracker() {
   const [doseWhenMode, setDoseWhenMode] = useState<"now" | "manual">("now");
   const [doseDate, setDoseDate] = useState("");
   const [doseTime, setDoseTime] = useState("");
-  const [feelingChoice, setFeelingChoice] = useState("Sharp focus");
-  const [feelingCustom, setFeelingCustom] = useState("");
-  const [feelingValence, setFeelingValence] = useState<FeelingValence | "">("");
-  const [feelingIntensity, setFeelingIntensity] = useState<FeelingIntensity | "">("");
-  const [feelingDaypart, setFeelingDaypart] = useState<FeelingDaypart | "">("");
+  const [feelingDefinitions, setFeelingDefinitions] = useState<FeelingDefinition[]>(DEFAULT_FEELING_DEFINITIONS);
+  const [feelingDefinitionsEntryId, setFeelingDefinitionsEntryId] = useState<string | null>(null);
+  const [selectedFeelingLogs, setSelectedFeelingLogs] = useState<Record<string, SelectedFeelingLog>>({});
+  const [feelingManageOpen, setFeelingManageOpen] = useState(false);
+  const [customFeelingOpen, setCustomFeelingOpen] = useState(false);
+  const [newFeelingName, setNewFeelingName] = useState("");
+  const [newFeelingIcon, setNewFeelingIcon] = useState<FeelingIconKey>("smile");
+  const [newFeelingValence, setNewFeelingValence] = useState<FeelingValenceStable>("good");
+  const [newFeelingCategory, setNewFeelingCategory] = useState<FeelingCategory>("state");
   const [feelingWhenMode, setFeelingWhenMode] = useState<"now" | "manual">("now");
   const [feelingDate, setFeelingDate] = useState("");
   const [feelingTime, setFeelingTime] = useState("");
   const [medsHistoryFilter, setMedsHistoryFilter] = useState<"all" | "Vyvanse" | "Prozac" | "Coffee" | "feelings">("all");
   const [medsLevelRange, setMedsLevelRange] = useState<MedsLevelRange>("24h");
   const [medsRangeOffset, setMedsRangeOffset] = useState(0);
-  const [caffeineSheetOpen, setCaffeineSheetOpen] = useState(false);
   const [caffeineDrinkId, setCaffeineDrinkId] = useState<CaffeineDrinkId>("iced_latte");
   const [caffeineSize, setCaffeineSize] = useState<"S" | "M" | "L">("M");
   const [caffeineMg, setCaffeineMg] = useState("120");
@@ -4127,11 +4596,21 @@ useEffect(() => {
     (timeLeftFilter ? 1 : 0);
 
   const closedTimeLogs = useMemo(() => timeLogs.filter(isClosedTimeLog), [timeLogs]);
+  const feelingDefinitionsEntry = useMemo(
+    () => medicationEntries.find(isFeelingDefinitionsEntry) ?? null,
+    [medicationEntries]
+  );
   const sortedMedicationEntries = useMemo(() => {
     return medicationEntries
+      .filter((entry) => !isFeelingDefinitionsEntry(entry))
       .slice()
       .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
   }, [medicationEntries]);
+  useEffect(() => {
+    if (!feelingDefinitionsEntry) return;
+    setFeelingDefinitionsEntryId(feelingDefinitionsEntry.id);
+    setFeelingDefinitions(normalizeFeelingDefinitions(feelingDefinitionsEntry.metadata?.definitions));
+  }, [feelingDefinitionsEntry]);
   const todaysMedicationEntries = useMemo(() => {
     const today = clientToday || todayISO();
     return sortedMedicationEntries
@@ -4255,6 +4734,81 @@ useEffect(() => {
       return entry.entryType === "input" && entry.medication === medsHistoryFilter;
     });
   }, [medsHistoryFilter, sortedMedicationEntries]);
+  const medicationTrackerInputEntries = useMemo(
+    () => sortedMedicationEntries.filter((entry) => Boolean(medicationTrackerIdentity(entry))),
+    [sortedMedicationEntries]
+  );
+  const medicationTrackerDates = useMemo(() => {
+    const inputDates = medicationTrackerInputEntries
+      .map(medicationLocalDate)
+      .filter((date): date is string => isValidISODate(date))
+      .sort();
+    const today = isValidISODate(clientToday) ? clientToday : todayISO();
+    const latestInputDate = inputDates[inputDates.length - 1];
+    const earliestInputDate = inputDates[0];
+    const end = latestInputDate && latestInputDate > today ? latestInputDate : today;
+    const visibleStart = addDaysISO(end, -364);
+    const start = earliestInputDate && earliestInputDate < visibleStart ? earliestInputDate : visibleStart;
+    const startDay = new Date(`${start}T00:00:00`).getDay();
+    const alignedStart = addDaysISO(start, -((startDay + 6) % 7));
+    const dayCount = Math.round((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${alignedStart}T00:00:00Z`)) / 86400000) + 1;
+    return Array.from({ length: dayCount }, (_, index) => addDaysISO(alignedStart, index));
+  }, [clientToday, medicationTrackerInputEntries]);
+  const medicationTrackerMobileDates = useMemo(() => {
+    const today = isValidISODate(clientToday) ? clientToday : todayISO();
+    const currentWeekStart = startOfLoggerWeek(today);
+    const visibleStart = addDaysISO(currentWeekStart, -15 * 7);
+    const dayCount = Math.round((Date.parse(`${today}T00:00:00Z`) - Date.parse(`${visibleStart}T00:00:00Z`)) / 86400000) + 1;
+    return Array.from({ length: dayCount }, (_, index) => addDaysISO(visibleStart, index));
+  }, [clientToday]);
+  const medicationTrackerSubstances = useMemo<MedicationTrackerSubstance[]>(() => {
+    const visibleDates = new Set(medicationTrackerDates);
+    const grouped = new Map<string, { label: string; entries: MedicationEntry[] }>();
+
+    medicationTrackerInputEntries.forEach((entry) => {
+      const identity = medicationTrackerIdentity(entry);
+      if (!identity) return;
+      const current = grouped.get(identity.key) ?? { label: identity.label, entries: [] };
+      current.entries.push(entry);
+      grouped.set(identity.key, current);
+    });
+
+    return Array.from(grouped.entries())
+      .map(([key, group]) => {
+        const visibleEntries = group.entries.filter((entry) => visibleDates.has(medicationLocalDate(entry)));
+        const numericEntries = visibleEntries.filter((entry) => typeof entry.amount === "number" && Number.isFinite(entry.amount));
+        const units = new Set(numericEntries.map((entry) => (entry.unit ?? "").trim().toLocaleLowerCase()));
+        const canAggregateAmounts = visibleEntries.length > 0 && numericEntries.length === visibleEntries.length && units.size === 1;
+        const rawDays = new Map<string, Omit<MedicationTrackerDay, "intensity">>();
+
+        visibleEntries.forEach((entry) => {
+          const date = medicationLocalDate(entry);
+          const existing = rawDays.get(date) ?? {
+            date,
+            count: 0,
+            amount: canAggregateAmounts ? 0 : null,
+            unit: canAggregateAmounts ? entry.unit ?? null : null,
+          };
+          existing.count += 1;
+          if (existing.amount !== null && typeof entry.amount === "number") existing.amount += entry.amount;
+          rawDays.set(date, existing);
+        });
+
+        const values = Array.from(rawDays.values()).map((day) => day.amount ?? day.count).sort((a, b) => a - b);
+        const min = values[0] ?? 0;
+        const max = values[values.length - 1] ?? 0;
+        const nearUniform = max <= min || max - min <= Math.max(0.001, max * 0.05);
+        const days = new Map<string, MedicationTrackerDay>();
+        rawDays.forEach((day, date) => {
+          const value = day.amount ?? day.count;
+          const rank = values.filter((candidate) => candidate <= value).length / Math.max(1, values.length);
+          days.set(date, { ...day, intensity: nearUniform ? 3 : Math.max(1, Math.min(4, Math.ceil(rank * 4))) });
+        });
+
+        return { key, label: group.label, color: medicationTrackerColor(key), days };
+      })
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [medicationTrackerDates, medicationTrackerInputEntries]);
 
   function openDoseModal() {
     const now = new Date();
@@ -4268,6 +4822,12 @@ useEffect(() => {
     setDoseWhenMode("now");
     setDoseDate(localDateISO(now));
     setDoseTime(timeInputFromTimestamp(now.toISOString()));
+    setCaffeineSize("M");
+    setCaffeineWhenMode("now");
+    setCaffeineDate(localDateISO(now));
+    setCaffeineTime(timeInputFromTimestamp(now.toISOString()));
+    setCaffeineNote("");
+    applyCaffeineDrinkDefaults("iced_latte", "M");
     setMedsModalMode("dose");
   }
 
@@ -4276,11 +4836,13 @@ useEffect(() => {
     setMedsError(null);
     setEditingMedicationEntry(null);
     setMedsDeleteConfirm(false);
-    setFeelingChoice("Sharp focus");
-    setFeelingCustom("");
-    setFeelingValence("");
-    setFeelingIntensity("");
-    setFeelingDaypart("");
+    setSelectedFeelingLogs({});
+    setFeelingManageOpen(false);
+    setCustomFeelingOpen(false);
+    setNewFeelingName("");
+    setNewFeelingIcon("smile");
+    setNewFeelingValence("good");
+    setNewFeelingCategory("state");
     setFeelingWhenMode("now");
     setFeelingDate(localDateISO(now));
     setFeelingTime(timeInputFromTimestamp(now.toISOString()));
@@ -4294,46 +4856,10 @@ useEffect(() => {
     setCaffeineMg(String(Math.round(drink.mg * sizeMultiplier)));
   }
 
-  function openCaffeineSheet() {
-    const now = new Date();
-    setMedsError(null);
-    setCaffeineSheetOpen(true);
-    setCaffeineSize("M");
-    setCaffeineWhenMode("now");
-    setCaffeineDate(localDateISO(now));
-    setCaffeineTime(timeInputFromTimestamp(now.toISOString()));
-    setCaffeineNote("");
-    applyCaffeineDrinkDefaults("iced_latte", "M");
-  }
-
-  async function quickLogVyvanse() {
-    if (medsSaving) return;
-
-    const entry: MedicationEntry = {
-      id: createMedicationEntryId(),
-      entryType: "input",
-      timestamp: new Date().toISOString(),
-      medication: "Vyvanse",
-      amount: 30,
-      unit: "mg",
-      metadata: { source: "meds_m2_quick_log" },
-    };
-
-    setMedsSaving(true);
-    const saved = await saveMedicationEntry(entry, SYNC_CODE);
-    setMedsSaving(false);
-
-    if (!saved) {
-      setMedsError("Could not save Vyvanse. Existing Meds history was kept.");
-      return;
-    }
-
-    setMedicationEntries((prev) => [entry, ...prev]);
-  }
-
   async function submitCaffeineEntry() {
     if (medsSaving) return;
 
+    const editingInput = editingMedicationEntry?.entryType === "input" ? editingMedicationEntry : null;
     const drink = CAFFEINE_DRINK_DEFAULTS.find((option) => option.id === caffeineDrinkId) ?? CAFFEINE_DRINK_DEFAULTS[0];
     const mg = Number(caffeineMg);
     const timestamp =
@@ -4345,7 +4871,7 @@ useEffect(() => {
     }
 
     const entry: MedicationEntry = {
-      id: createMedicationEntryId(),
+      id: editingInput?.id ?? createMedicationEntryId(),
       entryType: "input",
       timestamp,
       medication: "Coffee",
@@ -4362,16 +4888,26 @@ useEffect(() => {
     };
 
     setMedsSaving(true);
-    const saved = await saveMedicationEntry(entry, SYNC_CODE);
+    const saved = editingInput
+      ? await updateMedicationEntry(entry, SYNC_CODE)
+      : await saveMedicationEntry(entry, SYNC_CODE);
     setMedsSaving(false);
 
     if (!saved) {
-      setMedsError("Could not save caffeine. Existing Meds history was kept.");
+      setMedsError(
+        editingInput
+          ? "Could not update caffeine. Existing Meds history was kept."
+          : "Could not save caffeine. Existing Meds history was kept."
+      );
       return;
     }
 
-    setMedicationEntries((prev) => [entry, ...prev]);
-    setCaffeineSheetOpen(false);
+    setMedicationEntries((prev) =>
+      editingInput ? prev.map((existing) => (existing.id === entry.id ? entry : existing)) : [entry, ...prev]
+    );
+    setEditingMedicationEntry(null);
+    setMedsDeleteConfirm(false);
+    setMedsModalMode(null);
     setMedsError(null);
   }
 
@@ -4393,16 +4929,46 @@ useEffect(() => {
       setDoseWhenMode("manual");
       setDoseDate(localDateISO(timestamp));
       setDoseTime(timeInputFromTimestamp(entry.timestamp));
+      if (entry.medication === "Coffee" || isCaffeineEntry(entry)) {
+        const metadataDrink = medicationMetadataValue(entry, "drinkType") as CaffeineDrinkId;
+        const drink = CAFFEINE_DRINK_DEFAULTS.find((option) => option.id === metadataDrink);
+        const metadataSize = medicationMetadataValue(entry, "size");
+        setCaffeineDrinkId(drink?.id ?? "custom");
+        setCaffeineSize(metadataSize === "S" || metadataSize === "M" || metadataSize === "L" ? metadataSize : "M");
+        setCaffeineMg(entry.amount !== null && entry.amount !== undefined ? formatMedicationAmount(entry.amount) : "100");
+        setCaffeineWhenMode("manual");
+        setCaffeineDate(localDateISO(timestamp));
+        setCaffeineTime(timeInputFromTimestamp(entry.timestamp));
+        setCaffeineNote(medicationMetadataValue(entry, "note"));
+      }
       setMedsModalMode("dose");
       return;
     }
 
-    const knownFeeling = FEELING_OPTIONS.includes(entry.feeling ?? "") && entry.feeling !== "+ Custom";
-    setFeelingChoice(knownFeeling ? entry.feeling ?? "Sharp focus" : "+ Custom");
-    setFeelingCustom(knownFeeling ? "" : entry.feeling ?? "");
-    setFeelingValence(entry.valence ?? "");
-    setFeelingIntensity(entry.intensity ?? "");
-    setFeelingDaypart(entry.daypart ?? "");
+    const feelingLogs = feelingLogsFromEntry(entry);
+    if (feelingLogs.length) {
+      setFeelingDefinitions((currentDefinitions) => {
+        const existingIds = new Set(currentDefinitions.map((definition) => definition.id));
+        const missingDefinitions = feelingLogs
+          .filter((log) => !existingIds.has(log.id))
+          .map((log) => ({
+            id: log.id,
+            name: log.name,
+            icon: log.icon,
+            valence: log.valence,
+            category: "state" as FeelingCategory,
+            active: true,
+            custom: true,
+          }));
+        return missingDefinitions.length ? [...currentDefinitions, ...missingDefinitions] : currentDefinitions;
+      });
+    }
+    setSelectedFeelingLogs(Object.fromEntries(feelingLogs.map((log) => [log.id, { intensity: log.intensity }])));
+    setFeelingManageOpen(false);
+    setNewFeelingName("");
+    setNewFeelingIcon("smile");
+    setNewFeelingValence("good");
+    setNewFeelingCategory("state");
     setFeelingWhenMode("manual");
     setFeelingDate(localDateISO(timestamp));
     setFeelingTime(timeInputFromTimestamp(entry.timestamp));
@@ -4415,6 +4981,96 @@ useEffect(() => {
     setMedsError(null);
     setEditingMedicationEntry(null);
     setMedsDeleteConfirm(false);
+  }
+
+  function toggleStructuredFeeling(id: string) {
+    setSelectedFeelingLogs((current) => {
+      if (current[id]) {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      }
+      return { ...current, [id]: { intensity: 3 } };
+    });
+  }
+
+  function setStructuredFeelingIntensity(id: string, intensity: number) {
+    setSelectedFeelingLogs((current) => ({
+      ...current,
+      [id]: { intensity: clamp(intensity, 1, 5) },
+    }));
+  }
+
+  async function persistFeelingDefinitions(nextDefinitions: FeelingDefinition[]) {
+    const id = feelingDefinitionsEntryId ?? feelingDefinitionsEntry?.id ?? createMedicationEntryId();
+    const entry: MedicationEntry = {
+      id,
+      entryType: "observation",
+      timestamp: feelingDefinitionsEntry?.timestamp ?? new Date().toISOString(),
+      feeling: FEELING_DEFINITIONS_MARKER,
+      valence: "neutral",
+      metadata: {
+        source: FEELING_DEFINITIONS_SOURCE,
+        definitions: nextDefinitions,
+      },
+      createdAt: feelingDefinitionsEntry?.createdAt,
+      updatedAt: feelingDefinitionsEntry?.updatedAt,
+    };
+
+    setMedsSaving(true);
+    const saved = feelingDefinitionsEntry
+      ? await updateMedicationEntry(entry, SYNC_CODE)
+      : await saveMedicationEntry(entry, SYNC_CODE);
+    setMedsSaving(false);
+
+    if (!saved) {
+      setMedsError("Could not save feeling settings. Existing Meds history was kept.");
+      return false;
+    }
+
+    setFeelingDefinitions(nextDefinitions);
+    setFeelingDefinitionsEntryId(id);
+    setMedicationEntries((prev) =>
+      prev.some((existing) => existing.id === id)
+        ? prev.map((existing) => (existing.id === id ? entry : existing))
+        : [entry, ...prev]
+    );
+    setMedsError(null);
+    return true;
+  }
+
+  async function addCustomFeelingDefinition() {
+    const name = newFeelingName.trim();
+    if (!name) {
+      setMedsError("Add a feeling name first.");
+      return;
+    }
+
+    const id = `custom_${name.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_${Date.now().toString(36)}`;
+    const definition: FeelingDefinition = {
+      id,
+      name,
+      icon: newFeelingIcon,
+      valence: newFeelingValence,
+      category: newFeelingCategory,
+      active: true,
+      custom: true,
+    };
+    const saved = await persistFeelingDefinitions([...feelingDefinitions, definition]);
+    if (!saved) return;
+    setNewFeelingName("");
+    setNewFeelingIcon("smile");
+    setNewFeelingValence("good");
+    setNewFeelingCategory("state");
+    setCustomFeelingOpen(false);
+    setSelectedFeelingLogs((current) => ({ ...current, [id]: { intensity: 3 } }));
+  }
+
+  async function updateFeelingDefinition(id: string, patch: Partial<FeelingDefinition>) {
+    const nextDefinitions = feelingDefinitions.map((definition) =>
+      definition.id === id ? { ...definition, ...patch } : definition
+    );
+    await persistFeelingDefinitions(nextDefinitions);
   }
 
   async function submitDose() {
@@ -4471,24 +5127,46 @@ useEffect(() => {
 
     const editingObservation =
       editingMedicationEntry?.entryType === "observation" ? editingMedicationEntry : null;
-    const feeling = feelingChoice === "+ Custom" ? feelingCustom.trim() : feelingChoice;
     const timestamp =
       feelingWhenMode === "now" ? new Date().toISOString() : medicationTimestampFromInputs(feelingDate, feelingTime);
+    const selectedLogs = Object.entries(selectedFeelingLogs)
+      .map(([id, log]) => {
+        const definition = feelingDefinitions.find((item) => item.id === id);
+        if (!definition) return null;
+        return { definition, intensity: log.intensity };
+      })
+      .filter((log): log is { definition: FeelingDefinition; intensity: number } => Boolean(log));
 
-    if (!feeling || !timestamp) {
-      setMedsError("Add a feeling and a valid time.");
+    if (!selectedLogs.length || !timestamp) {
+      setMedsError("Select at least one feeling and a valid time.");
       return;
     }
 
+    const feelingLogs = selectedLogs.map(({ definition, intensity }) => ({
+      feelingId: definition.id,
+      nameSnapshot: definition.name,
+      iconSnapshot: definition.icon,
+      valenceSnapshot: definition.valence,
+      intensity,
+    }));
+    const baseMetadata = {
+      source: "meds_structured_feelings",
+      feelingLogs,
+    };
+    const primaryLog = selectedLogs[0];
     const entry: MedicationEntry = {
       id: editingObservation?.id ?? createMedicationEntryId(),
       entryType: "observation",
       timestamp,
-      feeling,
-      valence: feelingValence || null,
-      intensity: feelingIntensity || null,
-      daypart: feelingDaypart || null,
-      metadata: editingObservation?.metadata ?? { source: "meds_v1" },
+      feeling: feelingLogs.map((log) => log.nameSnapshot).join(", "),
+      valence:
+        primaryLog.definition.valence === "good"
+          ? "positive"
+          : primaryLog.definition.valence === "bad"
+            ? "negative"
+            : "neutral",
+      intensity: primaryLog.intensity <= 2 ? "low" : primaryLog.intensity >= 4 ? "high" : "medium",
+      metadata: baseMetadata,
       createdAt: editingObservation?.createdAt,
       updatedAt: editingObservation?.updatedAt,
     };
@@ -6943,27 +7621,40 @@ useEffect(() => {
 
         {/* Main */}
         {mode === "meds" ? (
-          <div className="mx-auto max-w-[430px] md:mt-2">
+          <div className={`mx-auto w-full min-w-0 md:mt-2 ${medsView === "tracker" ? "max-w-[920px]" : "max-w-[430px]"}`}>
             <div className="flex items-start justify-between gap-4 pt-2">
               <div>
                 <h1 className="text-[1.65rem] font-semibold leading-tight tracking-tight text-slate-950">Meds</h1>
                 <p className="mt-1 text-sm text-slate-500">Medication, caffeine and how you feel.</p>
               </div>
-              <button
-                type="button"
-                onClick={openDoseModal}
-                className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-slate-950 text-white shadow-sm"
-                aria-label="Add medication entry"
-              >
-                <Plus className="h-6 w-6" aria-hidden />
-              </button>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  onClick={openFeelingModal}
+                  className="flex h-12 w-12 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm"
+                  aria-label="Log feeling"
+                  title="Log feeling"
+                >
+                  <HeartPulse className="h-5 w-5" aria-hidden />
+                </button>
+                <button
+                  type="button"
+                  onClick={openDoseModal}
+                  className="flex h-12 w-12 items-center justify-center rounded-full bg-slate-950 text-white shadow-sm"
+                  aria-label="Add medication entry"
+                  title="Add medication or caffeine"
+                >
+                  <Plus className="h-6 w-6" aria-hidden />
+                </button>
+              </div>
             </div>
 
             <div className="mt-5">
-              <div className="grid grid-cols-2 rounded-full border border-slate-200 bg-white p-1 shadow-[0_8px_24px_rgba(15,23,42,0.035)]">
+              <div className="grid grid-cols-3 rounded-full border border-slate-200 bg-white p-1 shadow-[0_8px_24px_rgba(15,23,42,0.035)]">
                 {[
                   { id: "today", label: "Today" },
                   { id: "history", label: "History" },
+                  { id: "tracker", label: "Tracker" },
                 ].map((option) => (
                   <button
                     key={option.id}
@@ -6983,53 +7674,15 @@ useEffect(() => {
 
             {medsView === "today" ? (
               <div className="mt-6 space-y-5">
-                <section>
-                  <div className="mb-3 text-sm font-semibold text-slate-950">Quick log</div>
-                  <div className="-mx-4 flex gap-2.5 overflow-x-auto px-4 pb-1">
-                    <button
-                      type="button"
-                      onClick={quickLogVyvanse}
-                      disabled={medsSaving}
-                      className="flex shrink-0 items-center gap-2 rounded-[16px] border border-orange-300 bg-orange-50/50 px-3.5 py-3 text-sm font-semibold text-orange-950"
-                    >
-                      <span className="grid h-6 w-6 place-items-center rounded-full bg-orange-500 text-white">
-                        <Plus className="h-3.5 w-3.5" aria-hidden />
-                      </span>
-                      Vyvanse 30mg
-                    </button>
-                    <button
-                      type="button"
-                      onClick={openCaffeineSheet}
-                      className="flex shrink-0 items-center gap-2 rounded-[16px] border border-amber-300 bg-amber-50/60 px-3.5 py-3 text-sm font-semibold text-amber-950"
-                    >
-                      <span className="grid h-6 w-6 place-items-center rounded-full bg-amber-500 text-white">
-                        <Plus className="h-3.5 w-3.5" aria-hidden />
-                      </span>
-                      Coffee
-                    </button>
-                    <button
-                      type="button"
-                      onClick={openFeelingModal}
-                      className="flex shrink-0 items-center gap-2 rounded-[16px] border border-slate-200 bg-white px-3.5 py-3 text-sm font-semibold text-slate-600"
-                    >
-                      <span className="grid h-6 w-6 place-items-center rounded-full bg-slate-50 text-slate-700">
-                        <HeartPulse className="h-4 w-4" aria-hidden />
-                      </span>
-                      Feeling?
-                    </button>
+                {medsError ? (
+                  <div className="rounded-2xl border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                    {medsError}
                   </div>
-                  {medsError ? (
-                    <div className="mt-3 rounded-2xl border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700">
-                      {medsError}
-                    </div>
-                  ) : null}
-                </section>
-
+                ) : null}
                 <section>
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <div>
                       <div className="text-base font-semibold text-slate-950">Estimated levels</div>
-                      <div className="mt-0.5 text-[11px] text-slate-400">{medsRangeLabel(medsVisibleRange.startMs, medsVisibleRange.endMs)}</div>
                     </div>
                     <div className="grid grid-cols-4 rounded-xl bg-slate-100 p-1 text-xs font-semibold text-slate-600">
                       {(Object.keys(MEDS_RANGE_CONFIG) as MedsLevelRange[]).map((range) => (
@@ -7110,17 +7763,17 @@ useEffect(() => {
                 <section className="pb-3">
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <div className="text-base font-semibold text-slate-950">Today's log</div>
-                    <button type="button" className="text-sm font-medium text-slate-500">
-                      See all
-                    </button>
                   </div>
                   <div className="divide-y divide-slate-200/70">
                     {todaysMedicationEntries.length ? todaysMedicationEntries.map((entry) => {
                       const isCaffeine = isCaffeineEntry(entry);
-                      const title = entry.entryType === "observation" ? entry.feeling ?? "Feeling" : isCaffeine ? caffeineDrinkLabel(entry) : entry.medication ?? "Dose";
+                      const feelingLogs = entry.entryType === "observation" ? feelingLogsFromEntry(entry) : [];
+                      const primaryFeelingLog = feelingLogs[0];
+                      const PrimaryFeelingIcon = primaryFeelingLog ? feelingIconComponent(primaryFeelingLog.icon) : HeartPulse;
+                      const title = entry.entryType === "observation" ? "Feeling" : isCaffeine ? caffeineDrinkLabel(entry) : entry.medication ?? "Dose";
                       const detail =
                         entry.entryType === "observation"
-                          ? [entry.intensity ? titleCase(entry.intensity) : "", entry.valence ? titleCase(entry.valence) : ""].filter(Boolean).join(" · ") || "Feeling"
+                          ? ""
                           : isCaffeine
                             ? `Coffee · ~${formatMedicationAmount(entry.amount ?? 0)} mg caffeine`
                             : [entry.amount ? formatMedicationAmount(entry.amount) : "", entry.unit ?? ""].filter(Boolean).join(" ");
@@ -7134,7 +7787,7 @@ useEffect(() => {
                         <div className="text-xs tabular-nums text-slate-400">{formatMedicationTime(entry.timestamp)}</div>
                         <div className="grid h-10 w-10 place-items-center rounded-full bg-slate-100 text-slate-900">
                           {entry.entryType === "observation" ? (
-                            <HeartPulse className="h-5 w-5 text-blue-600" aria-hidden />
+                            <PrimaryFeelingIcon className="h-5 w-5 text-emerald-600" aria-hidden />
                           ) : isCaffeine ? (
                             <Coffee className="h-5 w-5" aria-hidden />
                           ) : (
@@ -7143,7 +7796,26 @@ useEffect(() => {
                         </div>
                         <div className="min-w-0">
                           <div className="truncate text-sm font-semibold text-slate-950">{title}</div>
-                          <div className="truncate text-xs text-slate-500">{detail}</div>
+                          {entry.entryType === "observation" ? (
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              {feelingLogs.length ? feelingLogs.map((log) => {
+                                const FeelingIcon = feelingIconComponent(log.icon);
+                                return (
+                                  <span
+                                    key={`${entry.id}-${log.id}`}
+                                    className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium ${feelingValenceTone(log.valence)}`}
+                                  >
+                                    <FeelingIcon className="h-3 w-3" aria-hidden />
+                                    {log.name} · {log.intensity}/5
+                                  </span>
+                                );
+                              }) : (
+                                <span className="text-xs text-slate-500">Feeling</span>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="truncate text-xs text-slate-500">{detail}</div>
+                          )}
                         </div>
                         <Ellipsis className="h-5 w-5 text-slate-400" aria-hidden />
                       </button>
@@ -7153,22 +7825,9 @@ useEffect(() => {
                     )}
                   </div>
 
-                  <button
-                    type="button"
-                    className="mt-3 flex w-full items-center gap-3 rounded-[18px] border border-slate-200 bg-slate-50/80 p-3 text-left"
-                  >
-                    <span className="grid h-12 w-12 place-items-center rounded-2xl bg-white text-blue-600">
-                      <HeartPulse className="h-6 w-6" aria-hidden />
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-sm font-semibold text-slate-950">How is it working?</span>
-                      <span className="block truncate text-xs text-slate-500">Log focus, energy, appetite...</span>
-                    </span>
-                    <ChevronRight className="h-5 w-5 text-slate-500" aria-hidden />
-                  </button>
                 </section>
               </div>
-            ) : (
+            ) : medsView === "history" ? (
               <div className="-mx-1 mt-4 space-y-3 px-1 sm:mx-0 sm:px-0">
                 <div className="space-y-2 border-b border-slate-200/70 pb-3">
                   <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">History</div>
@@ -7213,26 +7872,49 @@ useEffect(() => {
                           {entries
                             .slice()
                             .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp))
-                            .map((entry) => (
-                              <button
-                                key={entry.id}
-                                type="button"
-                                onClick={() => openMedicationEntryEditor(entry)}
-                                className="grid w-full grid-cols-[48px_1fr] items-center gap-3 rounded-lg px-1 py-2 text-left text-sm transition-colors hover:bg-slate-50/80"
-                              >
-                                <div className="tabular-nums text-[12px] text-slate-400">{formatMedicationTime(entry.timestamp)}</div>
-                                <div className={`flex min-w-0 items-center gap-2 ${
-                                  entry.entryType === "input" ? "text-cyan-800" : "text-violet-800"
-                                }`}>
+                            .map((entry) => {
+                              const feelingLogs = entry.entryType === "observation" ? feelingLogsFromEntry(entry) : [];
+                              return (
+                                <button
+                                  key={entry.id}
+                                  type="button"
+                                  onClick={() => openMedicationEntryEditor(entry)}
+                                  className="grid w-full grid-cols-[48px_1fr] items-center gap-3 rounded-lg px-1 py-2 text-left text-sm transition-colors hover:bg-slate-50/80"
+                                >
+                                  <div className="tabular-nums text-[12px] text-slate-400">{formatMedicationTime(entry.timestamp)}</div>
                                   {entry.entryType === "input" ? (
-                                    entry.medication === "Coffee" ? <Coffee className="h-4 w-4 text-cyan-600" aria-hidden /> : <PillIcon className="h-4 w-4 text-cyan-600" aria-hidden />
+                                    <div className="flex min-w-0 items-center gap-2 text-cyan-800">
+                                      {entry.medication === "Coffee" ? (
+                                        <Coffee className="h-4 w-4 shrink-0 text-cyan-600" aria-hidden />
+                                      ) : (
+                                        <PillIcon className="h-4 w-4 shrink-0 text-cyan-600" aria-hidden />
+                                      )}
+                                      <span className="truncate">{medicationLabel(entry)}</span>
+                                    </div>
                                   ) : (
-                                    <HeartPulse className="h-4 w-4 text-violet-600" aria-hidden />
+                                    <div className="flex min-w-0 flex-wrap gap-1">
+                                      {feelingLogs.length ? feelingLogs.map((log) => {
+                                        const FeelingIcon = feelingIconComponent(log.icon);
+                                        return (
+                                          <span
+                                            key={`${entry.id}-${log.id}`}
+                                            className={`inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium ${feelingValenceTone(log.valence)}`}
+                                          >
+                                            <FeelingIcon className="h-3 w-3 shrink-0" aria-hidden />
+                                            <span className="truncate">{log.name} · {log.intensity}/5</span>
+                                          </span>
+                                        );
+                                      }) : (
+                                        <span className="flex min-w-0 items-center gap-2 text-violet-800">
+                                          <HeartPulse className="h-4 w-4 shrink-0 text-violet-600" aria-hidden />
+                                          <span className="truncate">{medicationLabel(entry)}</span>
+                                        </span>
+                                      )}
+                                    </div>
                                   )}
-                                  <span className="truncate">{medicationLabel(entry)}</span>
-                                </div>
-                              </button>
-                            ))}
+                                </button>
+                              );
+                            })}
                         </div>
                       </div>
                     ))
@@ -7242,6 +7924,31 @@ useEffect(() => {
                     </div>
                   )}
                 </div>
+              </div>
+            ) : (
+              <div className="mt-6 min-w-0 max-w-full space-y-5 sm:space-y-6">
+                <div className="min-w-0">
+                  <h2 className="text-base font-semibold text-slate-950">Medication tracker</h2>
+                  <p className="mt-1 text-xs text-slate-500">Daily intake over the last 12 months.</p>
+                </div>
+                {medicationTrackerSubstances.length ? (
+                  <div className="min-w-0 max-w-full space-y-4 sm:space-y-5">
+                    {medicationTrackerSubstances.map((substance) => (
+                      <React.Fragment key={substance.key}>
+                        <div className="block min-w-0 max-w-full sm:hidden">
+                          <MedsTrackerGrid substance={substance} dates={medicationTrackerMobileDates} mobile />
+                        </div>
+                        <div className="hidden sm:block">
+                          <MedsTrackerGrid substance={substance} dates={medicationTrackerDates} />
+                        </div>
+                      </React.Fragment>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="border-y border-dashed border-slate-200 py-6 text-sm text-slate-400">
+                    No medication or caffeine intake logged yet.
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -9617,158 +10324,13 @@ useEffect(() => {
         </div>
       </main>
 
-      {caffeineSheetOpen ? (
-        <div className="fixed inset-0 z-50 flex items-end justify-center px-3 sm:px-4">
-          <div className="absolute inset-0 bg-slate-950/45 backdrop-blur-[1px]" onClick={() => !medsSaving && setCaffeineSheetOpen(false)} aria-hidden="true" />
-          <div className="relative mb-3 flex max-h-[88vh] w-full max-w-[430px] flex-col overflow-hidden rounded-t-[28px] rounded-b-[24px] border border-slate-200 bg-white shadow-2xl">
-            <div className="mx-auto mt-3 h-1.5 w-12 rounded-full bg-slate-300" />
-            <div className="flex items-center justify-between px-5 pb-3 pt-5">
-              <div className="text-xl font-semibold tracking-tight text-slate-950">Log caffeine</div>
-              <button
-                type="button"
-                onClick={() => setCaffeineSheetOpen(false)}
-                disabled={medsSaving}
-                className="grid h-10 w-10 place-items-center rounded-full bg-slate-50 text-slate-700 disabled:opacity-50"
-                aria-label="Close caffeine logger"
-              >
-                <X className="h-5 w-5" aria-hidden />
-              </button>
-            </div>
-
-            <div className="overflow-y-auto px-5 pb-5">
-              {medsError ? (
-                <div className="mb-4 rounded-2xl border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700">
-                  {medsError}
-                </div>
-              ) : null}
-
-              <div className="grid gap-5">
-                <Field label="Drink type">
-                  <div className="grid grid-cols-3 gap-2">
-                    {CAFFEINE_DRINK_DEFAULTS.map((drink) => (
-                      <button
-                        key={drink.id}
-                        type="button"
-                        onClick={() => applyCaffeineDrinkDefaults(drink.id)}
-                        className={`grid min-h-[74px] place-items-center gap-1 rounded-[16px] border px-2 py-2 text-center text-[12px] font-medium ${
-                          caffeineDrinkId === drink.id
-                            ? "border-amber-300 bg-amber-50 text-slate-950"
-                            : "border-slate-200 bg-white text-slate-700"
-                        }`}
-                      >
-                        <Coffee className="h-5 w-5" aria-hidden />
-                        <span>{drink.label}</span>
-                      </button>
-                    ))}
-                  </div>
-                </Field>
-
-                <Field label="Size">
-                  <div className="grid grid-cols-3 gap-2">
-                    {(["S", "M", "L"] as const).map((size) => (
-                      <button
-                        key={size}
-                        type="button"
-                        onClick={() => {
-                          setCaffeineSize(size);
-                          applyCaffeineDrinkDefaults(caffeineDrinkId, size);
-                        }}
-                        className={`h-12 rounded-[16px] border text-sm font-semibold ${
-                          caffeineSize === size
-                            ? "border-slate-950 bg-slate-950 text-white"
-                            : "border-slate-200 bg-white text-slate-600"
-                        }`}
-                      >
-                        {size}
-                      </button>
-                    ))}
-                  </div>
-                </Field>
-
-                <div className="border-t border-slate-100 pt-4">
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <div className="text-base font-semibold text-slate-950">Estimated caffeine</div>
-                      <div className="mt-1 text-xs text-slate-500">Editable estimate. Coffee varies a lot.</div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-lg font-semibold tabular-nums text-slate-950">~</span>
-                      <input
-                        type="number"
-                        min="1"
-                        step="1"
-                        value={caffeineMg}
-                        onChange={(e) => setCaffeineMg(e.target.value)}
-                        className="h-10 w-20 rounded-[14px] border border-slate-200 bg-white px-2 text-right text-lg font-semibold tabular-nums outline-none focus:ring-2 focus:ring-slate-200"
-                      />
-                      <span className="text-lg font-semibold text-slate-950">mg</span>
-                    </div>
-                  </div>
-                </div>
-
-                <Field label="Time">
-                  <div className="grid grid-cols-[1fr_auto] gap-2">
-                    {caffeineWhenMode === "manual" ? (
-                      <div className="grid grid-cols-2 gap-2">
-                        <input
-                          type="date"
-                          value={caffeineDate}
-                          onChange={(e) => setCaffeineDate(e.target.value)}
-                          className="h-12 min-w-0 rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                        />
-                        <input
-                          type="time"
-                          value={caffeineTime}
-                          onChange={(e) => setCaffeineTime(e.target.value)}
-                          className="h-12 min-w-0 rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                        />
-                      </div>
-                    ) : (
-                      <div className="flex h-12 items-center rounded-[16px] border border-slate-200 bg-white px-3 text-sm font-medium text-slate-800">
-                        {new Intl.DateTimeFormat("en", { weekday: "short", hour: "numeric", minute: "2-digit" }).format(new Date())}
-                      </div>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => setCaffeineWhenMode((mode) => (mode === "now" ? "manual" : "now"))}
-                      className="flex h-12 items-center gap-2 rounded-[16px] border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700"
-                    >
-                      <Clock className="h-4 w-4" aria-hidden />
-                      {caffeineWhenMode === "now" ? "Choose" : "Now"}
-                    </button>
-                  </div>
-                </Field>
-
-                <Field label="Notes (optional)">
-                  <input
-                    value={caffeineNote}
-                    onChange={(e) => setCaffeineNote(e.target.value)}
-                    className="h-12 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                    placeholder="E.g. oat milk, extra shot..."
-                  />
-                </Field>
-
-                <button
-                  type="button"
-                  onClick={submitCaffeineEntry}
-                  disabled={medsSaving}
-                  className="h-14 rounded-[18px] bg-slate-950 text-base font-semibold text-white shadow-sm disabled:bg-slate-300"
-                >
-                  {medsSaving ? "Logging caffeine" : "Log caffeine"}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
       {/* Medication dose modal */}
       <Modal
         open={medsModalMode === "dose"}
-        title={editingMedicationEntry?.entryType === "input" ? "Edit dose" : "Add dose"}
+        title={editingMedicationEntry?.entryType === "input" ? "Edit dose" : "Add entry"}
         onClose={closeMedsModal}
       >
-        <div className="grid gap-4">
+        <div className="grid gap-3">
           {medsError ? (
             <div className="rounded-2xl border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700">
               {medsError}
@@ -9777,24 +10339,49 @@ useEffect(() => {
 
           <Field label="What">
             <div className="grid grid-cols-2 gap-2">
-              {MEDICATION_OPTIONS.map((option) => (
-                <button
-                  key={option.id}
-                  type="button"
-                  onClick={() => {
-                    setDoseMedicationKind(option.id);
-                    setDoseUnit(option.unit);
-                  }}
-                  className={`flex h-12 items-center justify-center gap-2 rounded-[18px] border text-sm font-medium ${
-                    doseMedicationKind === option.id
-                      ? "border-slate-900 bg-slate-900 text-white"
-                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-                  }`}
-                >
-                  {option.id === "Coffee" ? <Coffee className="h-4 w-4" aria-hidden /> : <PillIcon className="h-4 w-4" aria-hidden />}
-                  {option.label}
-                </button>
-              ))}
+              {MEDICATION_OPTIONS.map((option) => {
+                const selected = doseMedicationKind === option.id;
+                const tones = {
+                  Vyvanse: selected
+                    ? "border-orange-200 bg-orange-50/90 text-orange-600"
+                    : "border-transparent bg-slate-50 text-orange-500 hover:bg-orange-50/60",
+                  Prozac: selected
+                    ? "border-violet-200 bg-violet-50/90 text-violet-600"
+                    : "border-transparent bg-slate-50 text-violet-500 hover:bg-violet-50/60",
+                  Coffee: selected
+                    ? "border-amber-200 bg-amber-50/90 text-amber-600"
+                    : "border-transparent bg-slate-50 text-amber-500 hover:bg-amber-50/60",
+                  Custom: selected
+                    ? "border-slate-300 bg-slate-100 text-slate-800"
+                    : "border-transparent bg-slate-50 text-slate-600 hover:bg-slate-100",
+                } as const;
+                const Icon = option.id === "Coffee" ? Coffee : option.id === "Custom" ? Plus : PillIcon;
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => {
+                      setDoseMedicationKind(option.id);
+                      setDoseUnit(option.unit);
+                      if (option.id === "Coffee") {
+                        const now = new Date();
+                        setCaffeineSize("M");
+                        setCaffeineWhenMode("now");
+                        setCaffeineDate(localDateISO(now));
+                        setCaffeineTime(timeInputFromTimestamp(now.toISOString()));
+                        setCaffeineNote("");
+                        applyCaffeineDrinkDefaults("iced_latte", "M");
+                      }
+                    }}
+                    className={`flex h-14 items-center gap-3 rounded-[17px] border px-3 text-left transition-colors ${tones[option.id]}`}
+                  >
+                    <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-white/80 shadow-[0_1px_2px_rgba(15,23,42,0.05)]">
+                      <Icon className="h-[18px] w-[18px]" aria-hidden />
+                    </span>
+                    <span className="text-sm font-semibold text-slate-900">{option.label}</span>
+                  </button>
+                );
+              })}
             </div>
           </Field>
 
@@ -9809,65 +10396,125 @@ useEffect(() => {
             </Field>
           ) : null}
 
-          <div className="grid grid-cols-[1fr_96px] gap-3">
-            <Field label="Amount">
-              <input
-                type="number"
-                min="0"
-                step="any"
-                value={doseAmount}
-                onChange={(e) => setDoseAmount(e.target.value)}
-                className="h-11 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                placeholder="30"
-              />
-            </Field>
-            <Field label="Unit">
-              <input
-                value={doseUnit}
-                onChange={(e) => setDoseUnit(e.target.value)}
-                className="h-11 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                placeholder="mg"
-              />
-            </Field>
-          </div>
-
-          <Field label="When">
-            <div className="grid gap-2">
-              <div className="inline-flex w-fit rounded-full border border-slate-200 bg-slate-50 p-1">
-                {[
-                  { id: "now", label: "Now" },
-                  { id: "manual", label: "Choose time" },
-                ].map((option) => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    onClick={() => setDoseWhenMode(option.id as "now" | "manual")}
-                    className={`rounded-full px-3 py-1.5 text-sm font-medium ${
-                      doseWhenMode === option.id ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"
-                    }`}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-              {doseWhenMode === "manual" ? (
-                <div className="grid grid-cols-2 gap-3">
-                  <input
-                    type="date"
-                    value={doseDate}
-                    onChange={(e) => setDoseDate(e.target.value)}
-                    className="h-11 rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                  />
-                  <input
-                    type="time"
-                    value={doseTime}
-                    onChange={(e) => setDoseTime(e.target.value)}
-                    className="h-11 rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                  />
+          {doseMedicationKind === "Coffee" ? (
+            <>
+              <Field label="Drink type">
+                <div className="grid grid-cols-3 gap-2">
+                  {CAFFEINE_DRINK_DEFAULTS.map((drink) => (
+                    <button
+                      key={drink.id}
+                      type="button"
+                      onClick={() => applyCaffeineDrinkDefaults(drink.id)}
+                      className={`grid min-h-[74px] place-items-center gap-1 rounded-[16px] border px-2 py-2 text-center text-[12px] font-medium ${
+                        caffeineDrinkId === drink.id
+                          ? "border-amber-300 bg-amber-50 text-slate-950"
+                          : "border-slate-200 bg-white text-slate-700"
+                      }`}
+                    >
+                      <Coffee className="h-5 w-5" aria-hidden />
+                      <span>{drink.label}</span>
+                    </button>
+                  ))}
                 </div>
-              ) : null}
-            </div>
-          </Field>
+              </Field>
+
+              <Field label="Time">
+                <div className="grid grid-cols-[1fr_auto] gap-2">
+                  {caffeineWhenMode === "manual" ? (
+                    <div className="grid grid-cols-2 gap-2">
+                      <input
+                        type="date"
+                        value={caffeineDate}
+                        onChange={(e) => setCaffeineDate(e.target.value)}
+                        className="h-12 min-w-0 rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                      />
+                      <input
+                        type="time"
+                        value={caffeineTime}
+                        onChange={(e) => setCaffeineTime(e.target.value)}
+                        className="h-12 min-w-0 rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex h-12 items-center rounded-[16px] border border-slate-200 bg-white px-3 text-sm font-medium text-slate-800">
+                      {new Intl.DateTimeFormat("en", { weekday: "short", hour: "numeric", minute: "2-digit" }).format(new Date())}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setCaffeineWhenMode((mode) => (mode === "now" ? "manual" : "now"))}
+                    className="flex h-12 items-center gap-2 rounded-[16px] border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700"
+                  >
+                    <Clock className="h-4 w-4" aria-hidden />
+                    {caffeineWhenMode === "now" ? "Choose" : "Now"}
+                  </button>
+                </div>
+              </Field>
+
+            </>
+          ) : (
+            <>
+              <div className="grid grid-cols-[1fr_96px] gap-3">
+                <Field label="Amount">
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={doseAmount}
+                    onChange={(e) => setDoseAmount(e.target.value)}
+                    className="h-11 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                    placeholder="30"
+                  />
+                </Field>
+                <Field label="Unit">
+                  <input
+                    value={doseUnit}
+                    onChange={(e) => setDoseUnit(e.target.value)}
+                    className="h-11 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                    placeholder="mg"
+                  />
+                </Field>
+              </div>
+
+              <Field label="When">
+                <div className="grid gap-2">
+                  <div className="inline-flex w-fit rounded-full border border-slate-200 bg-slate-50 p-1">
+                    {[
+                      { id: "now", label: "Now" },
+                      { id: "manual", label: "Choose time" },
+                    ].map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => setDoseWhenMode(option.id as "now" | "manual")}
+                        className={`rounded-full px-3 py-1.5 text-sm font-medium ${
+                          doseWhenMode === option.id ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"
+                        }`}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                  {doseWhenMode === "manual" ? (
+                    <div className="grid grid-cols-2 gap-3">
+                      <input
+                        type="date"
+                        value={doseDate}
+                        onChange={(e) => setDoseDate(e.target.value)}
+                        className="h-11 rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                      />
+                      <input
+                        type="time"
+                        value={doseTime}
+                        onChange={(e) => setDoseTime(e.target.value)}
+                        className="h-11 rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                      />
+                    </div>
+                  ) : null}
+                </div>
+              </Field>
+            </>
+          )}
 
           <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
             <button
@@ -9880,11 +10527,11 @@ useEffect(() => {
             </button>
             <button
               type="button"
-              onClick={submitDose}
+              onClick={doseMedicationKind === "Coffee" ? submitCaffeineEntry : submitDose}
               disabled={medsSaving}
               className="rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:bg-slate-300"
             >
-              {medsSaving ? "Saving" : editingMedicationEntry?.entryType === "input" ? "Save changes" : "Save"}
+              {medsSaving ? "Saving" : editingMedicationEntry?.entryType === "input" ? "Save changes" : doseMedicationKind === "Coffee" ? "Log caffeine" : "Save"}
             </button>
           </div>
 
@@ -9933,87 +10580,187 @@ useEffect(() => {
         title={editingMedicationEntry?.entryType === "observation" ? "Edit feeling" : "Add feeling"}
         onClose={closeMedsModal}
       >
-        <div className="grid gap-4">
+        <div className="grid gap-3">
           {medsError ? (
             <div className="rounded-2xl border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700">
               {medsError}
             </div>
           ) : null}
 
-          <Field label="Feeling">
-            <div className="grid grid-cols-2 gap-2">
-              {FEELING_OPTIONS.map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  onClick={() => setFeelingChoice(option)}
-                  className={`min-h-11 rounded-[18px] border px-3 text-sm font-medium ${
-                    feelingChoice === option
-                      ? "border-slate-900 bg-slate-900 text-white"
-                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-                  }`}
-                >
-                  {option}
-                </button>
-              ))}
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-slate-950">Feelings</div>
+              <div className="mt-0.5 text-xs text-slate-500">Select one or more, then set intensity.</div>
             </div>
-          </Field>
+            <button
+              type="button"
+              onClick={() => setFeelingManageOpen((open) => !open)}
+              className="rounded-full border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+            >
+              {feelingManageOpen ? "Done" : "Manage"}
+            </button>
+          </div>
 
-          {feelingChoice === "+ Custom" ? (
-            <Field label="Custom feeling">
-              <input
-                value={feelingCustom}
-                onChange={(e) => setFeelingCustom(e.target.value)}
-                className="h-11 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                placeholder="Short label"
+          <div className="grid gap-3">
+            <div className="grid gap-2">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Feeling / State</div>
+              <FeelingSelectionGrid
+                definitions={feelingDefinitions.filter((definition) => definition.active && definition.category === "state")}
+                selectedFeelingLogs={selectedFeelingLogs}
+                onToggle={toggleStructuredFeeling}
               />
-            </Field>
+            </div>
+            <div className="grid gap-2">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Symptoms</div>
+              <FeelingSelectionGrid
+                definitions={feelingDefinitions.filter((definition) => definition.active && definition.category === "symptom")}
+                selectedFeelingLogs={selectedFeelingLogs}
+                onToggle={toggleStructuredFeeling}
+              />
+            </div>
+          </div>
+
+          {Object.keys(selectedFeelingLogs).length ? (
+            <div className="grid gap-2 rounded-[16px] border border-slate-200/70 bg-slate-50/80 p-2.5">
+              <div className="text-xs font-semibold text-slate-500">Selected</div>
+              {feelingDefinitions
+                .filter((definition) => selectedFeelingLogs[definition.id])
+                .map((definition) => {
+                  const Icon = feelingIconComponent(definition.icon);
+                  const iconColor = feelingVisualIconColor(definition);
+                  return (
+                    <div key={definition.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="grid h-7 w-7 shrink-0 place-items-center rounded-xl bg-white text-slate-700 ring-1 ring-slate-200/70">
+                          <Icon className={`h-4 w-4 ${iconColor}`} aria-hidden />
+                        </span>
+                        <span className="truncate text-sm font-medium text-slate-800">{definition.name}</span>
+                      </div>
+                      <div className="flex gap-1">
+                        {[1, 2, 3, 4, 5].map((intensity) => (
+                          <button
+                            key={intensity}
+                            type="button"
+                            onClick={() => setStructuredFeelingIntensity(definition.id, intensity)}
+                            className={`h-7 w-7 rounded-full text-xs font-semibold ${
+                              selectedFeelingLogs[definition.id]?.intensity === intensity
+                                ? "bg-slate-950 text-white"
+                                : "bg-white text-slate-500 ring-1 ring-slate-200"
+                            }`}
+                          >
+                            {intensity}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
           ) : null}
 
-          <div className="grid gap-3 sm:grid-cols-3">
-            <Field label="Valence">
-              <select
-                value={feelingValence}
-                onChange={(e) => setFeelingValence(e.target.value as FeelingValence | "")}
-                className="h-11 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-              >
-                <option value="">Optional</option>
-                {FEELING_VALENCES.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Intensity">
-              <select
-                value={feelingIntensity}
-                onChange={(e) => setFeelingIntensity(e.target.value as FeelingIntensity | "")}
-                className="h-11 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-              >
-                <option value="">Optional</option>
-                {FEELING_INTENSITIES.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Part of day (optional)">
-              <select
-                value={feelingDaypart}
-                onChange={(e) => setFeelingDaypart(e.target.value as FeelingDaypart | "")}
-                className="h-11 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-              >
-                <option value="">Optional</option>
-                {FEELING_DAYPARTS.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </Field>
+          <div className="rounded-[18px] border border-slate-200 bg-slate-50/70 p-3">
+            <button
+              type="button"
+              onClick={() => setCustomFeelingOpen((open) => !open)}
+              className="flex w-full items-center justify-between text-left text-xs font-semibold text-slate-600"
+            >
+              <span>Add custom feeling</span>
+              <Plus className={`h-4 w-4 transition-transform ${customFeelingOpen ? "rotate-45" : ""}`} aria-hidden />
+            </button>
+            {customFeelingOpen ? (
+              <div className="mt-3 grid gap-2">
+                <input
+                  value={newFeelingName}
+                  onChange={(e) => setNewFeelingName(e.target.value)}
+                  className="h-10 rounded-[14px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                  placeholder="Feeling name"
+                />
+                <FeelingIconPicker value={newFeelingIcon} onChange={setNewFeelingIcon} />
+                <div className="grid gap-2">
+                  <select
+                    value={newFeelingCategory}
+                    onChange={(e) => setNewFeelingCategory(e.target.value as FeelingCategory)}
+                    className="h-10 rounded-[14px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                  >
+                    <option value="state">Feeling / State</option>
+                    <option value="symptom">Symptom</option>
+                  </select>
+                  <select
+                    value={newFeelingValence}
+                    onChange={(e) => setNewFeelingValence(e.target.value as FeelingValenceStable)}
+                    className="h-10 rounded-[14px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                  >
+                    {FEELING_VALENCE_OPTIONS.map((option) => (
+                      <option key={option.id} value={option.id}>{option.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <button
+                  type="button"
+                  onClick={addCustomFeelingDefinition}
+                  disabled={medsSaving}
+                  className="h-10 rounded-full bg-white text-sm font-medium text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50 disabled:opacity-50"
+                >
+                  Add feeling
+                </button>
+              </div>
+            ) : null}
           </div>
+
+          {feelingManageOpen ? (
+            <div className="rounded-[18px] border border-slate-200 bg-white p-3">
+              <div className="text-xs font-semibold text-slate-500">Manage feelings</div>
+              <div className="mt-3 grid gap-2">
+                {feelingDefinitions.map((definition) => {
+                  const Icon = feelingIconComponent(definition.icon);
+                  return (
+                    <div key={definition.id} className="grid gap-2 rounded-2xl border border-slate-100 bg-slate-50/70 p-2">
+                      <div className="flex items-center gap-2">
+                        <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-full border ${feelingValenceTone(definition.valence)}`}>
+                          <Icon className="h-4 w-4" aria-hidden />
+                        </span>
+                        <input
+                          value={definition.name}
+                          onChange={(e) => updateFeelingDefinition(definition.id, { name: e.target.value })}
+                          className="h-9 min-w-0 flex-1 rounded-[12px] border border-slate-200 bg-white px-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                        />
+                      </div>
+                      <FeelingIconPicker
+                        value={definition.icon}
+                        onChange={(icon) => updateFeelingDefinition(definition.id, { icon })}
+                      />
+                      <div className="grid grid-cols-[1fr_1fr_auto] gap-2">
+                        <select
+                          value={definition.category}
+                          onChange={(e) => updateFeelingDefinition(definition.id, { category: e.target.value as FeelingCategory })}
+                          className="h-9 min-w-0 rounded-[12px] border border-slate-200 bg-white px-2 text-xs outline-none focus:ring-2 focus:ring-slate-200"
+                        >
+                          <option value="state">State</option>
+                          <option value="symptom">Symptom</option>
+                        </select>
+                        <select
+                          value={definition.valence}
+                          onChange={(e) => updateFeelingDefinition(definition.id, { valence: e.target.value as FeelingValenceStable })}
+                          className="h-9 rounded-[12px] border border-slate-200 bg-white px-2 text-xs outline-none focus:ring-2 focus:ring-slate-200"
+                        >
+                          {FEELING_VALENCE_OPTIONS.map((option) => (
+                            <option key={option.id} value={option.id}>{option.label}</option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => updateFeelingDefinition(definition.id, { active: !definition.active })}
+                          className="h-9 rounded-full border border-slate-200 bg-white px-3 text-xs font-medium text-slate-600"
+                        >
+                          {definition.active ? "Archive" : "Enable"}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
 
           <Field label="Timestamp">
             <div className="grid gap-2">
@@ -10111,7 +10858,6 @@ useEffect(() => {
         </div>
       </Modal>
 
-      {/* Smart schedule import modal */}
       <Modal open={smartImportOpen} title="Smart schedule import" onClose={closeSmartImport}>
         <div className="grid gap-4">
           <Field label="Paste schedule">
