@@ -20,6 +20,7 @@ export type Task = {
   durationHrs?: number | null;
   difficulty?: number | null;
   completedAt?: string | null;
+  deletedAt?: string | null;
   createdAt: number;
   mode?: "task" | "practice";
 };

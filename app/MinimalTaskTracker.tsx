@@ -347,6 +347,7 @@ type AttentionWeights = {
 const DEFAULT_ATTENTION_WEIGHTS: AttentionWeights = { time: 50, duration: 15, difficulty: 15 };
 const FIXED_PRIORITY_WEIGHT = 20;
 const COMPLETED_RECOVERY_DAYS = 30;
+const RECENTLY_DELETED_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const VISION_HORIZONS: { id: VisionHorizon; label: string }[] = [
   { id: "short", label: "Short" },
@@ -473,10 +474,6 @@ const APP_NAV_ITEMS: AppNavItem[] = [
   { id: "logger", label: "Logger", icon: Clock3 },
   { id: "meds", label: "Meds", icon: PillIcon },
 ];
-const MOBILE_PRIMARY_NAV_ITEMS = APP_NAV_ITEMS.filter((item) =>
-  item.id === "board" || item.id === "planner" || item.id === "list"
-);
-const MOBILE_MORE_NAV_ITEMS = APP_NAV_ITEMS.filter((item) => item.id === "logger" || item.id === "meds");
 const MEDICATION_OPTIONS: { id: MedicationKind; label: string; unit: string }[] = [
   { id: "Vyvanse", label: "Vyvanse", unit: "mg" },
   { id: "Prozac", label: "Prozac", unit: "mg" },
@@ -4036,7 +4033,6 @@ export default function MinimalTaskTracker() {
   const [caffeineDate, setCaffeineDate] = useState("");
   const [caffeineTime, setCaffeineTime] = useState("");
   const [caffeineNote, setCaffeineNote] = useState("");
-  const [mobileMoreNavOpen, setMobileMoreNavOpen] = useState(false);
   const [backupStatus, setBackupStatus] = useState({ label: "—", count: 0 });
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -4257,7 +4253,6 @@ useEffect(() => {
 useEffect(() => {
   if (mode !== "list") setOpenListFilter(null);
   if (mode !== "list") setMobileTaskFiltersOpen(false);
-  setMobileMoreNavOpen(false);
 }, [mode]);
 
 useEffect(() => {
@@ -4474,6 +4469,8 @@ useEffect(() => {
 
   const firstCategoryId = activeCategories[0]?.id ?? fallbackCategories[0]?.id ?? "";
 
+  const activeTasks = useMemo(() => tasks.filter((task) => !task.deletedAt), [tasks]);
+
   const attentionIncludedCategoryIds = useMemo(() => {
     return activeCategories
       .map((category) => category.id)
@@ -4493,7 +4490,7 @@ useEffect(() => {
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return tasks
+    return activeTasks
       .filter((t) => {
         if (t.status === "completed") return false;
         if (courseFilter !== "all" && t.courseId !== courseFilter) return false;
@@ -4514,11 +4511,11 @@ useEffect(() => {
 
         return (b.createdAt ?? 0) - (a.createdAt ?? 0);
       });
-  }, [tasks, query, courseFilter]);
+  }, [activeTasks, query, courseFilter]);
 
   const completedRows = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return tasks
+    return activeTasks
       .filter((t) => {
         if (!isRecoverableCompleted(t, clientNowMs)) return false;
         if (courseFilter !== "all" && t.courseId !== courseFilter) return false;
@@ -4539,7 +4536,20 @@ useEffect(() => {
         if (ad !== bd) return bd.localeCompare(ad);
         return (b.createdAt ?? 0) - (a.createdAt ?? 0);
       });
-  }, [clientNowMs, courseFilter, difficultyFilters, priorityFilters, query, statusFilters, tasks, timeLeftFilter]);
+  }, [activeTasks, clientNowMs, courseFilter, difficultyFilters, priorityFilters, query, statusFilters, timeLeftFilter]);
+
+  const recentlyDeletedTasks = useMemo(() => {
+    return tasks
+      .filter((task) => {
+        if (!task.deletedAt) return false;
+        const deletedMs = new Date(task.deletedAt).getTime();
+        if (!Number.isFinite(deletedMs)) return false;
+        const ageMs = clientNowMs - deletedMs;
+        return ageMs >= 0 && ageMs < RECENTLY_DELETED_DAYS * DAY_MS;
+      })
+      .slice()
+      .sort((a, b) => (b.deletedAt ?? "").localeCompare(a.deletedAt ?? ""));
+  }, [clientNowMs, tasks]);
 
   const listRows = useMemo(() => {
     const rows = filtered.filter((task) => {
@@ -5392,7 +5402,7 @@ useEffect(() => {
     );
   }, [plannerCalendarBaseEventsForRender, plannerVisibleRange]);
   const plannerTaskDeadlinesByDate = useMemo(() => {
-    return tasks.reduce<Record<string, Task[]>>((groups, task) => {
+    return activeTasks.reduce<Record<string, Task[]>>((groups, task) => {
       const hasFixedDate =
         task.deadlineMode === "date" || (!task.deadlineMode && Boolean(task.due));
       if (
@@ -5407,7 +5417,7 @@ useEffect(() => {
       groups[task.due] = [...(groups[task.due] ?? []), task];
       return groups;
     }, {});
-  }, [tasks]);
+  }, [activeTasks]);
   const plannerWeekEvents = useMemo(() => {
     return plannerCalendarEventsForRender.filter((event) => calendarEventIntersectsWeek(event, plannerWeekStart, plannerWeekEnd));
   }, [plannerCalendarEventsForRender, plannerWeekEnd, plannerWeekStart]);
@@ -5513,12 +5523,12 @@ useEffect(() => {
     return groups;
   }, [plannerCalendarEventsForRender, plannerTaskDeadlinesByDate, plannerYearLabel]);
   const plannerTaskOptions = useMemo(() => {
-    const options = tasks
+    const options = activeTasks
       .filter((task) => task.status !== "completed")
       .slice()
       .sort((a, b) => a.title.localeCompare(b.title));
     const selectedTask = plannerEventDraft?.taskId
-      ? tasks.find((task) => task.id === plannerEventDraft.taskId)
+      ? activeTasks.find((task) => task.id === plannerEventDraft.taskId)
       : null;
 
     if (selectedTask && !options.some((task) => task.id === selectedTask.id)) {
@@ -5526,7 +5536,7 @@ useEffect(() => {
     }
 
     return options;
-  }, [plannerEventDraft?.taskId, tasks]);
+  }, [activeTasks, plannerEventDraft?.taskId]);
   const plannerDraftShowsEndDate = Boolean(
     plannerEventDraft &&
       (plannerEventDraft.eventType === "travel" ||
@@ -5757,18 +5767,18 @@ useEffect(() => {
   }, [categories]);
 
   const logTaskOptions = useMemo(() => {
-    const options = tasks
+    const options = activeTasks
       .filter((task) => task.status !== "completed")
       .slice()
       .sort((a, b) => a.title.localeCompare(b.title));
-    const selectedTask = logTaskId ? tasks.find((task) => task.id === logTaskId) : null;
+    const selectedTask = logTaskId ? activeTasks.find((task) => task.id === logTaskId) : null;
 
     if (selectedTask && !options.some((task) => task.id === selectedTask.id)) {
       return [selectedTask, ...options];
     }
 
     return options;
-  }, [logTaskId, tasks]);
+  }, [activeTasks, logTaskId]);
 
   const temporalLogRows = useMemo(() => {
     return logsInRange
@@ -6189,10 +6199,8 @@ useEffect(() => {
   function deleteTask(id: string) {
     createLocalBackup(tasks, timeLogsRef.current);
     refreshBackupStatus();
-    deletedTaskIdsRef.current = Array.from(new Set([...deletedTaskIdsRef.current, id]));
-    allowNextDestructiveSaveRef.current = true;
-    allowNextEmptySaveRef.current = true;
-    setTasks((prev) => prev.filter((t) => t.id !== id));
+    const deletedAt = new Date().toISOString();
+    setTasks((prev) => prev.map((task) => (task.id === id ? { ...task, deletedAt } : task)));
   }
 
   function updateTaskStatus(id: string, status: Status) {
@@ -6208,6 +6216,10 @@ useEffect(() => {
 
   function restoreTask(id: string) {
     updateTaskStatus(id, "to_do");
+  }
+
+  function restoreDeletedTask(id: string) {
+    setTasks((prev) => prev.map((task) => (task.id === id ? { ...task, deletedAt: null } : task)));
   }
 
   function movePlannerWeek(direction: -1 | 1) {
@@ -7550,8 +7562,8 @@ useEffect(() => {
       </aside>
 
       <nav className="fixed inset-x-0 bottom-0 z-50 border-t border-slate-200 bg-white/95 px-3 pb-[calc(env(safe-area-inset-bottom)+0.35rem)] pt-2 backdrop-blur md:hidden">
-        <div className="grid grid-cols-4 gap-1">
-          {MOBILE_PRIMARY_NAV_ITEMS.map((item) => {
+        <div className="grid grid-cols-5 gap-1">
+          {APP_NAV_ITEMS.map((item) => {
             const Icon = item.icon;
             const active = mode === item.id;
             return (
@@ -7559,49 +7571,15 @@ useEffect(() => {
                 key={item.id}
                 type="button"
                 onClick={() => setMode(item.id)}
-                className={`flex flex-col items-center gap-1 rounded-xl px-2 py-1.5 text-[11px] transition-colors ${
+                className={`flex min-w-0 flex-col items-center gap-1 rounded-xl px-1 py-1.5 text-[10px] transition-colors ${
                   active ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-100"
                 }`}
               >
                 <Icon className="h-4 w-4" aria-hidden />
-                <span>{item.label}</span>
+                <span className="max-w-full truncate">{item.label}</span>
               </button>
             );
           })}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setMobileMoreNavOpen((open) => !open)}
-              className={`flex w-full flex-col items-center gap-1 rounded-xl px-2 py-1.5 text-[11px] transition-colors ${
-                MOBILE_MORE_NAV_ITEMS.some((item) => item.id === mode)
-                  ? "bg-slate-900 text-white"
-                  : "text-slate-500 hover:bg-slate-100"
-              }`}
-            >
-              <Ellipsis className="h-4 w-4" aria-hidden />
-              <span>More</span>
-            </button>
-            {mobileMoreNavOpen ? (
-              <div className="absolute bottom-full right-0 mb-2 w-36 rounded-2xl border border-slate-200 bg-white p-1.5 text-sm shadow-xl">
-                {MOBILE_MORE_NAV_ITEMS.map((item) => {
-                  const Icon = item.icon;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => setMode(item.id)}
-                      className={`flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left ${
-                        mode === item.id ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"
-                      }`}
-                    >
-                      <Icon className="h-4 w-4" aria-hidden />
-                      {item.label}
-                    </button>
-                  );
-                })}
-              </div>
-            ) : null}
-          </div>
         </div>
       </nav>
 
@@ -8310,6 +8288,35 @@ useEffect(() => {
                       <button
                         type="button"
                         onClick={() => restoreTask(task.id)}
+                        className="shrink-0 rounded-full border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
+                      >
+                        Restore
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
+            {recentlyDeletedTasks.length ? (
+              <section className="mt-5 rounded-[18px] border border-slate-200/70 bg-white p-4">
+                <div className="text-sm font-semibold text-slate-700">Recently Deleted</div>
+                <div className="mt-1 text-xs text-slate-400">Recoverable here for 30 days.</div>
+                <div className="mt-3 divide-y divide-slate-100">
+                  {recentlyDeletedTasks.map((task) => (
+                    <div key={task.id} className="flex items-center justify-between gap-3 py-2 opacity-70">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium text-slate-600">{task.title}</div>
+                        <div className="mt-0.5 flex flex-wrap gap-2 text-xs text-slate-400">
+                          <span>{courseLabel(task.courseId)}</span>
+                          <span>
+                            Deleted {task.deletedAt ? new Date(task.deletedAt).toLocaleString() : "date unknown"}
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => restoreDeletedTask(task.id)}
                         className="shrink-0 rounded-full border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
                       >
                         Restore
@@ -9765,6 +9772,7 @@ useEffect(() => {
 
             <div className="order-4 space-y-4 border-t border-slate-100 px-0 py-3 md:order-4 md:px-4 md:py-4">
               <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white p-3 md:p-4">
+                <div className="mx-auto max-w-4xl">
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <div className="text-sm font-semibold">Activity</div>
@@ -9784,7 +9792,7 @@ useEffect(() => {
 
                 <div className="mt-4 max-w-full overflow-x-auto overscroll-x-contain pb-1">
                   {activityMap.displayMode === "strip" ? (
-                    <div className="grid grid-cols-7 gap-1.5 sm:gap-2">
+                    <div className="mx-auto grid max-w-3xl grid-cols-7 gap-1.5 sm:gap-2">
                       {activityMap.days.map((day) => {
                         const level = loggerActivityLevel(day.hours, activityMap.thresholds);
                         return (
@@ -9811,7 +9819,7 @@ useEffect(() => {
                       })}
                     </div>
                   ) : activityMap.displayMode === "month" ? (
-                    <div className="w-max">
+                    <div className="mx-auto w-fit">
                       <div className="grid grid-cols-7 gap-1 text-center text-[10px] font-medium uppercase tracking-[0.12em] text-slate-400">
                         {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((label) => (
                           <div key={`logger-activity-month-heading-${label}`} className="w-6">
@@ -9849,7 +9857,7 @@ useEffect(() => {
                       </div>
                     </div>
                   ) : (
-                    <div className={activityMap.displayMode === "contribution" ? "min-w-max" : "w-full"}>
+                    <div className={activityMap.displayMode === "contribution" ? "mx-auto w-fit min-w-max" : "w-full"}>
                       <div className="grid grid-cols-[28px_1fr] gap-x-2">
                         <div />
                         <div
@@ -9925,6 +9933,7 @@ useEffect(() => {
                       </div>
                     </div>
                   )}
+                </div>
                 </div>
               </div>
 

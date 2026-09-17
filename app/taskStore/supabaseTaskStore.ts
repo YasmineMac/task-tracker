@@ -18,6 +18,7 @@ function taskFromSupabaseRow(t: Record<string, unknown>) {
     durationHrs: t.duration_hrs,
     difficulty: t.difficulty,
     completedAt: t.completed_at,
+    deletedAt: t.deleted_at,
     createdAt:
       typeof t.created_at === "string" || typeof t.created_at === "number"
         ? new Date(t.created_at).getTime()
@@ -126,6 +127,7 @@ export const supabaseTaskStore: TaskStore = {
       duration_hrs: t.durationHrs ?? null,
       difficulty: t.difficulty ?? null,
       completed_at: t.completedAt ?? null,
+      deleted_at: t.deletedAt ?? null,
     }));
 
     console.info("supabaseTaskStore.saveTasks payload", {
