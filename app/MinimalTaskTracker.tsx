@@ -27,6 +27,7 @@ import {
   Flame,
   Frown,
   Gauge,
+  Gem,
   GraduationCap,
   Heart,
   HeartPulse,
@@ -46,11 +47,13 @@ import {
   Plane,
   Plus,
   Shield,
+  Shapes,
   Snowflake,
   Smile,
   Sparkles,
   Star,
   Sun,
+  Sprout,
   Target,
   Timer,
   TrendingUp,
@@ -262,7 +265,7 @@ type LoggerValueMode = "hours" | "times";
 type LoggerRangeMode = "day" | "week" | "month" | "year" | "custom";
 type LoggerTimeOfDayBucket = "morning" | "afternoon" | "evening" | "night";
 type LoggerBreakdownMode = "tasks" | "categories";
-type ListFilterMenu = "status" | "priority" | "difficulty" | "timeLeft";
+type ListFilterMenu = "category" | "status" | "priority" | "difficulty" | "timeLeft";
 type AppNavItem = {
   id: ViewMode;
   label: string;
@@ -376,13 +379,26 @@ const CATEGORY_COLOURS = [
   { id: "emerald", label: "Emerald", swatch: "bg-emerald-300" },
   { id: "amber", label: "Amber", swatch: "bg-amber-300" },
   { id: "rose", label: "Rose", swatch: "bg-rose-300" },
+  { id: "navy", label: "Navy", swatch: "bg-[#35557F]" },
+  { id: "blue", label: "Blue", swatch: "bg-blue-400" },
+  { id: "cyan", label: "Cyan", swatch: "bg-cyan-400" },
+  { id: "teal", label: "Teal", swatch: "bg-teal-400" },
+  { id: "mint", label: "Mint", swatch: "bg-green-300" },
+  { id: "lime", label: "Lime", swatch: "bg-lime-400" },
+  { id: "yellow", label: "Yellow", swatch: "bg-yellow-400" },
+  { id: "orange", label: "Orange", swatch: "bg-orange-400" },
+  { id: "coral", label: "Coral", swatch: "bg-[#F4775C]" },
+  { id: "pink", label: "Pink", swatch: "bg-pink-400" },
 ];
-const LOGGER_TIME_OF_DAY_BUCKETS: { id: LoggerTimeOfDayBucket; label: string }[] = [
-  { id: "morning", label: "Morning" },
-  { id: "afternoon", label: "Afternoon" },
-  { id: "evening", label: "Evening" },
-  { id: "night", label: "Night" },
+const LOGGER_TIME_OF_DAY_BUCKETS: { id: LoggerTimeOfDayBucket; label: string; timeLabel: string }[] = [
+  { id: "morning", label: "Morning", timeLabel: "05:00–12:00" },
+  { id: "afternoon", label: "Afternoon", timeLabel: "12:00–17:00" },
+  { id: "evening", label: "Evening", timeLabel: "17:00–22:00" },
+  { id: "night", label: "Night", timeLabel: "22:00–05:00" },
 ];
+const LOGGER_DAY_TIMELINE_START_MINUTES = 5 * 60;
+const LOGGER_DAY_TIMELINE_PX_PER_HOUR = 30;
+const LOGGER_DAY_TIMELINE_HEIGHT = 24 * LOGGER_DAY_TIMELINE_PX_PER_HOUR;
 
 const STATUSES: { id: Status; label: string }[] = [
   { id: "to_do", label: "To do" },
@@ -2186,6 +2202,26 @@ function loggerCategoryTone(colour?: string | null) {
         text: "text-rose-800",
         muted: "text-rose-600",
       };
+    case "navy":
+      return { accent: "bg-[#35557F]", border: "border-[#D8E2EF]", bg: "bg-[#F2F5F9]", text: "text-[#284260]", muted: "text-[#58708D]" };
+    case "blue":
+      return { accent: "bg-blue-400", border: "border-blue-100", bg: "bg-blue-50/70", text: "text-blue-800", muted: "text-blue-600" };
+    case "cyan":
+      return { accent: "bg-cyan-400", border: "border-cyan-100", bg: "bg-cyan-50/70", text: "text-cyan-800", muted: "text-cyan-600" };
+    case "teal":
+      return { accent: "bg-teal-400", border: "border-teal-100", bg: "bg-teal-50/70", text: "text-teal-800", muted: "text-teal-600" };
+    case "mint":
+      return { accent: "bg-green-300", border: "border-green-100", bg: "bg-green-50/70", text: "text-green-800", muted: "text-green-600" };
+    case "lime":
+      return { accent: "bg-lime-400", border: "border-lime-100", bg: "bg-lime-50/70", text: "text-lime-800", muted: "text-lime-700" };
+    case "yellow":
+      return { accent: "bg-yellow-400", border: "border-yellow-100", bg: "bg-yellow-50/70", text: "text-yellow-900", muted: "text-yellow-700" };
+    case "orange":
+      return { accent: "bg-orange-400", border: "border-orange-100", bg: "bg-orange-50/70", text: "text-orange-800", muted: "text-orange-600" };
+    case "coral":
+      return { accent: "bg-[#F4775C]", border: "border-[#FAD8D0]", bg: "bg-[#FFF3F0]", text: "text-[#9A3F2D]", muted: "text-[#C35B45]" };
+    case "pink":
+      return { accent: "bg-pink-400", border: "border-pink-100", bg: "bg-pink-50/70", text: "text-pink-800", muted: "text-pink-600" };
     default:
       return {
         accent: "bg-slate-300",
@@ -2220,18 +2256,24 @@ function formatGridHours(hours: number) {
 
 function loggerActivityCellTone(colour: string | null | undefined, level: number) {
   const safeLevel = clamp(Math.round(level), 0, 4);
-  const palette =
-    colour === "sky"
-      ? ["bg-white border-sky-100", "bg-sky-50 border-sky-100", "bg-sky-100 border-sky-100", "bg-sky-200 border-sky-200", "bg-sky-400 border-sky-400"]
-      : colour === "violet"
-        ? ["bg-white border-violet-100", "bg-violet-50 border-violet-100", "bg-violet-100 border-violet-100", "bg-violet-200 border-violet-200", "bg-violet-400 border-violet-400"]
-        : colour === "emerald"
-          ? ["bg-white border-emerald-100", "bg-emerald-50 border-emerald-100", "bg-emerald-100 border-emerald-100", "bg-emerald-200 border-emerald-200", "bg-emerald-400 border-emerald-400"]
-          : colour === "amber"
-            ? ["bg-white border-amber-100", "bg-amber-50 border-amber-100", "bg-amber-100 border-amber-100", "bg-amber-200 border-amber-200", "bg-amber-400 border-amber-400"]
-            : colour === "rose"
-              ? ["bg-white border-rose-100", "bg-rose-50 border-rose-100", "bg-rose-100 border-rose-100", "bg-rose-200 border-rose-200", "bg-rose-400 border-rose-400"]
-              : ["bg-white border-slate-100", "bg-slate-100 border-slate-100", "bg-slate-200 border-slate-200", "bg-slate-300 border-slate-300", "bg-slate-500 border-slate-500"];
+  const palettes: Record<string, string[]> = {
+    sky: ["bg-white border-sky-100", "bg-sky-50 border-sky-100", "bg-sky-100 border-sky-100", "bg-sky-200 border-sky-200", "bg-sky-400 border-sky-400"],
+    violet: ["bg-white border-violet-100", "bg-violet-50 border-violet-100", "bg-violet-100 border-violet-100", "bg-violet-200 border-violet-200", "bg-violet-400 border-violet-400"],
+    emerald: ["bg-white border-emerald-100", "bg-emerald-50 border-emerald-100", "bg-emerald-100 border-emerald-100", "bg-emerald-200 border-emerald-200", "bg-emerald-400 border-emerald-400"],
+    amber: ["bg-white border-amber-100", "bg-amber-50 border-amber-100", "bg-amber-100 border-amber-100", "bg-amber-200 border-amber-200", "bg-amber-400 border-amber-400"],
+    rose: ["bg-white border-rose-100", "bg-rose-50 border-rose-100", "bg-rose-100 border-rose-100", "bg-rose-200 border-rose-200", "bg-rose-400 border-rose-400"],
+    navy: ["bg-white border-[#E0E7F0]", "bg-[#F0F4F8] border-[#D8E2EF]", "bg-[#D8E2EF] border-[#C2D1E3]", "bg-[#9CB2CC] border-[#9CB2CC]", "bg-[#35557F] border-[#35557F]"],
+    blue: ["bg-white border-blue-100", "bg-blue-50 border-blue-100", "bg-blue-100 border-blue-100", "bg-blue-200 border-blue-200", "bg-blue-400 border-blue-400"],
+    cyan: ["bg-white border-cyan-100", "bg-cyan-50 border-cyan-100", "bg-cyan-100 border-cyan-100", "bg-cyan-200 border-cyan-200", "bg-cyan-400 border-cyan-400"],
+    teal: ["bg-white border-teal-100", "bg-teal-50 border-teal-100", "bg-teal-100 border-teal-100", "bg-teal-200 border-teal-200", "bg-teal-400 border-teal-400"],
+    mint: ["bg-white border-green-100", "bg-green-50 border-green-100", "bg-green-100 border-green-100", "bg-green-200 border-green-200", "bg-green-400 border-green-400"],
+    lime: ["bg-white border-lime-100", "bg-lime-50 border-lime-100", "bg-lime-100 border-lime-100", "bg-lime-200 border-lime-200", "bg-lime-400 border-lime-400"],
+    yellow: ["bg-white border-yellow-100", "bg-yellow-50 border-yellow-100", "bg-yellow-100 border-yellow-100", "bg-yellow-200 border-yellow-200", "bg-yellow-400 border-yellow-400"],
+    orange: ["bg-white border-orange-100", "bg-orange-50 border-orange-100", "bg-orange-100 border-orange-100", "bg-orange-200 border-orange-200", "bg-orange-400 border-orange-400"],
+    coral: ["bg-white border-[#FBE2DC]", "bg-[#FFF3F0] border-[#FBE2DC]", "bg-[#FDDDD5] border-[#FDD1C7]", "bg-[#F9AC9A] border-[#F9AC9A]", "bg-[#F4775C] border-[#F4775C]"],
+    pink: ["bg-white border-pink-100", "bg-pink-50 border-pink-100", "bg-pink-100 border-pink-100", "bg-pink-200 border-pink-200", "bg-pink-400 border-pink-400"],
+  };
+  const palette = palettes[colour ?? ""] ?? ["bg-white border-slate-100", "bg-slate-100 border-slate-100", "bg-slate-200 border-slate-200", "bg-slate-300 border-slate-300", "bg-slate-500 border-slate-500"];
   return palette[safeLevel];
 }
 
@@ -3628,6 +3670,65 @@ function EffortIcon({ effortLevel }: { effortLevel: EffortLevel }) {
   return <Gauge className="h-3.5 w-3.5" aria-hidden="true" />;
 }
 
+const CATEGORY_TRAILING_EMOJI_PATTERN = /\s*(?:[\p{Extended_Pictographic}\p{Emoji_Presentation}]\uFE0F?)+\s*$/u;
+const CATEGORY_EMOJI_ICON_MAP: Record<
+  string,
+  React.ComponentType<{ className?: string; "aria-hidden"?: boolean }>
+> = {
+  "📈": TrendingUp,
+  "✉": Mail,
+  "❄": Snowflake,
+  "🌱": Sprout,
+  "💎": Gem,
+  "🌳": Sprout,
+  "🪲": Activity,
+  "🦋": Sparkles,
+};
+
+const CATEGORY_ICON_OPTIONS = [
+  { value: "📈", label: "Growth", Icon: TrendingUp },
+  { value: "✉", label: "Mail", Icon: Mail },
+  { value: "❄", label: "Snowflake", Icon: Snowflake },
+  { value: "🌱", label: "Sprout", Icon: Sprout },
+  { value: "💎", label: "Gem", Icon: Gem },
+  { value: "🌳", label: "Nature", Icon: Sprout },
+  { value: "🪲", label: "Activity", Icon: Activity },
+  { value: "🦋", label: "Sparkles", Icon: Sparkles },
+] as const;
+
+function categoryHeaderName(category: Pick<Category, "label">) {
+  return category.label.replace(CATEGORY_TRAILING_EMOJI_PATTERN, "").trim() || category.label;
+}
+
+function categoryHeaderEmoji(category: Pick<Category, "label" | "emoji">) {
+  const savedEmoji = category.emoji.trim();
+  if (savedEmoji) return savedEmoji.replace(/\uFE0F/g, "");
+  const labelEmoji = category.label.match(CATEGORY_TRAILING_EMOJI_PATTERN)?.[0]?.trim() ?? "";
+  return labelEmoji.replace(/\uFE0F/g, "");
+}
+
+function categoryHeaderColourClass(colour?: string | null) {
+  return CATEGORY_COLOURS.find((option) => option.id === colour)?.swatch ?? CATEGORY_COLOURS[0].swatch;
+}
+
+function CategoryIdentity({ category, compact = false }: { category: Category; compact?: boolean }) {
+  const Icon = CATEGORY_EMOJI_ICON_MAP[categoryHeaderEmoji(category)] ?? Shapes;
+
+  return (
+    <span className={`inline-flex min-w-0 items-center ${compact ? "gap-1.5" : "gap-2"}`}>
+      <span
+        className={`inline-flex shrink-0 items-center justify-center rounded-full ${compact ? "h-5 w-5" : "h-6 w-6"} ${categoryHeaderColourClass(
+          category.colour
+        )}`}
+        aria-hidden="true"
+      >
+        <Icon className={`${compact ? "h-3 w-3" : "h-3.5 w-3.5"} text-white`} aria-hidden />
+      </span>
+      <span className="truncate">{categoryHeaderName(category)}</span>
+    </span>
+  );
+}
+
 function plannerEventTone(eventType: CalendarEventType, temporalState: PlannerTemporalState = "future") {
   const temporal = plannerPastSoftening(temporalState);
   const today = temporalState === "today" ? " ring-1 ring-inset ring-slate-900/10" : "";
@@ -4107,12 +4208,14 @@ useEffect(() => {
   const [clientToday, setClientToday] = useState<string>("");
   const [clientNowMs, setClientNowMs] = useState<number>(0);
   const loggerGridScrollRef = useRef<HTMLDivElement | null>(null);
+  const loggerMonthActivityScrollRef = useRef<HTMLDivElement | null>(null);
   const plannerWeekScrollRef = useRef<HTMLDivElement | null>(null);
   const suppressPlannerEventClickRef = useRef(false);
 
   // Edit modal state
   const [editOpen, setEditOpen] = useState(false);
   const [draft, setDraft] = useState<Task | null>(null);
+  const [editingPlannerTaskDeadline, setEditingPlannerTaskDeadline] = useState(false);
 
   // List sorting
   const [listSortKey, setListSortKey] = useState<
@@ -4447,6 +4550,7 @@ useEffect(() => {
       if (e.key === "Escape") {
         setNewOpen(false);
         setEditOpen(false);
+        setEditingPlannerTaskDeadline(false);
         setLogOpen(false);
         setCategoryModalOpen(false);
         setEditingLogId(null);
@@ -5766,6 +5870,11 @@ useEffect(() => {
     return Object.fromEntries([...fallbackCategories, ...categories].map((category) => [category.id, category]));
   }, [categories]);
 
+  function renderCategoryIdentity(categoryId: string, compact = true) {
+    const category = categoryById[categoryId];
+    return category ? <CategoryIdentity category={category} compact={compact} /> : <span>{categoryId}</span>;
+  }
+
   const logTaskOptions = useMemo(() => {
     const options = activeTasks
       .filter((task) => task.status !== "completed")
@@ -5793,7 +5902,8 @@ useEffect(() => {
           log,
           task,
           taskTitle: task?.title ?? "Archived task",
-          categoryLabel: category ? categoryDisplayLabel(category) : task ? courseLabel(task.courseId) : "Archived task",
+          categoryId: category?.id ?? null,
+          categoryLabel: category ? categoryHeaderName(category) : task ? courseLabel(task.courseId) : "Archived task",
           tone: loggerCategoryTone(category?.colour),
           exactDuration,
           startMinutes: startMinutes ?? Number.POSITIVE_INFINITY,
@@ -5811,6 +5921,7 @@ useEffect(() => {
   const dayTemporalRows = useMemo(() => {
     const dayRows = temporalLogRows.filter((row) => row.log.date === loggerDateRange.start);
     return {
+      timed: dayRows.filter((row) => row.exactDuration !== null),
       exactByBucket: Object.fromEntries(
         LOGGER_TIME_OF_DAY_BUCKETS.map((bucket) => [
           bucket.id,
@@ -5905,7 +6016,12 @@ useEffect(() => {
     const mostWorkedCategory = mostWorkedCategoryEntry
       ? {
           id: mostWorkedCategoryEntry[0],
-          label: mostWorkedCategoryEntry[0] === "archived" ? "Archived category" : courseLabel(mostWorkedCategoryEntry[0]),
+          label:
+            mostWorkedCategoryEntry[0] === "archived"
+              ? "Archived category"
+              : categoryById[mostWorkedCategoryEntry[0]]
+                ? categoryHeaderName(categoryById[mostWorkedCategoryEntry[0]])
+                : courseLabel(mostWorkedCategoryEntry[0]),
           hours: mostWorkedCategoryEntry[1],
         }
       : null;
@@ -5917,20 +6033,55 @@ useEffect(() => {
       mostWorkedTask,
       mostWorkedCategory,
     };
-  }, [courseLabel, logsInRange, taskById]);
+  }, [categoryById, courseLabel, logsInRange, taskById]);
 
   const activityMap = useMemo(() => {
-    const activityLogs = logsInRange.filter((log) => loggerTaskFilter === "all" || log.taskId === loggerTaskFilter);
+    const end = loggerRangeMode === "month" && isValidISODate(clientToday) ? clientToday : loggerDateRange.end;
+    const rawStart = loggerRangeMode === "month" ? addMonthsISO(`${end.slice(0, 7)}-01`, -11) : loggerDateRange.start;
+    const sourceLogs = loggerRangeMode === "month"
+      ? closedTimeLogs.filter((log) => log.date >= rawStart && log.date <= end)
+      : logsInRange;
+    const activityLogs = sourceLogs.filter((log) => loggerTaskFilter === "all" || log.taskId === loggerTaskFilter);
     const totals = new Map<string, number>();
+    const categoryTotalsByDate = new Map<string, Map<string, number>>();
+    const unresolvedCategoryKey = "__unresolved__";
     for (const log of activityLogs) {
-      totals.set(log.date, (totals.get(log.date) ?? 0) + (log.hours ?? 0));
+      const hours = log.hours ?? 0;
+      totals.set(log.date, (totals.get(log.date) ?? 0) + hours);
+
+      if (loggerTaskFilter === "all") {
+        const task = taskById[log.taskId] ?? null;
+        const category = task ? categoryById[task.courseId] ?? null : null;
+        const categoryKey = category?.id ?? unresolvedCategoryKey;
+        const dateTotals = categoryTotalsByDate.get(log.date) ?? new Map<string, number>();
+        dateTotals.set(categoryKey, (dateTotals.get(categoryKey) ?? 0) + hours);
+        categoryTotalsByDate.set(log.date, dateTotals);
+      }
     }
 
-    const rawStart = loggerDateRange.start;
-    const end = loggerDateRange.end;
-    const days = loggerDaysForRange(loggerDateRange).map((date) => ({
+    const selectedTask = loggerTaskFilter === "all" ? null : taskById[loggerTaskFilter] ?? null;
+    const selectedCategory = selectedTask ? categoryById[selectedTask.courseId] ?? null : null;
+    const colour = loggerTaskFilter === "all" ? null : selectedCategory?.colour ?? null;
+    const dominantColourForDate = (date: string) => {
+      if (loggerTaskFilter !== "all") return colour;
+      const dateTotals = categoryTotalsByDate.get(date);
+      if (!dateTotals?.size) return null;
+
+      const dominant = Array.from(dateTotals.entries()).sort(([categoryA, hoursA], [categoryB, hoursB]) => {
+        if (hoursB !== hoursA) return hoursB - hoursA;
+        const orderA = categoryA === unresolvedCategoryKey ? Number.POSITIVE_INFINITY : categoryById[categoryA]?.sortOrder ?? Number.POSITIVE_INFINITY;
+        const orderB = categoryB === unresolvedCategoryKey ? Number.POSITIVE_INFINITY : categoryById[categoryB]?.sortOrder ?? Number.POSITIVE_INFINITY;
+        if (orderA !== orderB) return orderA - orderB;
+        return categoryA.localeCompare(categoryB);
+      })[0]?.[0];
+
+      return dominant && dominant !== unresolvedCategoryKey ? categoryById[dominant]?.colour ?? null : null;
+    };
+
+    const days = loggerDaysForRange({ start: rawStart, end }).map((date) => ({
       date,
       hours: totals.get(date) ?? 0,
+      colour: dominantColourForDate(date),
     }));
     const nonZeroHours = days.map((day) => day.hours).filter((hours) => hours > 0);
     const thresholds = loggerActivityThresholds(nonZeroHours);
@@ -5942,7 +6093,7 @@ useEffect(() => {
           ? "month"
           : "contribution";
     const alignStart = displayMode === "strip" ? rawStart : startOfLoggerWeek(rawStart);
-    const weeks: { weekStart: string; days: { date: string; hours: number }[] }[] = [];
+    const weeks: { weekStart: string; days: { date: string; hours: number; colour: string | null }[] }[] = [];
     let cursor = alignStart;
 
     while (cursor <= end || weeks.length === 0) {
@@ -5951,6 +6102,7 @@ useEffect(() => {
         return {
           date,
           hours: date >= rawStart && date <= end ? totals.get(date) ?? 0 : 0,
+          colour: date >= rawStart && date <= end ? dominantColourForDate(date) : null,
         };
       });
 
@@ -5958,12 +6110,17 @@ useEffect(() => {
       cursor = addDaysISO(cursor, 7);
     }
 
-    const selectedTask = loggerTaskFilter === "all" ? null : taskById[loggerTaskFilter] ?? null;
-    const selectedCategory = selectedTask ? categoryById[selectedTask.courseId] ?? null : null;
-    const colour = loggerTaskFilter === "all" ? null : selectedCategory?.colour ?? null;
-
     return { rawStart, end, days, weeks, compact, displayMode, thresholds, colour };
-  }, [categoryById, loggerDateRange, loggerRangeMode, loggerTaskFilter, logsInRange, taskById]);
+  }, [categoryById, clientToday, closedTimeLogs, loggerDateRange, loggerRangeMode, loggerTaskFilter, logsInRange, taskById]);
+
+  useEffect(() => {
+    if (mode !== "logger" || loggerRangeMode !== "month") return;
+    const frame = window.requestAnimationFrame(() => {
+      const scroller = loggerMonthActivityScrollRef.current;
+      if (scroller) scroller.scrollLeft = scroller.scrollWidth;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [clientToday, loggerRangeMode, mode]);
 
   const loggerBreakdown = useMemo(() => {
     const scopedLogs = logsInRange.filter((log) => loggerTaskFilter === "all" || log.taskId === loggerTaskFilter);
@@ -5987,7 +6144,8 @@ useEffect(() => {
         return {
           id: taskId,
           title: task?.title ?? "Archived task",
-          subtitle: category ? categoryDisplayLabel(category) : task ? courseLabel(task.courseId) : "Archived / unknown category",
+          subtitle: category ? categoryHeaderName(category) : task ? courseLabel(task.courseId) : "Archived / unknown category",
+          categoryId: category?.id ?? null,
           hours,
           colour: category?.colour ?? null,
         };
@@ -6000,8 +6158,9 @@ useEffect(() => {
         const category = categoryById[categoryId] ?? null;
         return {
           id: categoryId,
-          title: category ? categoryDisplayLabel(category) : "Archived / unknown category",
+          title: category ? categoryHeaderName(category) : "Archived / unknown category",
           subtitle: categoryId === "archived" ? "Historical logs" : "Category",
+          categoryId: category?.id ?? null,
           hours,
           colour: category?.colour ?? null,
         };
@@ -6637,8 +6796,32 @@ useEffect(() => {
   }
 
   function openEdit(t: Task) {
+    setEditingPlannerTaskDeadline(false);
     setDraft(t);
     setEditOpen(true);
+  }
+
+  function openPlannerTaskDeadlineEdit(task: Task) {
+    setEditingPlannerTaskDeadline(true);
+    setDraft(task);
+    setEditOpen(true);
+  }
+
+  function closeTaskEdit() {
+    setEditOpen(false);
+    setDraft(null);
+    setEditingPlannerTaskDeadline(false);
+  }
+
+  function removeTaskDeadline(id: string) {
+    setTasks((prev) =>
+      prev.map((task) =>
+        task.id === id
+          ? { ...task, due: null, deadlineMode: undefined, visionHorizon: null }
+          : task
+      )
+    );
+    closeTaskEdit();
   }
 
   function saveEdit(next: Task) {
@@ -6652,8 +6835,7 @@ useEffect(() => {
           : t
       )
     );
-    setEditOpen(false);
-    setDraft(null);
+    closeTaskEdit();
   }
 
   function openLogTime(taskId?: string, date = clientToday || todayISO(), log?: TimeLog) {
@@ -7064,6 +7246,61 @@ useEffect(() => {
     );
   }
 
+  function renderCategoryFilter(fullWidth = false) {
+    const selectedCategory = courseFilter === "all" ? null : categoryById[courseFilter] ?? null;
+    const isOpen = openListFilter === "category";
+
+    return (
+      <div className={`relative ${fullWidth ? "w-full" : "inline-flex"}`} onClick={(e) => e.stopPropagation()}>
+        <button
+          type="button"
+          className={`flex h-9 items-center rounded-xl border px-3 text-sm ${
+            fullWidth ? "w-full" : "w-[180px]"
+          } ${selectedCategory ? "border-slate-300 bg-slate-50 text-slate-800" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            setOpenStatusTaskId(null);
+            setOpenListFilter((open) => (open === "category" ? null : "category"));
+          }}
+          aria-expanded={isOpen}
+        >
+          {selectedCategory ? <CategoryIdentity category={selectedCategory} compact /> : "Category"}
+        </button>
+        {isOpen ? (
+          <div className="absolute left-0 top-full z-[1000] mt-1 min-w-full overflow-hidden rounded-xl border border-slate-200 bg-white py-1 text-xs shadow-xl ring-1 ring-slate-900/5">
+            <button
+              type="button"
+              className={`block w-full whitespace-nowrap px-3 py-2 text-left hover:bg-slate-50 ${
+                courseFilter === "all" ? "font-medium text-slate-900" : "text-slate-600"
+              }`}
+              onClick={() => {
+                setCourseFilter("all");
+                setOpenListFilter(null);
+              }}
+            >
+              All categories
+            </button>
+            {activeCategories.map((category) => (
+              <button
+                key={category.id}
+                type="button"
+                className={`flex w-full items-center px-3 py-2 text-left hover:bg-slate-50 ${
+                  courseFilter === category.id ? "font-medium text-slate-900" : "text-slate-600"
+                }`}
+                onClick={() => {
+                  setCourseFilter(category.id);
+                  setOpenListFilter(null);
+                }}
+              >
+                <CategoryIdentity category={category} compact />
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
   function renderRangeFilterMenu({
     id,
     buttonLabel,
@@ -7248,9 +7485,16 @@ useEffect(() => {
     });
   }
 
-  function renderTemporalLogButton(row: (typeof temporalLogRows)[number], density: "day" | "week" = "day") {
+  function renderTemporalLogButton(row: (typeof temporalLogRows)[number], density: "day" | "week" | "timeline" = "day") {
     const isWeek = density === "week";
+    const isTimeline = density === "timeline";
     const duration = formatDuration(row.log.hours ?? row.exactDuration ?? 0);
+    const dayBlockHeight = row.exactDuration === null ? 48 : clamp(row.exactDuration * 48, 48, 184);
+    const timelineStartMinutes =
+      row.startMinutes < LOGGER_DAY_TIMELINE_START_MINUTES ? row.startMinutes + 24 * 60 : row.startMinutes;
+    const timelineTop = ((timelineStartMinutes - LOGGER_DAY_TIMELINE_START_MINUTES) / 60) * LOGGER_DAY_TIMELINE_PX_PER_HOUR;
+    const timelineHeight = Math.max(32, (row.exactDuration ?? 0) * LOGGER_DAY_TIMELINE_PX_PER_HOUR);
+    const isCompactTimeline = isTimeline && timelineHeight < 64;
     const timeLabel =
       row.log.startTime && row.log.endTime
         ? `${row.log.startTime}-${row.log.endTime}`
@@ -7266,10 +7510,34 @@ useEffect(() => {
         className={`group grid w-full grid-cols-[4px_1fr] overflow-hidden rounded-2xl border text-left transition-colors hover:bg-white ${
           row.tone.border
         } ${row.tone.bg} ${isWeek ? "min-h-16" : ""}`}
+        style={
+          isTimeline
+            ? { position: "absolute", top: `${timelineTop}px`, left: 0, right: 0, height: `${timelineHeight}px`, minHeight: "32px" }
+            : isWeek
+              ? undefined
+              : { height: `${dayBlockHeight}px`, minHeight: "48px" }
+        }
       >
         <span className={row.tone.accent} aria-hidden="true" />
-        <span className={isWeek ? "min-w-0 px-2.5 py-2" : "min-w-0 px-3 py-2"}>
-          {isWeek ? (
+        <span
+          className={
+            isWeek
+              ? "min-w-0 px-2.5 py-2"
+              : isCompactTimeline
+                ? "flex min-w-0 items-center gap-2 px-2 py-0"
+                : "min-w-0 px-3 py-1"
+          }
+        >
+          {isCompactTimeline ? (
+            <>
+              <span className={`shrink-0 text-[11px] tabular-nums ${row.tone.muted}`}>{timeLabel}</span>
+              <span className={`min-w-0 flex-1 truncate text-xs font-semibold ${row.tone.text}`}>{row.taskTitle}</span>
+              <span className="inline-flex min-w-0 max-w-[30%] truncate text-[10px] text-slate-400 sm:max-w-[34%]">
+                {row.categoryId ? renderCategoryIdentity(row.categoryId) : row.categoryLabel}
+              </span>
+              <span className={`ml-auto shrink-0 text-[11px] font-semibold tabular-nums ${row.tone.muted}`}>{duration}</span>
+            </>
+          ) : isWeek ? (
             <>
               <span className={`block truncate text-xs font-semibold ${row.tone.text}`}>
                 {row.taskTitle}
@@ -7285,10 +7553,12 @@ useEffect(() => {
                 <span>{timeLabel}</span>
                 <span className="font-semibold">{duration}</span>
               </span>
-              <span className={`mt-1 block truncate text-sm font-semibold ${row.tone.text}`}>
+              <span className={`mt-0.5 block truncate text-sm font-semibold leading-tight ${row.tone.text}`}>
                 {row.taskTitle}
               </span>
-              <span className="mt-0.5 hidden truncate text-xs text-slate-400 sm:block">{row.categoryLabel}</span>
+              <span className="mt-0.5 hidden min-w-0 text-[11px] leading-none text-slate-400 sm:inline-flex">
+                {row.categoryId ? renderCategoryIdentity(row.categoryId) : row.categoryLabel}
+              </span>
             </>
           )}
         </span>
@@ -7404,7 +7674,7 @@ useEffect(() => {
                               onClick={(e) => {
                                 e.stopPropagation();
                                 if (item.sourceType === "calendar_event") openPlannerEventEdit(item.event);
-                                else openEdit(item.task);
+                                else openPlannerTaskDeadlineEdit(item.task);
                               }}
                               className={`flex w-full min-w-0 items-center gap-1 rounded-lg border px-1.5 py-0.5 text-left font-medium leading-4 ${
                                 compact ? "text-[9px]" : "text-[10px]"
@@ -7450,7 +7720,7 @@ useEffect(() => {
                           onClick={(e) => {
                             e.stopPropagation();
                             if (span.item.sourceType === "calendar_event") openPlannerEventEdit(span.item.event);
-                            else openEdit(span.item.task);
+                            else openPlannerTaskDeadlineEdit(span.item.task);
                           }}
                           className={`pointer-events-auto flex min-w-0 items-center gap-1 border px-1.5 py-0.5 text-left font-medium leading-4 ${
                             compact ? "text-[9px]" : "text-[10px]"
@@ -7933,18 +8203,7 @@ useEffect(() => {
         ) : mode === "list" ? (
           <>
             <div className="mt-5 hidden items-center justify-end gap-2 rounded-[18px] border border-slate-200/70 bg-white p-2 md:flex md:flex-wrap">
-              <select
-                value={courseFilter}
-                onChange={(e) => setCourseFilter(e.target.value)}
-                className="h-9 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200 lg:w-[180px]"
-              >
-                <option value="all">Category</option>
-                {activeCategories.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {categoryDisplayLabel(c)}
-                  </option>
-                ))}
-              </select>
+              {renderCategoryFilter()}
 
               {renderListFilterMenu<Status>({
                 id: "status",
@@ -8025,18 +8284,7 @@ useEffect(() => {
               {mobileTaskFiltersOpen ? (
                 <div className="mt-2 rounded-[18px] border border-slate-200 bg-white p-3 shadow-lg ring-1 ring-slate-900/5">
                   <div className="grid gap-2">
-                    <select
-                      value={courseFilter}
-                      onChange={(e) => setCourseFilter(e.target.value)}
-                      className="h-9 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                    >
-                      <option value="all">Category</option>
-                      {activeCategories.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {categoryDisplayLabel(c)}
-                        </option>
-                      ))}
-                    </select>
+                    {renderCategoryFilter(true)}
                     <div className="flex flex-wrap gap-2">
                       {renderListFilterMenu<Status>({
                         id: "status",
@@ -8095,7 +8343,7 @@ useEffect(() => {
                           <div className="min-w-0 flex-1">
                             <div className={`truncate text-sm font-medium ${frozenTitleClass(t)}`}>{t.title}</div>
                             <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
-                              <span className="truncate">{courseLabel(t.courseId)}</span>
+                              <span className="min-w-0">{renderCategoryIdentity(t.courseId)}</span>
                               <span className="text-slate-300">·</span>
                               <button
                                 type="button"
@@ -8207,7 +8455,9 @@ useEffect(() => {
                         onClick={() => openEdit(t)}
                       >
                         <td className={`max-w-[420px] truncate px-3 py-2.5 font-medium text-slate-900 ${frozenTitleClass(t)}`}>{t.title}</td>
-                        <td className={`px-3 py-2.5 ${t.status === "frozen" ? "text-slate-400" : "text-slate-500"}`}>{courseLabel(t.courseId)}</td>
+                        <td className={`px-3 py-2.5 ${t.status === "frozen" ? "text-slate-400" : "text-slate-500"}`}>
+                          {renderCategoryIdentity(t.courseId)}
+                        </td>
                         <td
                           className={`relative px-3 py-2.5 ${statusMenuOpen ? "z-[120]" : "z-0"}`}
                           onClick={(e) => e.stopPropagation()}
@@ -8281,7 +8531,7 @@ useEffect(() => {
                       >
                         <div className="truncate text-sm font-medium text-slate-600">{task.title}</div>
                         <div className="mt-0.5 flex flex-wrap gap-2 text-xs text-slate-400">
-                          <span>{courseLabel(task.courseId)}</span>
+                          <span>{renderCategoryIdentity(task.courseId)}</span>
                           <span>{task.completedAt ? `Completed ${task.completedAt.slice(0, 10)}` : "Completed date unknown"}</span>
                         </div>
                       </button>
@@ -8308,7 +8558,7 @@ useEffect(() => {
                       <div className="min-w-0">
                         <div className="truncate text-sm font-medium text-slate-600">{task.title}</div>
                         <div className="mt-0.5 flex flex-wrap gap-2 text-xs text-slate-400">
-                          <span>{courseLabel(task.courseId)}</span>
+                          <span>{renderCategoryIdentity(task.courseId)}</span>
                           <span>
                             Deleted {task.deletedAt ? new Date(task.deletedAt).toLocaleString() : "date unknown"}
                           </span>
@@ -8460,7 +8710,7 @@ useEffect(() => {
                                   onClick={() =>
                                     item.sourceType === "calendar_event"
                                       ? openPlannerEventEdit(item.event)
-                                      : openEdit(item.task)
+                                      : openPlannerTaskDeadlineEdit(item.task)
                                   }
                                   className={`flex w-full min-w-0 items-center gap-2 rounded-xl border px-2 py-1.5 text-left text-xs font-medium ${
                                     item.sourceType === "calendar_event"
@@ -8594,7 +8844,7 @@ useEffect(() => {
                                   onClick={() =>
                                     span.item.sourceType === "calendar_event"
                                       ? openPlannerEventEdit(span.item.event)
-                                      : openEdit(span.item.task)
+                                      : openPlannerTaskDeadlineEdit(span.item.task)
                                   }
                                   className={`flex min-w-0 items-center gap-1 border px-2 py-1 text-left text-[11px] font-medium ${
                                     span.startsBefore ? "rounded-l-sm" : "rounded-l-lg"
@@ -9223,7 +9473,9 @@ useEffect(() => {
                 <span>
                   Top category:{" "}
                   <span className="text-slate-700">
-                    {loggerRangeSummary.mostWorkedCategory?.label ?? "—"}
+                    {loggerRangeSummary.mostWorkedCategory?.id && loggerRangeSummary.mostWorkedCategory.id !== "archived"
+                      ? renderCategoryIdentity(loggerRangeSummary.mostWorkedCategory.id)
+                      : loggerRangeSummary.mostWorkedCategory?.label ?? "—"}
                   </span>
                 </span>
               </div>
@@ -9302,26 +9554,35 @@ useEffect(() => {
                   <div className="text-xs font-medium text-slate-500">{formatLoggerDate(loggerDateRange.start)}</div>
                 </div>
 
-                <div className="mt-4 grid gap-4">
-                  {LOGGER_TIME_OF_DAY_BUCKETS.map((bucket) => {
-                    const rows = dayTemporalRows.exactByBucket[bucket.id] ?? [];
-                    return (
-                      <div key={`day-temporal-${bucket.id}`} className="grid gap-2 sm:grid-cols-[92px_1fr]">
-                        <div className="pt-1 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
-                          {bucket.label}
-                        </div>
-                        <div className="grid gap-2">
-                          {rows.length ? (
-                            rows.map((row) => renderTemporalLogButton(row))
-                          ) : (
-                            <div className="rounded-2xl border border-dashed border-slate-100 px-3 py-2 text-xs text-slate-300">
-                              No timed logs
+                <div className="mt-4 grid gap-3">
+                  <div
+                    className="grid grid-cols-[92px_1fr] gap-2 sm:grid-cols-[104px_1fr]"
+                    style={{ height: `${LOGGER_DAY_TIMELINE_HEIGHT}px` }}
+                  >
+                    <div className="relative">
+                      {LOGGER_TIME_OF_DAY_BUCKETS.map((bucket) => {
+                        const bucketStart =
+                          bucket.id === "morning" ? 5 * 60 : bucket.id === "afternoon" ? 12 * 60 : bucket.id === "evening" ? 17 * 60 : 22 * 60;
+                        const top = ((bucketStart - LOGGER_DAY_TIMELINE_START_MINUTES) / 60) * LOGGER_DAY_TIMELINE_PX_PER_HOUR;
+                        return (
+                          <div key={`day-temporal-label-${bucket.id}`} className="absolute left-0" style={{ top: `${top}px` }}>
+                            <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400 sm:text-xs">
+                              {bucket.label}
                             </div>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
+                            <div className="mt-0.5 text-[9px] tabular-nums text-slate-300 sm:text-[10px]">{bucket.timeLabel}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div
+                      className="relative border-l border-slate-100 pl-2"
+                      style={{
+                        backgroundImage: "repeating-linear-gradient(to bottom, transparent 0, transparent 29px, rgba(226,232,240,0.55) 30px)",
+                      }}
+                    >
+                      {dayTemporalRows.timed.map((row) => renderTemporalLogButton(row, "timeline"))}
+                    </div>
+                  </div>
 
                   {dayTemporalRows.unscheduled.length ? (
                     <div className="grid gap-2 border-t border-slate-100 pt-4 sm:grid-cols-[92px_1fr]">
@@ -9573,7 +9834,9 @@ useEffect(() => {
                         >
                           <span className="min-w-0">
                             <span className="block truncate text-sm font-medium text-slate-800">{task.title}</span>
-                            <span className="mt-0.5 block truncate text-xs text-slate-400">{courseLabel(task.courseId)}</span>
+                            <span className="mt-0.5 inline-flex min-w-0 text-xs text-slate-400">
+                              {renderCategoryIdentity(task.courseId)}
+                            </span>
                           </span>
                           <span className="shrink-0 text-sm font-semibold tabular-nums text-slate-700">
                             {hasValue
@@ -9690,7 +9953,7 @@ useEffect(() => {
                                 : "left-64 w-44 rounded-xl px-3 py-2"
                             }`}
                           >
-                            <span className="block truncate">{courseLabel(task.courseId)}</span>
+                            <span className="block min-w-0">{renderCategoryIdentity(task.courseId)}</span>
                           </td>
                           {loggerDays.map((day) => {
                             const cellLogs = logsByTaskDate[`${task.id}:${day}`] ?? [];
@@ -9771,8 +10034,9 @@ useEffect(() => {
             </section>
 
             <div className="order-4 space-y-4 border-t border-slate-100 px-0 py-3 md:order-4 md:px-4 md:py-4">
-              <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white p-3 md:p-4">
-                <div className="mx-auto max-w-4xl">
+              {loggerRangeMode !== "day" && loggerRangeMode !== "week" ? (
+                <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white px-3 py-2 md:px-4 md:py-3">
+                <div className="w-full">
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <div className="text-sm font-semibold">Activity</div>
@@ -9790,7 +10054,7 @@ useEffect(() => {
                   </div>
                 </div>
 
-                <div className="mt-4 max-w-full overflow-x-auto overscroll-x-contain pb-1">
+                <div className={`mt-2.5 max-w-full pb-0.5 ${activityMap.displayMode === "month" ? "" : "overflow-x-auto overscroll-x-contain"}`}>
                   {activityMap.displayMode === "strip" ? (
                     <div className="mx-auto grid max-w-3xl grid-cols-7 gap-1.5 sm:gap-2">
                       {activityMap.days.map((day) => {
@@ -9801,7 +10065,7 @@ useEffect(() => {
                             {formatLoggerWeekday(day.date).slice(0, 3)}
                           </span>
                           <span
-                            className={`mx-auto h-9 w-full max-w-11 rounded-lg border ${loggerActivityCellTone(activityMap.colour, level)} ${
+                            className={`mx-auto h-9 w-full max-w-11 rounded-lg border ${loggerActivityCellTone(day.colour, level)} ${
                               day.date === clientToday ? "ring-1 ring-slate-400 ring-offset-1" : ""
                             }`}
                             title={`${formatLoggerDate(day.date)} • ${
@@ -9819,41 +10083,61 @@ useEffect(() => {
                       })}
                     </div>
                   ) : activityMap.displayMode === "month" ? (
-                    <div className="mx-auto w-fit">
-                      <div className="grid grid-cols-7 gap-1 text-center text-[10px] font-medium uppercase tracking-[0.12em] text-slate-400">
-                        {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((label) => (
-                          <div key={`logger-activity-month-heading-${label}`} className="w-6">
-                            {label.slice(0, 1)}
-                          </div>
-                        ))}
-                      </div>
-                      <div className="mt-1 grid gap-1">
-                        {activityMap.weeks.map((week) => (
-                          <div key={week.weekStart} className="grid grid-cols-7 gap-1">
-                            {week.days.map((day) => {
-                              const isInRange = day.date >= activityMap.rawStart && day.date <= activityMap.end;
-                              const level = isInRange ? loggerActivityLevel(day.hours, activityMap.thresholds) : 0;
-                              return (
-                                <span
-                                  key={day.date}
-                                  className={`h-6 w-6 rounded-md border ${
-                                    isInRange
-                                      ? loggerActivityCellTone(activityMap.colour, level)
-                                      : "border-transparent bg-transparent"
-                                  } ${
-                                    isInRange && day.date === clientToday ? "ring-1 ring-slate-400 ring-offset-1" : ""
-                                  }`}
-                                  title={`${formatLoggerDate(day.date)} • ${
-                                    isInRange && day.hours > 0 ? `${formatLoggedTime(day.hours)} worked` : "No time logged"
-                                  }`}
-                                  aria-label={`${day.date}: ${
-                                    isInRange && day.hours > 0 ? `${formatLoggedTime(day.hours)} worked` : "No time logged"
-                                  }`}
-                                />
-                              );
-                            })}
-                          </div>
-                        ))}
+                    <div
+                      ref={loggerMonthActivityScrollRef}
+                      className="max-w-full overflow-x-auto overscroll-x-contain pb-1"
+                    >
+                      <div className="grid w-max grid-cols-[28px_auto] gap-x-2 md:min-w-full">
+                        <div />
+                        <div className="flex h-3.5 gap-0.5 text-[9px] text-slate-400 md:h-4 md:justify-between md:text-[10px]">
+                          {activityMap.weeks.map((week, index) => {
+                            const month = new Date(`${week.weekStart}T00:00:00`).getMonth();
+                            const previousMonth = index > 0
+                              ? new Date(`${activityMap.weeks[index - 1].weekStart}T00:00:00`).getMonth()
+                              : null;
+                            return (
+                              <div key={week.weekStart} className="relative w-3 shrink-0 md:w-4">
+                                {index === 0 || month !== previousMonth ? (
+                                  <span className="absolute left-0 whitespace-nowrap">
+                                    {new Intl.DateTimeFormat("en", { month: "short" }).format(new Date(`${week.weekStart}T00:00:00`))}
+                                  </span>
+                                ) : null}
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        <div className="grid grid-rows-7 gap-0.5 pt-0.5 text-[9px] leading-3 text-slate-400 md:leading-4">
+                          {["", "Mon", "", "Wed", "", "Fri", ""].map((label, index) => (
+                            <div key={`${label}-${index}`} className="h-3 md:h-4">{label}</div>
+                          ))}
+                        </div>
+                        <div className="flex gap-0.5 md:justify-between">
+                          {activityMap.weeks.map((week) => (
+                            <div key={week.weekStart} className="grid grid-rows-7 gap-0.5">
+                              {week.days.map((day) => {
+                                const isInRange = day.date >= activityMap.rawStart && day.date <= activityMap.end;
+                                const level = isInRange ? loggerActivityLevel(day.hours, activityMap.thresholds) : 0;
+                                return (
+                                  <span
+                                    key={day.date}
+                                    className={`h-3 w-3 rounded-[3px] border md:h-4 md:w-4 md:rounded-[4px] ${
+                                      isInRange
+                                        ? loggerActivityCellTone(day.colour, level)
+                                        : "border-transparent bg-transparent"
+                                    } ${isInRange && day.date === clientToday ? "ring-1 ring-slate-400 ring-offset-1" : ""}`}
+                                    title={`${formatLoggerDate(day.date)} • ${
+                                      isInRange && day.hours > 0 ? `${formatLoggedTime(day.hours)} worked` : "No time logged"
+                                    }`}
+                                    aria-label={`${day.date}: ${
+                                      isInRange && day.hours > 0 ? `${formatLoggedTime(day.hours)} worked` : "No time logged"
+                                    }`}
+                                  />
+                                );
+                              })}
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     </div>
                   ) : (
@@ -9914,7 +10198,7 @@ useEffect(() => {
                                     className={`border ${
                                       activityMap.compact ? "h-3 w-3 rounded-[3px]" : "h-5 w-full rounded-md"
                                     } ${
-                                      isInRange ? loggerActivityCellTone(activityMap.colour, level) : "border-transparent bg-transparent"
+                                      isInRange ? loggerActivityCellTone(day.colour, level) : "border-transparent bg-transparent"
                                     } ${
                                       isInRange && day.date === clientToday ? "ring-1 ring-slate-400 ring-offset-1" : ""
                                     }`}
@@ -9936,6 +10220,7 @@ useEffect(() => {
                 </div>
                 </div>
               </div>
+              ) : null}
 
               <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white p-3 md:p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -9961,7 +10246,7 @@ useEffect(() => {
                   </div>
                 </div>
 
-                <div className="mt-3 max-w-3xl space-y-3">
+                <div className="mt-3 max-w-3xl space-y-3 md:max-w-none">
                   {loggerBreakdown.rows.length ? (
                     <>
                       {(loggerBreakdownExpanded ? loggerBreakdown.rows : loggerBreakdown.rows.slice(0, 10)).map((row, index) => {
@@ -9973,8 +10258,16 @@ useEffect(() => {
                             <div className="grid grid-cols-[24px_1fr] gap-2 text-xs sm:grid-cols-[28px_1fr_auto_auto] sm:items-baseline sm:gap-3">
                               <div className="tabular-nums text-slate-400">{index + 1}</div>
                               <div className="min-w-0">
-                                <div className="truncate font-medium text-slate-800">{row.title}</div>
-                                <div className="truncate text-[11px] text-slate-500">{row.subtitle}</div>
+                                <div className="truncate font-medium text-slate-800">
+                                  {loggerBreakdownMode === "categories" && row.categoryId
+                                    ? renderCategoryIdentity(row.categoryId)
+                                    : row.title}
+                                </div>
+                                <div className="truncate text-[11px] text-slate-500">
+                                  {loggerBreakdownMode === "tasks" && row.categoryId
+                                    ? renderCategoryIdentity(row.categoryId)
+                                    : row.subtitle}
+                                </div>
                               </div>
                               <div className="col-start-2 flex items-center justify-between gap-3 tabular-nums text-slate-600 sm:col-start-auto sm:block">
                                 <span>{formatDuration(row.hours)}</span>
@@ -10062,7 +10355,7 @@ useEffect(() => {
                                 <span className="flex h-4 w-4 items-center justify-center text-slate-700">
                                   {selected ? <Check className="h-3 w-3" /> : null}
                                 </span>
-                                <span className="min-w-0 truncate">{categoryDisplayLabel(category)}</span>
+                                <span className="min-w-0 truncate"><CategoryIdentity category={category} compact /></span>
                               </button>
                             );
                           })}
@@ -10107,7 +10400,9 @@ useEffect(() => {
                             <div className="pt-0.5 text-xs tabular-nums text-slate-300">{index + 1}</div>
                             <div className="min-w-0">
                             <div className="line-clamp-2 text-sm font-medium leading-snug text-slate-900">{task.title}</div>
-                            <div className="mt-1 text-[11px] text-slate-500">{courseLabel(task.courseId)}</div>
+                            <div className="mt-1 inline-flex min-w-0 text-[11px] text-slate-500">
+                              {renderCategoryIdentity(task.courseId)}
+                            </div>
                             {reasons.length ? (
                               <div className="mt-1 line-clamp-2 text-[11px] leading-snug text-slate-400">
                                 {reasons.join(" · ")}
@@ -10144,7 +10439,9 @@ useEffect(() => {
                 <div key={c.id} className="self-start rounded-[18px] border border-slate-200/70 bg-white">
                   <div className="border-b border-slate-100/80 px-4 py-3">
                     <div className="flex items-center justify-between gap-3">
-                      <div className="text-sm font-semibold tracking-tight text-slate-900">{categoryDisplayLabel(c)}</div>
+                      <div className="min-w-0 text-sm font-semibold tracking-tight text-slate-900">
+                        <CategoryIdentity category={c} />
+                      </div>
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
@@ -10266,7 +10563,7 @@ useEffect(() => {
                         key={category.id}
                         className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-600"
                       >
-                        <span>{categoryDisplayLabel(category)}</span>
+                        <CategoryIdentity category={category} compact />
                         <button
                           type="button"
                           onClick={() => restoreCategory(category)}
@@ -11826,25 +12123,51 @@ useEffect(() => {
         }}
       >
         <div className="grid gap-3">
-          <div className="grid grid-cols-[1fr_96px] gap-3">
-            <Field label="Category name">
-              <input
-                value={categoryName}
-                onChange={(e) => setCategoryName(e.target.value)}
-                placeholder="e.g. Bloomberg Lab"
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-              />
-            </Field>
+          <Field label="Category name">
+            <input
+              value={categoryName}
+              onChange={(e) => setCategoryName(e.target.value)}
+              placeholder="e.g. Bloomberg Lab"
+              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+            />
+          </Field>
 
-            <Field label="Emoji">
-              <input
-                value={categoryEmoji}
-                onChange={(e) => setCategoryEmoji(e.target.value)}
-                placeholder="📈"
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+          <Field label="Icon">
+            <div className="flex items-center gap-3">
+              <CategoryIdentity
+                category={{
+                  id: editingCategory?.id ?? "category-preview",
+                  label: categoryName || "Category",
+                  emoji: categoryEmoji,
+                  colour: categoryColour,
+                  sortOrder: editingCategory?.sortOrder ?? 0,
+                  archived: editingCategory?.archived ?? false,
+                }}
               />
-            </Field>
-          </div>
+              <div className="flex flex-wrap gap-1.5">
+                {CATEGORY_ICON_OPTIONS.map((option) => {
+                  const selected = categoryHeaderEmoji({ label: categoryName, emoji: categoryEmoji }) === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      title={option.label}
+                      aria-label={option.label}
+                      aria-pressed={selected}
+                      onClick={() => setCategoryEmoji(option.value)}
+                      className={`inline-flex h-8 w-8 items-center justify-center rounded-lg border transition-colors ${
+                        selected
+                          ? "border-slate-400 bg-slate-100 text-slate-900"
+                          : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
+                      }`}
+                    >
+                      <option.Icon className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </Field>
 
           <Field label="Colour">
             <div className="flex flex-wrap gap-2">
@@ -12098,10 +12421,7 @@ useEffect(() => {
       <Modal
         open={editOpen}
         title="Edit task"
-        onClose={() => {
-          setEditOpen(false);
-          setDraft(null);
-        }}
+        onClose={closeTaskEdit}
       >
         {!draft ? null : (
           <div className="grid gap-3">
@@ -12213,21 +12533,20 @@ useEffect(() => {
               <button
                 className="rounded-full border border-slate-200 px-4 py-2 text-sm text-red-600 hover:bg-red-50"
                 onClick={() => {
-                  deleteTask(draft.id);
-                  setEditOpen(false);
-                  setDraft(null);
+                  if (editingPlannerTaskDeadline) removeTaskDeadline(draft.id);
+                  else {
+                    deleteTask(draft.id);
+                    closeTaskEdit();
+                  }
                 }}
               >
-                Delete
+                {editingPlannerTaskDeadline ? "Remove deadline" : "Delete"}
               </button>
 
               <div className="flex items-center gap-2">
                 <button
                   className="rounded-full border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
-                  onClick={() => {
-                    setEditOpen(false);
-                    setDraft(null);
-                  }}
+                  onClick={closeTaskEdit}
                 >
                   Cancel
                 </button>
