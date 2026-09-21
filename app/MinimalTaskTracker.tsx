@@ -6,6 +6,7 @@ import {
   ArrowDown,
   ArrowUp,
   Battery,
+  Beer,
   BookOpen,
   Brain,
   BriefcaseBusiness,
@@ -37,6 +38,7 @@ import {
   ListChecks,
   LoaderCircle,
   Mail,
+  Martini,
   MessageCircle,
   Meh,
   Minus,
@@ -64,6 +66,7 @@ import {
   WandSparkles,
   Waves,
   Wind,
+  Wine,
   Zap,
 } from "lucide-react";
 import {
@@ -140,6 +143,8 @@ import {
   type MedicationEntry,
   type MedicationKind,
 } from "./medicationStore/medicationTypes";
+import { loadAlcoholEntries, saveAlcoholEntry } from "./signalEntryStore/supabaseSignalEntryStore";
+import { createAlcoholEntryId, type AlcoholEntry } from "./signalEntryStore/alcoholEntryTypes";
 import {
   calculateTimeLogDurationHours,
   isClosedTimeLog,
@@ -175,7 +180,7 @@ const SYNC_CODE = isDemoMode ? "DEMO-TASKS" : "YAS-TEST-001";
 type ViewMode = "board" | "planner" | "list" | "logger" | "meds";
 type PlannerView = "week" | "month" | "three_month" | "year";
 type MedsView = "today" | "history" | "tracker";
-type MedicationModalMode = "dose" | "feeling";
+type MedicationModalMode = "dose" | "feeling" | "alcohol";
 type PlannerEventModalMode = "create" | "edit";
 type PlannerWhenChoice =
   | "any_time"
@@ -332,6 +337,7 @@ type SelectedFeelingLog = {
 type CaffeineDrinkId =
   | "espresso"
   | "americano"
+  | "iced_americano"
   | "cappuccino"
   | "latte"
   | "iced_latte"
@@ -525,6 +531,7 @@ const CAFFEINE_DRINK_DEFAULTS: {
 }[] = [
   { id: "espresso", label: "Espresso", mg: 65, shots: 1 },
   { id: "americano", label: "Americano", mg: 130, shots: 2 },
+  { id: "iced_americano", label: "Iced Americano", mg: 130, shots: 2 },
   { id: "cappuccino", label: "Cappuccino", mg: 120, shots: 2 },
   { id: "latte", label: "Latte", mg: 120, shots: 2 },
   { id: "iced_latte", label: "Iced latte", mg: 120, shots: 2 },
@@ -535,6 +542,31 @@ const CAFFEINE_DRINK_DEFAULTS: {
   { id: "espresso_martini", label: "Espresso martini", mg: 65, shots: 1 },
   { id: "custom", label: "Custom", mg: 100 },
 ];
+const ALCOHOL_DRINK_TYPES = [
+  { id: "Wine", Icon: Wine },
+  { id: "Beer", Icon: Beer },
+  { id: "Cider", Icon: Beer },
+  { id: "Vodka", Icon: Martini },
+  { id: "Gin", Icon: Martini },
+  { id: "Rum", Icon: Martini },
+  { id: "Tequila", Icon: Martini },
+  { id: "Whisky", Icon: Martini },
+  { id: "Cocktail", Icon: Martini },
+  { id: "Other", Icon: Wine },
+] as const;
+type AlcoholDrinkType = (typeof ALCOHOL_DRINK_TYPES)[number]["id"];
+const ALCOHOL_DRINK_DEFAULTS: Record<AlcoholDrinkType, { servingSizeMl: string; abvPercent: string }> = {
+  Wine: { servingSizeMl: "150", abvPercent: "12" },
+  Beer: { servingSizeMl: "330", abvPercent: "5" },
+  Cider: { servingSizeMl: "330", abvPercent: "5" },
+  Vodka: { servingSizeMl: "25", abvPercent: "40" },
+  Gin: { servingSizeMl: "25", abvPercent: "40" },
+  Rum: { servingSizeMl: "25", abvPercent: "40" },
+  Tequila: { servingSizeMl: "25", abvPercent: "40" },
+  Whisky: { servingSizeMl: "25", abvPercent: "40" },
+  Cocktail: { servingSizeMl: "150", abvPercent: "15" },
+  Other: { servingSizeMl: "", abvPercent: "" },
+};
 const DEFAULT_FEELING_DEFINITIONS: FeelingDefinition[] = [
   { id: "focused", name: "Focused", icon: "target", valence: "good", category: "state", active: true },
   { id: "distracted", name: "Distracted", icon: "eye", valence: "bad", category: "state", active: true },
@@ -3125,7 +3157,7 @@ function MedsChartCard({
   const area = medsAreaPath(points);
 
   return (
-    <section className="rounded-[22px] border border-slate-200/80 bg-white px-4 pb-4 pt-3 shadow-[0_10px_28px_rgba(15,23,42,0.04)]">
+    <section className="rounded-[22px] border border-slate-200/80 bg-white px-3 pb-2.5 pt-3 shadow-[0_10px_28px_rgba(15,23,42,0.04)] sm:px-4 sm:pb-4">
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-start gap-3">
           <div
@@ -3142,7 +3174,12 @@ function MedsChartCard({
         <div className="shrink-0 pt-1 text-right text-xs font-medium text-slate-500">{meta}</div>
       </div>
 
-      <svg viewBox="0 0 340 178" className="mt-3 h-[220px] w-full overflow-visible" role="img" aria-label={`${title} estimated levels`}>
+      <svg
+        viewBox="0 0 340 178"
+        className="mt-1.5 h-[170px] w-full overflow-visible sm:mt-3 sm:h-[220px]"
+        role="img"
+        aria-label={`${title} estimated levels`}
+      >
         <defs>
           <linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1">
             <stop offset="0%" stopColor={tone} stopOpacity="0.22" />
@@ -4065,6 +4102,7 @@ export default function MinimalTaskTracker() {
   const [timeLogs, setTimeLogs] = useState<TimeLog[]>([]);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
   const [medicationEntries, setMedicationEntries] = useState<MedicationEntry[]>([]);
+  const [alcoholEntries, setAlcoholEntries] = useState<AlcoholEntry[]>([]);
   const [hasMounted, setHasMounted] = useState(false);
   const [timeLogsLoaded, setTimeLogsLoaded] = useState(false);
   const [tasksLoaded, setTasksLoaded] = useState(false);
@@ -4100,6 +4138,7 @@ export default function MinimalTaskTracker() {
   const [smartImportMessage, setSmartImportMessage] = useState<string | null>(null);
   const [medsView, setMedsView] = useState<MedsView>("today");
   const [medsDetailsOpen, setMedsDetailsOpen] = useState(false);
+  const [medsEntryLauncherOpen, setMedsEntryLauncherOpen] = useState(false);
   const [medsModalMode, setMedsModalMode] = useState<MedicationModalMode | null>(null);
   const [medsSaving, setMedsSaving] = useState(false);
   const [medsError, setMedsError] = useState<string | null>(null);
@@ -4124,7 +4163,7 @@ export default function MinimalTaskTracker() {
   const [feelingWhenMode, setFeelingWhenMode] = useState<"now" | "manual">("now");
   const [feelingDate, setFeelingDate] = useState("");
   const [feelingTime, setFeelingTime] = useState("");
-  const [medsHistoryFilter, setMedsHistoryFilter] = useState<"all" | "Vyvanse" | "Prozac" | "Coffee" | "feelings">("all");
+  const [medsHistoryFilter, setMedsHistoryFilter] = useState<"all" | "Vyvanse" | "Prozac" | "Coffee" | "alcohol" | "feelings">("all");
   const [medsLevelRange, setMedsLevelRange] = useState<MedsLevelRange>("24h");
   const [medsRangeOffset, setMedsRangeOffset] = useState(0);
   const [caffeineDrinkId, setCaffeineDrinkId] = useState<CaffeineDrinkId>("iced_latte");
@@ -4134,6 +4173,20 @@ export default function MinimalTaskTracker() {
   const [caffeineDate, setCaffeineDate] = useState("");
   const [caffeineTime, setCaffeineTime] = useState("");
   const [caffeineNote, setCaffeineNote] = useState("");
+  const [alcoholDraftId, setAlcoholDraftId] = useState<string | null>(null);
+  const [alcoholDrinkType, setAlcoholDrinkType] = useState<AlcoholDrinkType>("Wine");
+  const [alcoholQuantity, setAlcoholQuantity] = useState("1");
+  const [alcoholServingSizeMl, setAlcoholServingSizeMl] = useState("");
+  const [alcoholAbvPercent, setAlcoholAbvPercent] = useState("");
+  const [alcoholStartedAt, setAlcoholStartedAt] = useState("");
+  const [alcoholEndedAt, setAlcoholEndedAt] = useState("");
+  const alcoholQuantityValue = Number(alcoholQuantity);
+  const alcoholServingSizeValue = Number(alcoholServingSizeMl);
+  const alcoholAbvValue = Number(alcoholAbvPercent);
+  const estimatedAlcoholUnits =
+    alcoholQuantityValue > 0 && alcoholServingSizeValue > 0 && alcoholAbvValue > 0
+      ? (alcoholQuantityValue * alcoholServingSizeValue * alcoholAbvValue) / 1000
+      : null;
   const [backupStatus, setBackupStatus] = useState({ label: "—", count: 0 });
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -4319,6 +4372,17 @@ useEffect(() => {
       }
 
       console.warn("Supabase medication entry load failed. Preserving current Meds state.");
+    })();
+
+    void (async () => {
+      const remoteAlcoholEntries = await loadAlcoholEntries(SYNC_CODE);
+
+      if (remoteAlcoholEntries.ok) {
+        setAlcoholEntries(remoteAlcoholEntries.entries);
+        return;
+      }
+
+      console.warn("Supabase alcohol entry load failed. Preserving current Alcohol state.");
     })();
   });
 }, []);
@@ -4848,6 +4912,26 @@ useEffect(() => {
       return entry.entryType === "input" && entry.medication === medsHistoryFilter;
     });
   }, [medsHistoryFilter, sortedMedicationEntries]);
+  const medsHistoryItems = useMemo(() => {
+    const medicationItems = medicationHistoryEntries.map((entry) => ({
+      kind: "medication" as const,
+      id: entry.id,
+      timestamp: entry.timestamp,
+      entry,
+    }));
+    const alcoholItems = medsHistoryFilter === "all" || medsHistoryFilter === "alcohol"
+      ? alcoholEntries.map((entry) => ({
+          kind: "alcohol" as const,
+          id: entry.id,
+          timestamp: entry.startedAt,
+          entry,
+        }))
+      : [];
+
+    return [...medicationItems, ...alcoholItems].sort(
+      (a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp)
+    );
+  }, [alcoholEntries, medicationHistoryEntries, medsHistoryFilter]);
   const medicationTrackerInputEntries = useMemo(
     () => sortedMedicationEntries.filter((entry) => Boolean(medicationTrackerIdentity(entry))),
     [sortedMedicationEntries]
@@ -4943,6 +5027,75 @@ useEffect(() => {
     setCaffeineNote("");
     applyCaffeineDrinkDefaults("iced_latte", "M");
     setMedsModalMode("dose");
+  }
+
+  function openCaffeineModal() {
+    openDoseModal();
+    setDoseMedicationKind("Coffee");
+  }
+
+  function openRoutineMedicationModal(medication: "Vyvanse" | "Prozac", amount: number) {
+    openDoseModal();
+    setDoseMedicationKind(medication);
+    setDoseAmount(String(amount));
+    setDoseUnit("mg");
+  }
+
+  function openAlcoholModal() {
+    const now = new Date();
+    setMedsError(null);
+    setMedsDeleteConfirm(false);
+    setAlcoholDraftId(createAlcoholEntryId());
+    setAlcoholDrinkType("Wine");
+    setAlcoholQuantity("1");
+    setAlcoholServingSizeMl(ALCOHOL_DRINK_DEFAULTS.Wine.servingSizeMl);
+    setAlcoholAbvPercent(ALCOHOL_DRINK_DEFAULTS.Wine.abvPercent);
+    setAlcoholStartedAt(`${localDateISO(now)}T${timeInputFromTimestamp(now.toISOString())}`);
+    setAlcoholEndedAt("");
+    setMedsModalMode("alcohol");
+  }
+
+  async function submitAlcoholEntry() {
+    if (medsSaving || !alcoholDraftId) return;
+
+    const quantity = Number(alcoholQuantity);
+    const startedAtMs = Date.parse(alcoholStartedAt);
+    const endedAtMs = alcoholEndedAt ? Date.parse(alcoholEndedAt) : null;
+
+    if (
+      !Number.isFinite(quantity) ||
+      quantity <= 0 ||
+      !Number.isFinite(startedAtMs) ||
+      (endedAtMs !== null && (!Number.isFinite(endedAtMs) || endedAtMs < startedAtMs))
+    ) {
+      setMedsError("Add a valid quantity and time range.");
+      return;
+    }
+
+    const entry: AlcoholEntry = {
+      id: alcoholDraftId,
+      signalType: "alcohol",
+      drinkType: alcoholDrinkType,
+      quantity,
+      startedAt: new Date(startedAtMs).toISOString(),
+      endedAt: endedAtMs === null ? null : new Date(endedAtMs).toISOString(),
+      alcoholUnits: estimatedAlcoholUnits,
+      feelingsSymptoms: null,
+    };
+
+    setMedsSaving(true);
+    const saved = await saveAlcoholEntry(entry, SYNC_CODE);
+    setMedsSaving(false);
+
+    if (!saved) {
+      setMedsError("Could not save alcohol entry. Existing data was kept.");
+      return;
+    }
+
+    setAlcoholEntries((current) => [entry, ...current.filter((existing) => existing.id !== entry.id)]);
+    setMedsModalMode(null);
+    setMedsError(null);
+    setAlcoholDraftId(null);
   }
 
   function openFeelingModal() {
@@ -5095,6 +5248,7 @@ useEffect(() => {
     setMedsError(null);
     setEditingMedicationEntry(null);
     setMedsDeleteConfirm(false);
+    setAlcoholDraftId(null);
   }
 
   function toggleStructuredFeeling(id: string) {
@@ -7885,15 +8039,55 @@ useEffect(() => {
                 >
                   <HeartPulse className="h-5 w-5" aria-hidden />
                 </button>
-                <button
-                  type="button"
-                  onClick={openDoseModal}
-                  className="flex h-12 w-12 items-center justify-center rounded-full bg-slate-950 text-white shadow-sm"
-                  aria-label="Add medication entry"
-                  title="Add medication or caffeine"
-                >
-                  <Plus className="h-6 w-6" aria-hidden />
-                </button>
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setMedsEntryLauncherOpen((open) => !open)}
+                    className="flex h-12 w-12 items-center justify-center rounded-full bg-slate-950 text-white shadow-sm"
+                    aria-label="Add entry"
+                    title="Add entry"
+                    aria-expanded={medsEntryLauncherOpen}
+                  >
+                    <Plus className="h-6 w-6" aria-hidden />
+                  </button>
+                  {medsEntryLauncherOpen ? (
+                    <div className="absolute right-0 top-full z-30 mt-2 grid min-w-[170px] gap-1 rounded-2xl border border-slate-200 bg-white p-1.5 shadow-xl ring-1 ring-slate-900/5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMedsEntryLauncherOpen(false);
+                          openDoseModal();
+                        }}
+                        className="flex items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                      >
+                        <PillIcon className="h-4 w-4 text-orange-500" aria-hidden />
+                        Medication
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMedsEntryLauncherOpen(false);
+                          openCaffeineModal();
+                        }}
+                        className="flex items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                      >
+                        <Coffee className="h-4 w-4 text-amber-500" aria-hidden />
+                        Caffeine
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMedsEntryLauncherOpen(false);
+                          openAlcoholModal();
+                        }}
+                        className="flex items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                      >
+                        <Wine className="h-4 w-4 text-rose-500" aria-hidden />
+                        Alcohol
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
               </div>
             </div>
 
@@ -7921,18 +8115,50 @@ useEffect(() => {
             </div>
 
             {medsView === "today" ? (
-              <div className="mt-6 space-y-5">
+              <div className="mt-3">
+                <div className="mb-1.5 text-[11px] font-semibold text-slate-500">Quick log</div>
+                <div className="flex gap-2 overflow-x-auto pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                  <button
+                    type="button"
+                    onClick={() => openRoutineMedicationModal("Vyvanse", 30)}
+                    className="flex shrink-0 items-center gap-1.5 rounded-full border border-orange-200 bg-orange-50 px-3 py-2 text-xs font-semibold text-slate-800"
+                  >
+                    <PillIcon className="h-3.5 w-3.5 text-orange-500" aria-hidden />
+                    Vyvanse 30mg
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openRoutineMedicationModal("Prozac", 20)}
+                    className="flex shrink-0 items-center gap-1.5 rounded-full border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-semibold text-slate-800"
+                  >
+                    <PillIcon className="h-3.5 w-3.5 text-violet-500" aria-hidden />
+                    Prozac 20mg
+                  </button>
+                  <button
+                    type="button"
+                    onClick={openCaffeineModal}
+                    className="flex shrink-0 items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-slate-800"
+                  >
+                    <Coffee className="h-3.5 w-3.5 text-amber-500" aria-hidden />
+                    Iced latte
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {medsView === "today" ? (
+              <div className="mt-4 space-y-5">
                 {medsError ? (
                   <div className="rounded-2xl border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700">
                     {medsError}
                   </div>
                 ) : null}
                 <section>
-                  <div className="mb-3 flex items-center justify-between gap-3">
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
                     <div>
-                      <div className="text-base font-semibold text-slate-950">Estimated levels</div>
+                      <div className="text-xs font-semibold text-slate-700">Estimated levels</div>
                     </div>
-                    <div className="grid grid-cols-4 rounded-xl bg-slate-100 p-1 text-xs font-semibold text-slate-600">
+                    <div className="grid grid-cols-4 rounded-lg bg-slate-100 p-0.5 text-[10px] font-semibold text-slate-600">
                       {(Object.keys(MEDS_RANGE_CONFIG) as MedsLevelRange[]).map((range) => (
                         <button
                           key={range}
@@ -7941,35 +8167,41 @@ useEffect(() => {
                             setMedsLevelRange(range);
                             setMedsRangeOffset(0);
                           }}
-                          className={`rounded-lg px-2.5 py-1.5 ${medsLevelRange === range ? "bg-slate-950 text-white shadow-sm" : ""}`}
+                          className={`rounded-md px-1.5 py-1 ${medsLevelRange === range ? "bg-slate-950 text-white shadow-sm" : ""}`}
                         >
                           {MEDS_RANGE_CONFIG[range].label}
                         </button>
                       ))}
                     </div>
                   </div>
-                  <div className="mb-3 flex items-center justify-end gap-2 text-xs font-medium">
+                  <div className="mb-2 flex items-center justify-end gap-1 text-xs font-medium">
                     <button
                       type="button"
                       onClick={() => setMedsRangeOffset((value) => value + 1)}
-                      className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-slate-600"
+                      className="flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white text-base leading-none text-slate-600"
+                      aria-label="Previous range"
+                      title="Previous"
                     >
-                      Previous
+                      ‹
                     </button>
                     <button
                       type="button"
                       onClick={() => setMedsRangeOffset(0)}
-                      className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-slate-600"
+                      className="flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white text-sm leading-none text-slate-600"
+                      aria-label="Current range"
+                      title="Current"
                     >
-                      Current
+                      •
                     </button>
                     <button
                       type="button"
                       onClick={() => setMedsRangeOffset((value) => Math.max(0, value - 1))}
                       disabled={medsRangeOffset === 0}
-                      className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-slate-600 disabled:opacity-40"
+                      className="flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white text-base leading-none text-slate-600 disabled:opacity-40"
+                      aria-label="Next range"
+                      title="Next"
                     >
-                      Next
+                      ›
                     </button>
                   </div>
 
@@ -8085,6 +8317,7 @@ useEffect(() => {
                       { id: "Vyvanse", label: "Vyvanse" },
                       { id: "Prozac", label: "Prozac" },
                       { id: "Coffee", label: "Coffee" },
+                      { id: "alcohol", label: "Alcohol" },
                       { id: "feelings", label: "Feelings" },
                     ].map((option) => (
                       <button
@@ -8104,23 +8337,50 @@ useEffect(() => {
                 </div>
 
                 <div className="space-y-5">
-                  {medicationHistoryEntries.length ? (
+                  {medsHistoryItems.length ? (
                     Object.entries(
-                      medicationHistoryEntries.reduce<Record<string, MedicationEntry[]>>((groups, entry) => {
-                        const key = medicationLocalDate(entry);
-                        groups[key] = [...(groups[key] ?? []), entry];
+                      medsHistoryItems.reduce<Record<string, typeof medsHistoryItems>>((groups, item) => {
+                        const key = localDateISO(new Date(item.timestamp));
+                        groups[key] = [...(groups[key] ?? []), item];
                         return groups;
                       }, {})
-                    ).map(([date, entries]) => (
+                    ).map(([date, items]) => (
                       <div key={date}>
                         <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
-                          {formatMedicationDate(entries[0]?.timestamp ?? date)}
+                          {formatMedicationDate(items[0]?.timestamp ?? date)}
                         </div>
                         <div className="mt-2 divide-y divide-slate-200/60 border-t border-slate-200/60">
-                          {entries
+                          {items
                             .slice()
                             .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp))
-                            .map((entry) => {
+                            .map((item) => {
+                              if (item.kind === "alcohol") {
+                                const entry = item.entry;
+                                const drinkOption = ALCOHOL_DRINK_TYPES.find((option) => option.id === entry.drinkType);
+                                const DrinkIcon = drinkOption?.Icon ?? Wine;
+                                return (
+                                  <div
+                                    key={entry.id}
+                                    className="grid w-full grid-cols-[48px_1fr] items-center gap-3 rounded-lg px-1 py-2 text-left text-sm"
+                                  >
+                                    <div className="tabular-nums text-[12px] text-slate-400">
+                                      {formatMedicationTime(entry.startedAt)}
+                                    </div>
+                                    <div className="flex min-w-0 items-center gap-2 text-rose-800">
+                                      <DrinkIcon className="h-4 w-4 shrink-0 text-rose-500" aria-hidden />
+                                      <div className="min-w-0">
+                                        <div className="truncate font-medium">{entry.drinkType}</div>
+                                        <div className="truncate text-[11px] text-slate-500">
+                                          {entry.quantity} {entry.quantity === 1 ? "drink" : "drinks"}
+                                          {entry.endedAt ? ` · ${formatMedicationTime(entry.startedAt)}–${formatMedicationTime(entry.endedAt)}` : ""}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              }
+
+                              const entry = item.entry;
                               const feelingLogs = entry.entryType === "observation" ? feelingLogsFromEntry(entry) : [];
                               return (
                                 <button
@@ -9488,7 +9748,7 @@ useEffect(() => {
             ) : null}
 
             {openTimeLogs.length ? (
-              <div className="order-3 mt-3 rounded-[18px] border border-cyan-100 bg-cyan-50/35 px-2.5 py-2.5 md:order-3 md:px-3 md:py-3">
+              <div className="order-1 mt-3 rounded-[18px] border border-cyan-100 bg-cyan-50/35 px-2.5 py-2.5 md:order-1 md:px-3 md:py-3">
                 <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.14em] text-cyan-700/70">
                   Open sessions
                 </div>
@@ -10630,6 +10890,125 @@ useEffect(() => {
         </div>
       </main>
 
+      <Modal open={medsModalMode === "alcohol"} title="Log alcohol" onClose={closeMedsModal}>
+        <div className="grid gap-3">
+          {medsError ? (
+            <div className="rounded-2xl border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+              {medsError}
+            </div>
+          ) : null}
+
+          <Field label="Drink type">
+            <div className="grid grid-cols-3 gap-2">
+              {ALCOHOL_DRINK_TYPES.map((drinkType) => (
+                <button
+                  key={drinkType.id}
+                  type="button"
+                  onClick={() => {
+                    const defaults = ALCOHOL_DRINK_DEFAULTS[drinkType.id];
+                    setAlcoholDrinkType(drinkType.id);
+                    setAlcoholServingSizeMl(defaults.servingSizeMl);
+                    setAlcoholAbvPercent(defaults.abvPercent);
+                  }}
+                  className={`grid min-h-[66px] place-items-center gap-1 rounded-[16px] border px-2 py-2 text-center text-[12px] font-medium transition-colors ${
+                    alcoholDrinkType === drinkType.id
+                      ? "border-rose-200 bg-rose-50 text-slate-950"
+                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                  }`}
+                >
+                  <drinkType.Icon className="h-5 w-5 text-rose-500" aria-hidden />
+                  <span>{drinkType.id}</span>
+                </button>
+              ))}
+            </div>
+          </Field>
+
+          <Field label="Quantity (drinks)">
+            <input
+              type="number"
+              min="0.1"
+              step="0.1"
+              value={alcoholQuantity}
+              onChange={(event) => setAlcoholQuantity(event.target.value)}
+              className="h-11 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+              aria-label="Number of drinks"
+            />
+          </Field>
+
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Serving size (ml)">
+              <input
+                type="number"
+                min="0"
+                step="1"
+                value={alcoholServingSizeMl}
+                onChange={(event) => setAlcoholServingSizeMl(event.target.value)}
+                className="h-11 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                inputMode="decimal"
+              />
+            </Field>
+            <Field label="ABV (%)">
+              <input
+                type="number"
+                min="0"
+                max="100"
+                step="0.1"
+                value={alcoholAbvPercent}
+                onChange={(event) => setAlcoholAbvPercent(event.target.value)}
+                className="h-11 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                inputMode="decimal"
+              />
+            </Field>
+          </div>
+
+          {estimatedAlcoholUnits !== null ? (
+            <div className="flex items-center justify-between border-t border-slate-100 pt-3">
+              <span className="text-xs font-medium text-slate-500">Estimated alcohol</span>
+              <span className="text-sm font-semibold text-slate-900">{estimatedAlcoholUnits.toFixed(1)} units</span>
+            </div>
+          ) : null}
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Start time">
+              <input
+                type="datetime-local"
+                value={alcoholStartedAt}
+                onChange={(event) => setAlcoholStartedAt(event.target.value)}
+                className="h-11 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+              />
+            </Field>
+            <Field label="End time (optional)">
+              <input
+                type="datetime-local"
+                value={alcoholEndedAt}
+                min={alcoholStartedAt || undefined}
+                onChange={(event) => setAlcoholEndedAt(event.target.value)}
+                className="h-11 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+              />
+            </Field>
+          </div>
+
+          <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
+            <button
+              type="button"
+              onClick={closeMedsModal}
+              disabled={medsSaving}
+              className="rounded-full border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={submitAlcoholEntry}
+              disabled={medsSaving}
+              className="rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:bg-slate-300"
+            >
+              {medsSaving ? "Saving" : "Save"}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
       {/* Medication dose modal */}
       <Modal
         open={medsModalMode === "dose"}
@@ -10643,9 +11022,10 @@ useEffect(() => {
             </div>
           ) : null}
 
+          {doseMedicationKind !== "Coffee" ? (
           <Field label="What">
             <div className="grid grid-cols-2 gap-2">
-              {MEDICATION_OPTIONS.map((option) => {
+              {MEDICATION_OPTIONS.filter((option) => option.id !== "Coffee").map((option) => {
                 const selected = doseMedicationKind === option.id;
                 const tones = {
                   Vyvanse: selected
@@ -10661,7 +11041,7 @@ useEffect(() => {
                     ? "border-slate-300 bg-slate-100 text-slate-800"
                     : "border-transparent bg-slate-50 text-slate-600 hover:bg-slate-100",
                 } as const;
-                const Icon = option.id === "Coffee" ? Coffee : option.id === "Custom" ? Plus : PillIcon;
+                const Icon = option.id === "Custom" ? Plus : PillIcon;
                 return (
                   <button
                     key={option.id}
@@ -10669,15 +11049,6 @@ useEffect(() => {
                     onClick={() => {
                       setDoseMedicationKind(option.id);
                       setDoseUnit(option.unit);
-                      if (option.id === "Coffee") {
-                        const now = new Date();
-                        setCaffeineSize("M");
-                        setCaffeineWhenMode("now");
-                        setCaffeineDate(localDateISO(now));
-                        setCaffeineTime(timeInputFromTimestamp(now.toISOString()));
-                        setCaffeineNote("");
-                        applyCaffeineDrinkDefaults("iced_latte", "M");
-                      }
                     }}
                     className={`flex h-14 items-center gap-3 rounded-[17px] border px-3 text-left transition-colors ${tones[option.id]}`}
                   >
@@ -10690,6 +11061,7 @@ useEffect(() => {
               })}
             </div>
           </Field>
+          ) : null}
 
           {doseMedicationKind === "Custom" ? (
             <Field label="Custom name">
