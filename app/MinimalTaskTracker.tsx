@@ -22,6 +22,7 @@ import {
   Clock3,
   CalendarDays,
   Coffee,
+  CupSoda,
   Eye,
   Flag,
   FileText,
@@ -29,11 +30,14 @@ import {
   Frown,
   Gauge,
   Gem,
+  GlassWater,
   GraduationCap,
   Heart,
   HeartPulse,
+  House,
   Laugh,
   Layers,
+  Leaf,
   LayoutDashboard,
   ListChecks,
   LoaderCircle,
@@ -41,6 +45,7 @@ import {
   Martini,
   MessageCircle,
   Meh,
+  Milk,
   Minus,
   Moon,
   PanelLeftClose,
@@ -542,6 +547,20 @@ const CAFFEINE_DRINK_DEFAULTS: {
   { id: "espresso_martini", label: "Espresso martini", mg: 65, shots: 1 },
   { id: "custom", label: "Custom", mg: 100 },
 ];
+const CAFFEINE_DRINK_ICONS: Record<CaffeineDrinkId, React.ComponentType<{ className?: string; "aria-hidden"?: boolean }>> = {
+  espresso: Coffee,
+  americano: Coffee,
+  iced_americano: CupSoda,
+  cappuccino: Coffee,
+  latte: Milk,
+  iced_latte: CupSoda,
+  cortado: GlassWater,
+  flat_white: Coffee,
+  homemade_coffee: House,
+  matcha_latte: Leaf,
+  espresso_martini: Martini,
+  custom: Plus,
+};
 const ALCOHOL_DRINK_TYPES = [
   { id: "Wine", Icon: Wine },
   { id: "Beer", Icon: Beer },
@@ -3139,6 +3158,8 @@ function MedsChartCard({
   nowX,
   axisLabels,
   maxPercent,
+  onSwipePrevious,
+  onSwipeNext,
 }: {
   title: string;
   subtitle: string;
@@ -3151,7 +3172,10 @@ function MedsChartCard({
   nowX: number | null;
   axisLabels: string[];
   maxPercent: number;
+  onSwipePrevious?: () => void;
+  onSwipeNext?: () => void;
 }) {
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
   const gradientId = `meds-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-fill`;
   const path = medsCurvePath(points);
   const area = medsAreaPath(points);
@@ -3179,6 +3203,28 @@ function MedsChartCard({
         className="mt-1.5 h-[170px] w-full overflow-visible sm:mt-3 sm:h-[220px]"
         role="img"
         aria-label={`${title} estimated levels`}
+        style={{ touchAction: "pan-y" }}
+        onTouchStart={(event) => {
+          const touch = event.touches[0];
+          touchStartRef.current = touch ? { x: touch.clientX, y: touch.clientY } : null;
+        }}
+        onTouchEnd={(event) => {
+          const start = touchStartRef.current;
+          touchStartRef.current = null;
+          if (!start || window.matchMedia("(min-width: 640px)").matches) return;
+
+          const touch = event.changedTouches[0];
+          if (!touch) return;
+          const deltaX = touch.clientX - start.x;
+          const deltaY = touch.clientY - start.y;
+          if (Math.abs(deltaX) < 48 || Math.abs(deltaX) <= Math.abs(deltaY) * 1.25) return;
+
+          if (deltaX > 0) onSwipePrevious?.();
+          else onSwipeNext?.();
+        }}
+        onTouchCancel={() => {
+          touchStartRef.current = null;
+        }}
       >
         <defs>
           <linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1">
@@ -8222,6 +8268,12 @@ useEffect(() => {
                       nowX={medsNowX}
                       axisLabels={medsAxisLabels}
                       maxPercent={vyvanseChartSeries.maxPercent}
+                      onSwipePrevious={() => setMedsRangeOffset((value) => value + 1)}
+                      onSwipeNext={
+                        medsRangeOffset > 0
+                          ? () => setMedsRangeOffset((value) => Math.max(0, value - 1))
+                          : undefined
+                      }
                     />
 
                     <MedsChartCard
@@ -8236,6 +8288,12 @@ useEffect(() => {
                       nowX={medsNowX}
                       axisLabels={medsAxisLabels}
                       maxPercent={caffeineChartSeries.maxPercent}
+                      onSwipePrevious={() => setMedsRangeOffset((value) => value + 1)}
+                      onSwipeNext={
+                        medsRangeOffset > 0
+                          ? () => setMedsRangeOffset((value) => Math.max(0, value - 1))
+                          : undefined
+                      }
                     />
                   </div>
                 </section>
@@ -8372,6 +8430,9 @@ useEffect(() => {
                                         <div className="truncate font-medium">{entry.drinkType}</div>
                                         <div className="truncate text-[11px] text-slate-500">
                                           {entry.quantity} {entry.quantity === 1 ? "drink" : "drinks"}
+                                          {entry.alcoholUnits !== null && entry.alcoholUnits !== undefined
+                                            ? ` · ${entry.alcoholUnits.toFixed(1)} units`
+                                            : ""}
                                           {entry.endedAt ? ` · ${formatMedicationTime(entry.startedAt)}–${formatMedicationTime(entry.endedAt)}` : ""}
                                         </div>
                                       </div>
@@ -11078,21 +11139,24 @@ useEffect(() => {
             <>
               <Field label="Drink type">
                 <div className="grid grid-cols-3 gap-2">
-                  {CAFFEINE_DRINK_DEFAULTS.map((drink) => (
-                    <button
-                      key={drink.id}
-                      type="button"
-                      onClick={() => applyCaffeineDrinkDefaults(drink.id)}
-                      className={`grid min-h-[74px] place-items-center gap-1 rounded-[16px] border px-2 py-2 text-center text-[12px] font-medium ${
-                        caffeineDrinkId === drink.id
-                          ? "border-amber-300 bg-amber-50 text-slate-950"
-                          : "border-slate-200 bg-white text-slate-700"
-                      }`}
-                    >
-                      <Coffee className="h-5 w-5" aria-hidden />
-                      <span>{drink.label}</span>
-                    </button>
-                  ))}
+                  {CAFFEINE_DRINK_DEFAULTS.map((drink) => {
+                    const DrinkIcon = CAFFEINE_DRINK_ICONS[drink.id];
+                    return (
+                      <button
+                        key={drink.id}
+                        type="button"
+                        onClick={() => applyCaffeineDrinkDefaults(drink.id)}
+                        className={`grid min-h-[74px] place-items-center gap-1 rounded-[16px] border px-2 py-2 text-center text-[12px] font-medium ${
+                          caffeineDrinkId === drink.id
+                            ? "border-amber-300 bg-amber-50 text-slate-950"
+                            : "border-slate-200 bg-white text-slate-700"
+                        }`}
+                      >
+                        <DrinkIcon className="h-5 w-5" aria-hidden />
+                        <span>{drink.label}</span>
+                      </button>
+                    );
+                  })}
                 </div>
               </Field>
 
