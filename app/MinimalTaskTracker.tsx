@@ -148,8 +148,20 @@ import {
   type MedicationEntry,
   type MedicationKind,
 } from "./medicationStore/medicationTypes";
-import { loadAlcoholEntries, saveAlcoholEntry } from "./signalEntryStore/supabaseSignalEntryStore";
+import {
+  deleteAlcoholEntry,
+  loadAlcoholEntries,
+  saveAlcoholEntry,
+  updateAlcoholEntry,
+} from "./signalEntryStore/supabaseSignalEntryStore";
 import { createAlcoholEntryId, type AlcoholEntry } from "./signalEntryStore/alcoholEntryTypes";
+import {
+  alcoholSessionAbsorptionBounds,
+  calculateEstimatedBacSeries,
+  estimatedSessionClearanceTime,
+  groupAlcoholSessions,
+  type EstimatedBacSample,
+} from "./signalEntryStore/alcoholBac";
 import {
   calculateTimeLogDurationHours,
   isClosedTimeLog,
@@ -499,7 +511,7 @@ const APP_NAV_ITEMS: AppNavItem[] = [
   { id: "planner", label: "Planner", icon: CalendarDays },
   { id: "list", label: "Tasks", icon: ListChecks },
   { id: "logger", label: "Logger", icon: Clock3 },
-  { id: "meds", label: "Meds", icon: PillIcon },
+  { id: "meds", label: "Signals", icon: Activity },
 ];
 const MEDICATION_OPTIONS: { id: MedicationKind; label: string; unit: string }[] = [
   { id: "Vyvanse", label: "Vyvanse", unit: "mg" },
@@ -586,6 +598,22 @@ const ALCOHOL_DRINK_DEFAULTS: Record<AlcoholDrinkType, { servingSizeMl: string; 
   Cocktail: { servingSizeMl: "150", abvPercent: "15" },
   Other: { servingSizeMl: "", abvPercent: "" },
 };
+
+function alcoholDefaultsForLabel(label: string) {
+  const exact = ALCOHOL_DRINK_TYPES.find((option) => option.id === label);
+  if (exact) return ALCOHOL_DRINK_DEFAULTS[exact.id];
+  const normalized = label.toLowerCase();
+  if (/wine|prosecco|sauvignon|pinot/.test(normalized)) return ALCOHOL_DRINK_DEFAULTS.Wine;
+  if (/beer|heineken/.test(normalized)) return ALCOHOL_DRINK_DEFAULTS.Beer;
+  if (normalized.includes("cider")) return ALCOHOL_DRINK_DEFAULTS.Cider;
+  if (normalized.includes("vodka")) return ALCOHOL_DRINK_DEFAULTS.Vodka;
+  if (normalized.includes("gin")) return ALCOHOL_DRINK_DEFAULTS.Gin;
+  if (normalized.includes("rum")) return ALCOHOL_DRINK_DEFAULTS.Rum;
+  if (normalized.includes("tequila")) return ALCOHOL_DRINK_DEFAULTS.Tequila;
+  if (/whisky|whiskey/.test(normalized)) return ALCOHOL_DRINK_DEFAULTS.Whisky;
+  if (/cocktail|martini|paloma|hanami/.test(normalized)) return ALCOHOL_DRINK_DEFAULTS.Cocktail;
+  return null;
+}
 const DEFAULT_FEELING_DEFINITIONS: FeelingDefinition[] = [
   { id: "focused", name: "Focused", icon: "target", valence: "good", category: "state", active: true },
   { id: "distracted", name: "Distracted", icon: "eye", valence: "bad", category: "state", active: true },
@@ -2486,7 +2514,7 @@ function modeSubtitle(mode: ViewMode) {
   if (mode === "board") return "What needs attention, then everything by category.";
   if (mode === "planner") return "Calendar structure and scheduled blocks.";
   if (mode === "logger") return "Actual time spent and working cadence.";
-  if (mode === "meds") return "Lightweight medication and feeling notes.";
+  if (mode === "meds") return "Personal telemetry and signals.";
   return "Search, filter and maintain task details.";
 }
 
@@ -2822,6 +2850,7 @@ type MedicationTrackerDay = {
 type MedicationTrackerSubstance = {
   key: string;
   label: string;
+  subtitle?: string;
   color: string;
   days: Map<string, MedicationTrackerDay>;
 };
@@ -2855,10 +2884,12 @@ function MedsTrackerGrid({
   substance,
   dates,
   mobile = false,
+  renderSelectedDetail,
 }: {
   substance: MedicationTrackerSubstance;
   dates: string[];
   mobile?: boolean;
+  renderSelectedDetail?: (date: string) => React.ReactNode;
 }) {
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const weekCount = Math.ceil(dates.length / 7);
@@ -2878,7 +2909,10 @@ function MedsTrackerGrid({
 
   return (
     <section className="min-w-0 max-w-full border-b border-slate-200/70 pb-4 last:border-b-0 sm:pb-5">
-      <h2 className="mb-2 text-sm font-semibold text-slate-950">{substance.label}</h2>
+      <div className="mb-2">
+        <h2 className="text-sm font-semibold text-slate-950">{substance.label}</h2>
+        {substance.subtitle ? <p className="mt-0.5 text-[11px] text-slate-500">{substance.subtitle}</p> : null}
+      </div>
       <div className={`w-full max-w-full pb-1 ${mobile ? "overflow-x-hidden" : "overflow-x-auto overscroll-x-contain"}`}>
         <div className={mobile ? "w-full max-w-full" : "min-w-max"}>
           <div
@@ -2920,8 +2954,9 @@ function MedsTrackerGrid({
       {selectedDate ? (
         <div className="mt-2 min-h-4 text-[11px] text-slate-500">{tooltip(selectedDate, selectedDay)}</div>
       ) : null}
-      <div className="mt-2 flex items-center justify-start gap-1 text-[10px] text-slate-400 sm:justify-end">
-        <span>Less</span>
+      {selectedDate && renderSelectedDetail ? renderSelectedDetail(selectedDate) : null}
+      <div className="mt-2 flex items-center justify-start gap-1 text-[9px] font-medium uppercase tracking-[0.08em] text-slate-400 sm:justify-end">
+        <span>0</span>
         {[0.18, 0.32, 0.5, 0.7, 0.9].map((opacity) => (
           <span
             key={opacity}
@@ -2929,9 +2964,184 @@ function MedsTrackerGrid({
             style={{ backgroundColor: substance.color, opacity }}
           />
         ))}
-        <span>More</span>
+        <span>Max</span>
       </div>
     </section>
+  );
+}
+
+function AlcoholNightTimeline({ date, entries }: { date: string; entries: AlcoholEntry[] }) {
+  const dayEntries = entries
+    .filter((entry) => {
+      const startedAt = new Date(entry.startedAt);
+      return Number.isFinite(startedAt.getTime()) && localDateISO(startedAt) === date;
+    })
+    .slice()
+    .sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
+
+  if (!dayEntries.length) return null;
+
+  const starts = dayEntries.map((entry) => Date.parse(entry.startedAt));
+  const ends = dayEntries.map((entry, index) => {
+    const endedAt = entry.endedAt ? Date.parse(entry.endedAt) : NaN;
+    return Number.isFinite(endedAt) && endedAt >= starts[index] ? endedAt : starts[index];
+  });
+  const paddingMs = 30 * 60 * 1000;
+  const rangeStart = Math.min(...starts) - paddingMs;
+  const rangeEnd = Math.max(...ends) + paddingMs;
+  const rangeDuration = Math.max(1, rangeEnd - rangeStart);
+  const ticks = Array.from({ length: 5 }, (_, index) => rangeStart + (rangeDuration * index) / 4);
+  const gapThresholdMs = 3 * 60 * 60 * 1000;
+  const compressedGapDisplayMs = 45 * 60 * 1000;
+  const compressedGaps = dayEntries.slice(0, -1).flatMap((_, index) => {
+    const gapStart = ends[index];
+    const gapEnd = starts[index + 1];
+    const duration = gapEnd - gapStart;
+    return duration >= gapThresholdMs
+      ? [{ start: gapStart, end: gapEnd, duration, displayDuration: compressedGapDisplayMs }]
+      : [];
+  });
+  const displayTimestamp = (timestamp: number) => {
+    let removedMs = 0;
+    for (const gap of compressedGaps) {
+      if (timestamp >= gap.end) {
+        removedMs += gap.duration - gap.displayDuration;
+        continue;
+      }
+      if (timestamp > gap.start) {
+        const progress = (timestamp - gap.start) / gap.duration;
+        return gap.start - removedMs + progress * gap.displayDuration;
+      }
+      break;
+    }
+    return timestamp - removedMs;
+  };
+  const displayRangeStart = displayTimestamp(rangeStart);
+  const displayRangeEnd = displayTimestamp(rangeEnd);
+  const displayRangeDuration = Math.max(1, displayRangeEnd - displayRangeStart);
+  const displayPercent = (timestamp: number) =>
+    clamp(((displayTimestamp(timestamp) - displayRangeStart) / displayRangeDuration) * 100, 0, 100);
+  const gapLabel = (durationMs: number) => {
+    const totalMinutes = Math.round(durationMs / 60000);
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    return `${hours}H${minutes ? String(minutes).padStart(2, "0") : ""} GAP`;
+  };
+  const selectedSession = groupAlcoholSessions(entries)
+    .filter((session) => session.some((entry) => {
+      const startedAt = new Date(entry.startedAt);
+      return Number.isFinite(startedAt.getTime()) && localDateISO(startedAt) === date;
+    }))
+    .at(-1) ?? [];
+  const bacBounds = alcoholSessionAbsorptionBounds(selectedSession);
+  const bacClearance = estimatedSessionClearanceTime(selectedSession);
+  const bacRangeStart = bacBounds ? bacBounds.startMs - 60 * 60 * 1000 : rangeStart;
+  const bacRangeEnd = bacBounds && bacClearance
+    ? Math.max(bacBounds.endMs + 2 * 60 * 60 * 1000, bacClearance + 60 * 60 * 1000)
+    : rangeEnd;
+  const historicalBacSamples = calculateEstimatedBacSeries(selectedSession, bacRangeStart, bacRangeEnd);
+
+  return (
+    <>
+    <div className="mt-3 max-w-full overflow-hidden rounded-xl border border-slate-200/70 bg-slate-50/60 px-3 py-3">
+      <div className="flex items-baseline justify-between gap-3">
+        <div className="text-xs font-semibold text-slate-800">Night timeline</div>
+        <div className="text-[10px] text-slate-400">{medicationTrackerDateLabel(date)}</div>
+      </div>
+      {compressedGaps.length ? (
+        <div className="relative mt-2 h-10 border-t border-dotted border-slate-200/80 font-mono text-[9px] tabular-nums text-slate-400">
+          <span className="absolute left-0 top-1">{formatMedicationTime(new Date(rangeStart).toISOString())}</span>
+          <span className="absolute right-0 top-1">{formatMedicationTime(new Date(rangeEnd).toISOString())}</span>
+          {compressedGaps.map((gap, gapIndex) => {
+            const gapLeft = displayPercent(gap.start);
+            const gapRight = displayPercent(gap.end);
+            const gapMid = clamp((gapLeft + gapRight) / 2, 14, 86);
+            return (
+              <React.Fragment key={`${gap.start}-${gap.end}`}>
+                <div
+                  className="absolute top-0 h-10 border-x border-dotted border-slate-300/80 bg-slate-100/80"
+                  style={{ left: `${gapLeft}%`, width: `${Math.max(1.5, gapRight - gapLeft)}%` }}
+                  title={`${gapLabel(gap.duration)} · ${formatMedicationTime(new Date(gap.start).toISOString())}–${formatMedicationTime(new Date(gap.end).toISOString())}`}
+                />
+                <span
+                  className="absolute -translate-x-1/2 whitespace-nowrap bg-slate-100 px-1 font-semibold uppercase tracking-[0.06em] text-slate-500"
+                  style={{ left: `${gapMid}%`, top: `${4 + (gapIndex % 2) * 12}px` }}
+                >
+                  {gapLabel(gap.duration)}
+                </span>
+              </React.Fragment>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="mt-2 grid grid-cols-5 text-[9px] tabular-nums text-slate-400">
+          {ticks.map((tick, index) => (
+            <span key={tick} className={index === 0 ? "text-left" : index === 4 ? "text-right" : "text-center"}>
+              {formatMedicationTime(new Date(tick).toISOString())}
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="mt-1 space-y-1">
+        {dayEntries.map((entry, index) => {
+          const startMs = starts[index];
+          const endMs = ends[index];
+          const left = displayPercent(startMs);
+          const width = displayPercent(endMs) - left;
+          const hasDuration = Boolean(entry.endedAt && endMs > startMs);
+          const labelAlignRight = left > 62;
+          const drinkOption = ALCOHOL_DRINK_TYPES.find((option) => option.id === entry.drinkType);
+          const DrinkIcon = drinkOption?.Icon ?? Wine;
+          const detail = `${entry.quantity} ${entry.quantity === 1 ? "drink" : "drinks"}${
+            entry.alcoholUnits !== null && entry.alcoholUnits !== undefined ? ` · ${entry.alcoholUnits.toFixed(1)} units` : ""
+          }`;
+          const timeLabel = hasDuration
+            ? `${formatMedicationTime(entry.startedAt)}–${formatMedicationTime(entry.endedAt!)}`
+            : formatMedicationTime(entry.startedAt);
+          const title = `${entry.drinkType} · ${detail} · ${timeLabel}`;
+
+          return (
+            <div key={entry.id} className="relative h-12 overflow-hidden border-t border-slate-200/60" title={title}>
+              <div
+                className={`absolute top-1 flex max-w-[72%] items-center gap-1 overflow-hidden whitespace-nowrap font-mono text-[9px] tabular-nums text-slate-500 ${
+                  labelAlignRight ? "pr-1" : "pl-1"
+                }`}
+                style={{ left: `${left}%`, transform: labelAlignRight ? "translateX(-100%)" : undefined }}
+              >
+                <span className="shrink-0 text-slate-400">{timeLabel}</span>
+                <span className="text-slate-300">·</span>
+                <DrinkIcon className="h-3 w-3 shrink-0 text-rose-500" aria-hidden />
+                <span className="truncate font-sans text-[10px] font-medium text-slate-800">
+                  {entry.drinkType} · {detail}
+                </span>
+              </div>
+              <div className="absolute inset-x-0 top-[34px] border-t border-slate-200/70" aria-hidden />
+              {hasDuration ? (
+                <div
+                  className="absolute top-[32px] h-[3px] rounded-full bg-rose-300/80"
+                  style={{ left: `${left}%`, width: `${Math.max(0.75, width)}%` }}
+                  aria-hidden
+                />
+              ) : null}
+              <span
+                className="absolute top-[29px] h-3 w-3 -translate-x-1/2 rounded-full border-2 border-white bg-rose-500 shadow-[0_0_0_1px_rgba(225,29,72,0.2)]"
+                style={{ left: `${left}%` }}
+                aria-hidden
+              />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+    <div className="mt-3">
+      <EstimatedBacCard
+        samples={historicalBacSamples}
+        rangeStart={bacRangeStart}
+        rangeEnd={bacRangeEnd}
+        historical
+      />
+    </div>
+    </>
   );
 }
 
@@ -3191,11 +3401,11 @@ function MedsChartCard({
             {icon}
           </div>
           <div className="min-w-0">
-            <div className="truncate text-base font-semibold leading-tight text-slate-950">{title}</div>
-            <div className="mt-0.5 truncate text-xs text-slate-500">{subtitle}</div>
+            <div className="truncate text-sm font-semibold uppercase leading-tight tracking-[0.04em] text-slate-950">{title}</div>
+            <div className="mt-1 truncate font-mono text-[9px] uppercase tracking-[0.05em] text-slate-500">{subtitle}</div>
           </div>
         </div>
-        <div className="shrink-0 pt-1 text-right text-xs font-medium text-slate-500">{meta}</div>
+        <div className="shrink-0 pt-0.5 text-right font-mono text-[11px] font-semibold tabular-nums text-slate-600">{meta}</div>
       </div>
 
       <svg
@@ -3269,6 +3479,132 @@ function MedsChartCard({
             <circle cx={dot.x} cy={dot.y} r="5.5" fill={tone} stroke="#fff" strokeWidth="2" />
           </g>
         ))}
+      </svg>
+    </section>
+  );
+}
+
+function EstimatedBacCard({
+  samples,
+  rangeStart,
+  rangeEnd,
+  nowMs = null,
+  historical = false,
+  onSwipePrevious,
+  onSwipeNext,
+}: {
+  samples: EstimatedBacSample[];
+  rangeStart: number;
+  rangeEnd: number;
+  nowMs?: number | null;
+  historical?: boolean;
+  onSwipePrevious?: () => void;
+  onSwipeNext?: () => void;
+}) {
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const tone = "#278ba0";
+  const peak = samples.reduce<EstimatedBacSample | null>(
+    (highest, sample) => (!highest || sample.bac > highest.bac ? sample : highest),
+    null
+  );
+  const current = nowMs === null
+    ? samples[samples.length - 1] ?? null
+    : samples.reduce<EstimatedBacSample | null>(
+        (latest, sample) => (sample.timestamp <= nowMs && (!latest || sample.timestamp > latest.timestamp) ? sample : latest),
+        null
+      );
+  const peakBac = peak?.bac ?? 0;
+  const chartMax = Math.max(0.02, Math.ceil(peakBac / 0.02) * 0.02);
+  const duration = Math.max(1, rangeEnd - rangeStart);
+  const points: MedsChartPoint[] = samples.map((sample) => ({
+    x: 36 + clamp((sample.timestamp - rangeStart) / duration, 0, 1) * 278,
+    y: 132 - clamp(sample.bac / chartMax, 0, 1) * 104,
+  }));
+  const path = medsCurvePath(points);
+  const area = medsAreaPath(points);
+  const nowX = nowMs !== null && nowMs >= rangeStart && nowMs <= rangeEnd
+    ? 36 + ((nowMs - rangeStart) / duration) * 278
+    : null;
+  const axisLabels = Array.from({ length: 5 }, (_, index) =>
+    formatMedicationTime(new Date(rangeStart + (duration * index) / 4).toISOString())
+  );
+  const gradientId = historical ? "historical-bac-fill" : "live-bac-fill";
+
+  return (
+    <section className="max-w-full overflow-hidden rounded-[22px] border border-slate-200/80 bg-white px-3 pb-2.5 pt-3 shadow-[0_10px_28px_rgba(15,23,42,0.04)] sm:px-4 sm:pb-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold uppercase leading-tight tracking-[0.04em] text-slate-950">Estimated BAC</div>
+          <div className="mt-1 font-mono text-[9px] uppercase tracking-[0.05em] text-slate-500">Modelled estimate{historical ? "" : " · not measured"}</div>
+        </div>
+        <div className="shrink-0 text-right">
+          {historical ? null : (
+            <>
+              <div className="text-lg font-semibold tabular-nums text-slate-950">{(current?.bac ?? 0).toFixed(2)}%</div>
+              <div className="text-[10px] text-slate-400">{nowMs === null ? "At window end" : "Estimated now"}</div>
+            </>
+          )}
+          <div className={`${historical ? "text-sm font-semibold text-slate-800" : "mt-1 text-[10px] text-slate-500"}`}>
+            Peak {peakBac.toFixed(2)}%{peakBac > 0 && peak ? ` · ${formatMedicationTime(new Date(peak.timestamp).toISOString())}` : ""}
+          </div>
+        </div>
+      </div>
+
+      {peakBac <= 0 ? <div className="mt-2 text-[11px] text-slate-400">No persisted alcohol units to model.</div> : null}
+
+      <svg
+        viewBox="0 0 340 178"
+        className="mt-1.5 h-[170px] w-full overflow-visible sm:mt-3 sm:h-[220px]"
+        role="img"
+        aria-label="Estimated BAC curve"
+        style={{ touchAction: "pan-y" }}
+        onTouchStart={(event) => {
+          const touch = event.touches[0];
+          touchStartRef.current = touch ? { x: touch.clientX, y: touch.clientY } : null;
+        }}
+        onTouchEnd={(event) => {
+          const start = touchStartRef.current;
+          touchStartRef.current = null;
+          if (!start || window.matchMedia("(min-width: 640px)").matches) return;
+          const touch = event.changedTouches[0];
+          if (!touch) return;
+          const deltaX = touch.clientX - start.x;
+          const deltaY = touch.clientY - start.y;
+          if (Math.abs(deltaX) < 48 || Math.abs(deltaX) <= Math.abs(deltaY) * 1.25) return;
+          if (deltaX > 0) onSwipePrevious?.();
+          else onSwipeNext?.();
+        }}
+        onTouchCancel={() => {
+          touchStartRef.current = null;
+        }}
+      >
+        <defs>
+          <linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor={tone} stopOpacity="0.2" />
+            <stop offset="100%" stopColor={tone} stopOpacity="0.02" />
+          </linearGradient>
+        </defs>
+        {[40, 70, 100, 130].map((y) => (
+          <line key={y} x1="36" y1={y} x2="314" y2={y} stroke="#e2e8f0" strokeOpacity="0.65" />
+        ))}
+        {[chartMax, chartMax * 0.75, chartMax * 0.5, chartMax * 0.25, 0].map((value, index) => (
+          <text key={index} x="4" y={37 + index * 24} className="fill-slate-400 text-[9px]">
+            {value.toFixed(2)}%
+          </text>
+        ))}
+        {axisLabels.map((label, index) => (
+          <text key={`${label}-${index}`} x={36 + index * 69.5} y="154" textAnchor="middle" className="fill-slate-500 text-[10px]">
+            {label}
+          </text>
+        ))}
+        <path d={area} fill={`url(#${gradientId})`} />
+        <path d={path} fill="none" stroke={tone} strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.4" />
+        {nowX !== null ? (
+          <>
+            <line x1={nowX} y1="16" x2={nowX} y2="139" stroke="#334155" strokeDasharray="4 4" strokeWidth="1.1" />
+            <text x={Math.min(nowX + 5, 290)} y="28" className="fill-slate-800 text-[11px] font-semibold">Now</text>
+          </>
+        ) : null}
       </svg>
     </section>
   );
@@ -4210,6 +4546,7 @@ export default function MinimalTaskTracker() {
   const [feelingDate, setFeelingDate] = useState("");
   const [feelingTime, setFeelingTime] = useState("");
   const [medsHistoryFilter, setMedsHistoryFilter] = useState<"all" | "Vyvanse" | "Prozac" | "Coffee" | "alcohol" | "feelings">("all");
+  const [medsTodayMode, setMedsTodayMode] = useState<"day" | "night">("day");
   const [medsLevelRange, setMedsLevelRange] = useState<MedsLevelRange>("24h");
   const [medsRangeOffset, setMedsRangeOffset] = useState(0);
   const [caffeineDrinkId, setCaffeineDrinkId] = useState<CaffeineDrinkId>("iced_latte");
@@ -4220,7 +4557,9 @@ export default function MinimalTaskTracker() {
   const [caffeineTime, setCaffeineTime] = useState("");
   const [caffeineNote, setCaffeineNote] = useState("");
   const [alcoholDraftId, setAlcoholDraftId] = useState<string | null>(null);
-  const [alcoholDrinkType, setAlcoholDrinkType] = useState<AlcoholDrinkType>("Wine");
+  const [editingAlcoholEntry, setEditingAlcoholEntry] = useState<AlcoholEntry | null>(null);
+  const [alcoholEstimateEdited, setAlcoholEstimateEdited] = useState(false);
+  const [alcoholDrinkType, setAlcoholDrinkType] = useState<string>("Wine");
   const [alcoholQuantity, setAlcoholQuantity] = useState("1");
   const [alcoholServingSizeMl, setAlcoholServingSizeMl] = useState("");
   const [alcoholAbvPercent, setAlcoholAbvPercent] = useState("");
@@ -4233,6 +4572,8 @@ export default function MinimalTaskTracker() {
     alcoholQuantityValue > 0 && alcoholServingSizeValue > 0 && alcoholAbvValue > 0
       ? (alcoholQuantityValue * alcoholServingSizeValue * alcoholAbvValue) / 1000
       : null;
+  const displayedAlcoholUnits =
+    editingAlcoholEntry && !alcoholEstimateEdited ? editingAlcoholEntry.alcoholUnits ?? null : estimatedAlcoholUnits;
   const [backupStatus, setBackupStatus] = useState({ label: "—", count: 0 });
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -4306,6 +4647,7 @@ useEffect(() => {
   const [customEndDate, setCustomEndDate] = useState<string>("");
   const [clientToday, setClientToday] = useState<string>("");
   const [clientNowMs, setClientNowMs] = useState<number>(0);
+  const [bacClockMs, setBacClockMs] = useState<number>(0);
   const loggerGridScrollRef = useRef<HTMLDivElement | null>(null);
   const loggerMonthActivityScrollRef = useRef<HTMLDivElement | null>(null);
   const plannerWeekScrollRef = useRef<HTMLDivElement | null>(null);
@@ -4417,7 +4759,7 @@ useEffect(() => {
         return;
       }
 
-      console.warn("Supabase medication entry load failed. Preserving current Meds state.");
+      console.warn("Supabase medication entry load failed. Preserving current Signals state.");
     })();
 
     void (async () => {
@@ -4451,6 +4793,12 @@ useEffect(() => {
 useEffect(() => {
   if (mode !== "list") setOpenStatusTaskId(null);
 }, [mode]);
+
+useEffect(() => {
+  setBacClockMs(Date.now());
+  const interval = window.setInterval(() => setBacClockMs(Date.now()), 60_000);
+  return () => window.clearInterval(interval);
+}, []);
 
 useEffect(() => {
   if (!openStatusTaskId) return;
@@ -4942,6 +5290,14 @@ useEffect(() => {
       }) ?? null,
     [medsVisibleRange.endMs, medsVisibleRange.startMs, vyvanseEntries]
   );
+  const latestCaffeineInRange = useMemo(
+    () =>
+      caffeineEntries.find((entry) => {
+        const timestamp = Date.parse(entry.timestamp);
+        return Number.isFinite(timestamp) && timestamp >= medsVisibleRange.startMs && timestamp <= medsVisibleRange.endMs;
+      }) ?? null,
+    [caffeineEntries, medsVisibleRange.endMs, medsVisibleRange.startMs]
+  );
   const caffeineTotalInRange = useMemo(
     () =>
       caffeineEntries.reduce((sum, entry) => {
@@ -4951,6 +5307,29 @@ useEffect(() => {
       }, 0),
     [caffeineEntries, medsVisibleRange.endMs, medsVisibleRange.startMs]
   );
+  const liveSignalReadout = useMemo(() => {
+    const nowMs = clientNowMs || Date.now();
+    const vyvanseLevel = vyvanseEntries.reduce((sum, entry) => sum + vyvanseContribution(entry, nowMs), 0);
+    const caffeineLevel = caffeineEntries.reduce((sum, entry) => sum + caffeineContribution(entry, nowMs), 0);
+    const bacSamples = calculateEstimatedBacSeries(alcoholEntries, nowMs - 48 * 60 * 60 * 1000, nowMs);
+    const latestFeeling = sortedMedicationEntries.find((entry) => entry.entryType === "observation");
+    const feelingLabel = latestFeeling ? feelingLogsFromEntry(latestFeeling)[0]?.name ?? latestFeeling.feeling ?? "—" : "—";
+    return {
+      vyvanseLevel,
+      caffeineLevel,
+      bac: bacSamples[bacSamples.length - 1]?.bac ?? 0,
+      feelingLabel,
+      updatedAt: formatMedicationTime(new Date(nowMs).toISOString()),
+    };
+  }, [alcoholEntries, caffeineEntries, clientNowMs, sortedMedicationEntries, vyvanseEntries]);
+  const visibleSignalLevels = useMemo(() => {
+    const nowMs = clientNowMs || Date.now();
+    const sampleMs = nowMs >= medsVisibleRange.startMs && nowMs <= medsVisibleRange.endMs ? nowMs : medsVisibleRange.endMs;
+    return {
+      vyvanse: vyvanseEntries.reduce((sum, entry) => sum + vyvanseContribution(entry, sampleMs), 0),
+      caffeine: caffeineEntries.reduce((sum, entry) => sum + caffeineContribution(entry, sampleMs), 0),
+    };
+  }, [caffeineEntries, clientNowMs, medsVisibleRange.endMs, medsVisibleRange.startMs, vyvanseEntries]);
   const medicationHistoryEntries = useMemo(() => {
     return sortedMedicationEntries.filter((entry) => {
       if (medsHistoryFilter === "all") return true;
@@ -5049,10 +5428,88 @@ useEffect(() => {
           days.set(date, { ...day, intensity: nearUniform ? 3 : Math.max(1, Math.min(4, Math.ceil(rank * 4))) });
         });
 
-        return { key, label: group.label, color: medicationTrackerColor(key), days };
+        const summaryStart = addDaysISO(isValidISODate(clientToday) ? clientToday : todayISO(), -6);
+        const recentEntries = group.entries.filter((entry) => medicationLocalDate(entry) >= summaryStart);
+        const recentActiveDays = new Set(recentEntries.map(medicationLocalDate)).size;
+        const recentAmount = recentEntries.reduce(
+          (sum, entry) => sum + (typeof entry.amount === "number" && Number.isFinite(entry.amount) ? entry.amount : 0),
+          0
+        );
+        const unit = recentEntries.find((entry) => entry.unit)?.unit;
+        const summary = canAggregateAmounts || recentEntries.length
+          ? `7D ${formatMedicationAmount(recentAmount)}${unit ? ` ${unit}` : ""} · ${recentActiveDays}/7 days`
+          : `7D 0 · 0/7 days`;
+        return { key, label: group.label, subtitle: summary.toUpperCase(), color: medicationTrackerColor(key), days };
       })
       .sort((a, b) => a.label.localeCompare(b.label));
-  }, [medicationTrackerDates, medicationTrackerInputEntries]);
+  }, [clientToday, medicationTrackerDates, medicationTrackerInputEntries]);
+  const alcoholTrackerSubstance = useMemo<MedicationTrackerSubstance>(() => {
+    const visibleDates = new Set(medicationTrackerDates);
+    const totals = new Map<string, { total: number; count: number }>();
+
+    alcoholEntries.forEach((entry) => {
+      if (typeof entry.alcoholUnits !== "number" || !Number.isFinite(entry.alcoholUnits) || entry.alcoholUnits <= 0) return;
+      const startedAt = new Date(entry.startedAt);
+      if (!Number.isFinite(startedAt.getTime())) return;
+      const date = localDateISO(startedAt);
+      if (!visibleDates.has(date)) return;
+      const current = totals.get(date) ?? { total: 0, count: 0 };
+      current.total += entry.alcoholUnits;
+      current.count += 1;
+      totals.set(date, current);
+    });
+
+    const values = Array.from(totals.values()).map(({ total }) => total).sort((a, b) => a - b);
+    const min = values[0] ?? 0;
+    const max = values[values.length - 1] ?? 0;
+    const nearUniform = max <= min || max - min <= Math.max(0.001, max * 0.05);
+    const days = new Map<string, MedicationTrackerDay>();
+    totals.forEach(({ total, count }, date) => {
+      const rank = values.filter((value) => value <= total).length / Math.max(1, values.length);
+      days.set(date, {
+        date,
+        count,
+        amount: total,
+        unit: "units",
+        intensity: nearUniform ? 3 : Math.max(1, Math.min(4, Math.ceil(rank * 4))),
+      });
+    });
+
+    const today = isValidISODate(clientToday) ? clientToday : todayISO();
+    const summaryStart = addDaysISO(today, -29);
+    const recentEntries = alcoholEntries.filter((entry) => {
+      const date = localDateISO(new Date(entry.startedAt));
+      return date >= summaryStart && date <= today;
+    });
+    const recentUnits = recentEntries.reduce(
+      (sum, entry) => sum + (typeof entry.alcoholUnits === "number" && Number.isFinite(entry.alcoholUnits) ? entry.alcoholUnits : 0),
+      0
+    );
+    const recentActiveDays = new Set(recentEntries.map((entry) => localDateISO(new Date(entry.startedAt)))).size;
+    return {
+      key: "alcohol",
+      label: "Alcohol",
+      subtitle: `30D ${recentUnits.toFixed(1)} u · ${recentActiveDays} active days`.toUpperCase(),
+      color: "#e05266",
+      days,
+    };
+  }, [alcoholEntries, clientToday, medicationTrackerDates]);
+  const bacWindowModel = useMemo(() => {
+    const nowMs = bacClockMs || clientNowMs;
+    return {
+      rangeStart: medsVisibleRange.startMs,
+      rangeEnd: medsVisibleRange.endMs,
+      nowMs:
+        nowMs >= medsVisibleRange.startMs && nowMs <= medsVisibleRange.endMs
+          ? nowMs
+          : null,
+      samples: calculateEstimatedBacSeries(
+        alcoholEntries,
+        medsVisibleRange.startMs,
+        medsVisibleRange.endMs
+      ),
+    };
+  }, [alcoholEntries, bacClockMs, clientNowMs, medsVisibleRange.endMs, medsVisibleRange.startMs]);
 
   function openDoseModal() {
     const now = new Date();
@@ -5091,6 +5548,8 @@ useEffect(() => {
     const now = new Date();
     setMedsError(null);
     setMedsDeleteConfirm(false);
+    setEditingAlcoholEntry(null);
+    setAlcoholEstimateEdited(true);
     setAlcoholDraftId(createAlcoholEntryId());
     setAlcoholDrinkType("Wine");
     setAlcoholQuantity("1");
@@ -5098,6 +5557,36 @@ useEffect(() => {
     setAlcoholAbvPercent(ALCOHOL_DRINK_DEFAULTS.Wine.abvPercent);
     setAlcoholStartedAt(`${localDateISO(now)}T${timeInputFromTimestamp(now.toISOString())}`);
     setAlcoholEndedAt("");
+    setMedsModalMode("alcohol");
+  }
+
+  function openAlcoholEntryEditor(entry: AlcoholEntry) {
+    const startedAt = new Date(entry.startedAt);
+    const endedAt = entry.endedAt ? new Date(entry.endedAt) : null;
+    const defaults = entry.alcoholUnits !== null && entry.alcoholUnits !== undefined
+      ? alcoholDefaultsForLabel(entry.drinkType)
+      : null;
+    const servingSize = defaults ? Number(defaults.servingSizeMl) : 0;
+    const representedAbv =
+      defaults && servingSize > 0 && entry.quantity > 0
+        ? (entry.alcoholUnits! * 1000) / (entry.quantity * servingSize)
+        : null;
+
+    setMedsError(null);
+    setMedsDeleteConfirm(false);
+    setEditingAlcoholEntry(entry);
+    setAlcoholEstimateEdited(false);
+    setAlcoholDraftId(entry.id);
+    setAlcoholDrinkType(entry.drinkType);
+    setAlcoholQuantity(String(entry.quantity));
+    setAlcoholServingSizeMl(defaults?.servingSizeMl ?? "");
+    setAlcoholAbvPercent(representedAbv === null ? "" : String(Number(representedAbv.toFixed(3))));
+    setAlcoholStartedAt(`${localDateISO(startedAt)}T${timeInputFromTimestamp(entry.startedAt)}`);
+    setAlcoholEndedAt(
+      endedAt && Number.isFinite(endedAt.getTime())
+        ? `${localDateISO(endedAt)}T${timeInputFromTimestamp(entry.endedAt!)}`
+        : ""
+    );
     setMedsModalMode("alcohol");
   }
 
@@ -5125,12 +5614,18 @@ useEffect(() => {
       quantity,
       startedAt: new Date(startedAtMs).toISOString(),
       endedAt: endedAtMs === null ? null : new Date(endedAtMs).toISOString(),
-      alcoholUnits: estimatedAlcoholUnits,
-      feelingsSymptoms: null,
+      alcoholUnits: editingAlcoholEntry && !alcoholEstimateEdited
+        ? editingAlcoholEntry.alcoholUnits ?? null
+        : estimatedAlcoholUnits,
+      feelingsSymptoms: editingAlcoholEntry?.feelingsSymptoms ?? null,
+      createdAt: editingAlcoholEntry?.createdAt,
+      updatedAt: editingAlcoholEntry?.updatedAt,
     };
 
     setMedsSaving(true);
-    const saved = await saveAlcoholEntry(entry, SYNC_CODE);
+    const saved = editingAlcoholEntry
+      ? await updateAlcoholEntry(entry, SYNC_CODE)
+      : await saveAlcoholEntry(entry, SYNC_CODE);
     setMedsSaving(false);
 
     if (!saved) {
@@ -5142,6 +5637,31 @@ useEffect(() => {
     setMedsModalMode(null);
     setMedsError(null);
     setAlcoholDraftId(null);
+    setEditingAlcoholEntry(null);
+    setMedsDeleteConfirm(false);
+  }
+
+  async function removeEditingAlcoholEntry() {
+    if (!editingAlcoholEntry || medsSaving) return;
+    if (!medsDeleteConfirm) {
+      setMedsDeleteConfirm(true);
+      return;
+    }
+
+    setMedsSaving(true);
+    const deleted = await deleteAlcoholEntry(editingAlcoholEntry.id, SYNC_CODE);
+    setMedsSaving(false);
+    if (!deleted) {
+      setMedsError("Could not delete alcohol entry. Existing data was kept.");
+      return;
+    }
+
+    setAlcoholEntries((current) => current.filter((entry) => entry.id !== editingAlcoholEntry.id));
+    setEditingAlcoholEntry(null);
+    setAlcoholDraftId(null);
+    setMedsDeleteConfirm(false);
+    setMedsError(null);
+    setMedsModalMode(null);
   }
 
   function openFeelingModal() {
@@ -5209,8 +5729,8 @@ useEffect(() => {
     if (!saved) {
       setMedsError(
         editingInput
-          ? "Could not update caffeine. Existing Meds history was kept."
-          : "Could not save caffeine. Existing Meds history was kept."
+          ? "Could not update caffeine. Existing Signals history was kept."
+          : "Could not save caffeine. Existing Signals history was kept."
       );
       return;
     }
@@ -5295,6 +5815,8 @@ useEffect(() => {
     setEditingMedicationEntry(null);
     setMedsDeleteConfirm(false);
     setAlcoholDraftId(null);
+    setEditingAlcoholEntry(null);
+    setAlcoholEstimateEdited(false);
   }
 
   function toggleStructuredFeeling(id: string) {
@@ -5338,7 +5860,7 @@ useEffect(() => {
     setMedsSaving(false);
 
     if (!saved) {
-      setMedsError("Could not save feeling settings. Existing Meds history was kept.");
+      setMedsError("Could not save feeling settings. Existing Signals history was kept.");
       return false;
     }
 
@@ -5423,7 +5945,7 @@ useEffect(() => {
 
     if (!saved) {
       setMedsError(
-        editingInput ? "Could not update dose. Existing Meds history was kept." : "Could not save dose. Existing Meds history was kept."
+        editingInput ? "Could not update dose. Existing Signals history was kept." : "Could not save dose. Existing Signals history was kept."
       );
       return;
     }
@@ -5494,8 +6016,8 @@ useEffect(() => {
     if (!saved) {
       setMedsError(
         editingObservation
-          ? "Could not update feeling. Existing Meds history was kept."
-          : "Could not save feeling. Existing Meds history was kept."
+          ? "Could not update feeling. Existing Signals history was kept."
+          : "Could not save feeling. Existing Signals history was kept."
       );
       return;
     }
@@ -5516,7 +6038,7 @@ useEffect(() => {
     setMedsSaving(false);
 
     if (!deleted) {
-      setMedsError("Could not delete entry. Existing Meds history was kept.");
+      setMedsError("Could not delete entry. Existing Signals history was kept.");
       return;
     }
 
@@ -8072,8 +8594,8 @@ useEffect(() => {
           <div className={`mx-auto w-full min-w-0 md:mt-2 ${medsView === "tracker" ? "max-w-[920px]" : "max-w-[430px]"}`}>
             <div className="flex items-start justify-between gap-4 pt-2">
               <div>
-                <h1 className="text-[1.65rem] font-semibold leading-tight tracking-tight text-slate-950">Meds</h1>
-                <p className="mt-1 text-sm text-slate-500">Medication, caffeine and how you feel.</p>
+                <h1 className="text-[1.65rem] font-semibold leading-tight tracking-tight text-slate-950">Signals</h1>
+                <p className="mt-1 text-sm text-slate-500">Personal telemetry and signals.</p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 <button
@@ -8140,7 +8662,7 @@ useEffect(() => {
             <div className="mt-5">
               <div className="grid grid-cols-3 rounded-full border border-slate-200 bg-white p-1 shadow-[0_8px_24px_rgba(15,23,42,0.035)]">
                 {[
-                  { id: "today", label: "Today" },
+                  { id: "today", label: "Dashboard" },
                   { id: "history", label: "History" },
                   { id: "tracker", label: "Tracker" },
                 ].map((option) => (
@@ -8162,32 +8684,70 @@ useEffect(() => {
 
             {medsView === "today" ? (
               <div className="mt-3">
+                <div className="mb-2 inline-grid w-[88px] grid-cols-2 rounded-full bg-slate-100 p-0.5 text-[9px] font-semibold uppercase tracking-[0.08em] text-slate-500">
+                  {(["day", "night"] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setMedsTodayMode(mode)}
+                      className={`rounded-full px-2 py-1 transition-colors ${
+                        medsTodayMode === mode ? "bg-slate-950 text-white shadow-sm" : "hover:text-slate-800"
+                      }`}
+                    >
+                      {mode === "day" ? "Day" : "Night"}
+                    </button>
+                  ))}
+                </div>
+                <div className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 border-y border-slate-200/70 py-2 font-mono text-[10px] tabular-nums text-slate-500">
+                  <span><span className="text-slate-400">VYV</span> <strong className={medsTodayMode === "day" ? "text-orange-600" : "text-slate-700"}>{Math.round(liveSignalReadout.vyvanseLevel)}%</strong></span>
+                  <span className="text-slate-300">·</span>
+                  <span><span className="text-slate-400">CAF</span> <strong className={medsTodayMode === "day" ? "text-amber-600" : "text-slate-700"}>{Math.round(liveSignalReadout.caffeineLevel)}%</strong></span>
+                  <span className="text-slate-300">·</span>
+                  <span><span className="text-slate-400">BAC</span> <strong className={medsTodayMode === "night" ? "text-cyan-700" : "text-slate-700"}>{liveSignalReadout.bac.toFixed(2)}%</strong></span>
+                  <span className="text-slate-300">·</span>
+                  <span className="min-w-0"><span className="text-slate-400">STATE</span> <strong className="text-slate-700">{liveSignalReadout.feelingLabel}</strong></span>
+                  <span className="text-slate-300">·</span>
+                  <span><span className="text-slate-400">UPDATED</span> <strong className="text-slate-700">{liveSignalReadout.updatedAt}</strong></span>
+                </div>
                 <div className="mb-1.5 text-[11px] font-semibold text-slate-500">Quick log</div>
                 <div className="flex gap-2 overflow-x-auto pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                  <button
-                    type="button"
-                    onClick={() => openRoutineMedicationModal("Vyvanse", 30)}
-                    className="flex shrink-0 items-center gap-1.5 rounded-full border border-orange-200 bg-orange-50 px-3 py-2 text-xs font-semibold text-slate-800"
-                  >
-                    <PillIcon className="h-3.5 w-3.5 text-orange-500" aria-hidden />
-                    Vyvanse 30mg
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => openRoutineMedicationModal("Prozac", 20)}
-                    className="flex shrink-0 items-center gap-1.5 rounded-full border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-semibold text-slate-800"
-                  >
-                    <PillIcon className="h-3.5 w-3.5 text-violet-500" aria-hidden />
-                    Prozac 20mg
-                  </button>
-                  <button
-                    type="button"
-                    onClick={openCaffeineModal}
-                    className="flex shrink-0 items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-slate-800"
-                  >
-                    <Coffee className="h-3.5 w-3.5 text-amber-500" aria-hidden />
-                    Iced latte
-                  </button>
+                  {medsTodayMode === "day" ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => openRoutineMedicationModal("Vyvanse", 30)}
+                        className="flex shrink-0 items-center gap-1.5 rounded-full border border-orange-200 bg-orange-50 px-3 py-2 text-xs font-semibold text-slate-800"
+                      >
+                        <PillIcon className="h-3.5 w-3.5 text-orange-500" aria-hidden />
+                        Vyvanse 30mg
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openRoutineMedicationModal("Prozac", 20)}
+                        className="flex shrink-0 items-center gap-1.5 rounded-full border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-semibold text-slate-800"
+                      >
+                        <PillIcon className="h-3.5 w-3.5 text-violet-500" aria-hidden />
+                        Prozac 20mg
+                      </button>
+                      <button
+                        type="button"
+                        onClick={openCaffeineModal}
+                        className="flex shrink-0 items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-slate-800"
+                      >
+                        <Coffee className="h-3.5 w-3.5 text-amber-500" aria-hidden />
+                        Iced latte
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={openAlcoholModal}
+                      className="flex shrink-0 items-center gap-1.5 rounded-full border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-slate-800"
+                    >
+                      <Wine className="h-3.5 w-3.5 text-rose-500" aria-hidden />
+                      Alcohol
+                    </button>
+                  )}
                 </div>
               </div>
             ) : null}
@@ -8252,49 +8812,66 @@ useEffect(() => {
                   </div>
 
                   <div className="space-y-3">
-                    <MedsChartCard
-                      title="Vyvanse"
-                      subtitle={
-                        latestVyvanseInRange
-                          ? `${formatMedicationAmount(latestVyvanseInRange.amount ?? 30)} ${latestVyvanseInRange.unit ?? "mg"} · ${formatMedicationTime(latestVyvanseInRange.timestamp)}`
-                          : "No intake in this window"
-                      }
-                      meta="Estimated · peak ~ 4–6h"
-                      tone="#ff6b1a"
-                      softTone="#fff0e7"
-                      icon={<PillIcon className="h-4 w-4" aria-hidden />}
-                      points={vyvanseChartSeries.points}
-                      dots={vyvanseChartDots}
-                      nowX={medsNowX}
-                      axisLabels={medsAxisLabels}
-                      maxPercent={vyvanseChartSeries.maxPercent}
-                      onSwipePrevious={() => setMedsRangeOffset((value) => value + 1)}
-                      onSwipeNext={
-                        medsRangeOffset > 0
-                          ? () => setMedsRangeOffset((value) => Math.max(0, value - 1))
-                          : undefined
-                      }
-                    />
+                    {medsTodayMode === "day" ? (
+                      <>
+                        <MedsChartCard
+                          title="Vyvanse"
+                          subtitle={
+                            latestVyvanseInRange
+                              ? `LEVEL ${Math.round(visibleSignalLevels.vyvanse)}% · PEAK ~4–6H · LAST ${formatMedicationTime(latestVyvanseInRange.timestamp)}`
+                              : "No intake in this window"
+                          }
+                          meta={latestVyvanseInRange ? `${formatMedicationAmount(latestVyvanseInRange.amount ?? 30)} ${latestVyvanseInRange.unit ?? "mg"}` : "ESTIMATED"}
+                          tone="#ff6b1a"
+                          softTone="#fff0e7"
+                          icon={<PillIcon className="h-4 w-4" aria-hidden />}
+                          points={vyvanseChartSeries.points}
+                          dots={vyvanseChartDots}
+                          nowX={medsNowX}
+                          axisLabels={medsAxisLabels}
+                          maxPercent={vyvanseChartSeries.maxPercent}
+                          onSwipePrevious={() => setMedsRangeOffset((value) => value + 1)}
+                          onSwipeNext={
+                            medsRangeOffset > 0
+                              ? () => setMedsRangeOffset((value) => Math.max(0, value - 1))
+                              : undefined
+                          }
+                        />
 
-                    <MedsChartCard
-                      title="Caffeine"
-                      subtitle={caffeineTotalInRange > 0 ? `~ ${Math.round(caffeineTotalInRange)} mg in view` : "No caffeine in this window"}
-                      meta="Half-life ~ 5h"
-                      tone="#f2aa12"
-                      softTone="#fff7df"
-                      icon={<Coffee className="h-4 w-4" aria-hidden />}
-                      points={caffeineChartSeries.points}
-                      dots={caffeineChartDots}
-                      nowX={medsNowX}
-                      axisLabels={medsAxisLabels}
-                      maxPercent={caffeineChartSeries.maxPercent}
-                      onSwipePrevious={() => setMedsRangeOffset((value) => value + 1)}
-                      onSwipeNext={
-                        medsRangeOffset > 0
-                          ? () => setMedsRangeOffset((value) => Math.max(0, value - 1))
-                          : undefined
-                      }
-                    />
+                        <MedsChartCard
+                          title="Caffeine"
+                          subtitle={latestCaffeineInRange ? `LEVEL ${Math.round(visibleSignalLevels.caffeine)}% · HALF-LIFE ~5H · LAST ${formatMedicationTime(latestCaffeineInRange.timestamp)}` : "No caffeine in this window"}
+                          meta={caffeineTotalInRange > 0 ? `${Math.round(caffeineTotalInRange)} mg` : "ESTIMATED"}
+                          tone="#f2aa12"
+                          softTone="#fff7df"
+                          icon={<Coffee className="h-4 w-4" aria-hidden />}
+                          points={caffeineChartSeries.points}
+                          dots={caffeineChartDots}
+                          nowX={medsNowX}
+                          axisLabels={medsAxisLabels}
+                          maxPercent={caffeineChartSeries.maxPercent}
+                          onSwipePrevious={() => setMedsRangeOffset((value) => value + 1)}
+                          onSwipeNext={
+                            medsRangeOffset > 0
+                              ? () => setMedsRangeOffset((value) => Math.max(0, value - 1))
+                              : undefined
+                          }
+                        />
+                      </>
+                    ) : (
+                      <EstimatedBacCard
+                        samples={bacWindowModel.samples}
+                        rangeStart={bacWindowModel.rangeStart}
+                        rangeEnd={bacWindowModel.rangeEnd}
+                        nowMs={bacWindowModel.nowMs}
+                        onSwipePrevious={() => setMedsRangeOffset((value) => value + 1)}
+                        onSwipeNext={
+                          medsRangeOffset > 0
+                            ? () => setMedsRangeOffset((value) => Math.max(0, value - 1))
+                            : undefined
+                        }
+                      />
+                    )}
                   </div>
                 </section>
 
@@ -8359,7 +8936,7 @@ useEffect(() => {
                       </button>
                       );
                     }) : (
-                      <div className="py-5 text-sm text-slate-400">No Meds entries logged today.</div>
+                      <div className="py-5 text-sm text-slate-400">No Signals entries logged today.</div>
                     )}
                   </div>
 
@@ -8402,24 +8979,35 @@ useEffect(() => {
                         groups[key] = [...(groups[key] ?? []), item];
                         return groups;
                       }, {})
-                    ).map(([date, items]) => (
+                    ).map(([date, items]) => {
+                      const orderedItems = items.slice().sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+                      const firstTimestamp = orderedItems[0]?.timestamp;
+                      const lastTimestamp = orderedItems[orderedItems.length - 1]?.timestamp;
+                      return (
                       <div key={date}>
-                        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
-                          {formatMedicationDate(items[0]?.timestamp ?? date)}
+                        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+                          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+                            {formatMedicationDate(items[0]?.timestamp ?? date)}
+                          </div>
+                          <div className="font-mono text-[9px] uppercase tracking-[0.08em] text-slate-400">
+                            {items.length} {items.length === 1 ? "signal" : "signals"}
+                            {firstTimestamp && lastTimestamp
+                              ? ` · ${formatMedicationTime(firstTimestamp)}–${formatMedicationTime(lastTimestamp)}`
+                              : ""}
+                          </div>
                         </div>
                         <div className="mt-2 divide-y divide-slate-200/60 border-t border-slate-200/60">
-                          {items
-                            .slice()
-                            .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp))
-                            .map((item) => {
+                          {orderedItems.map((item) => {
                               if (item.kind === "alcohol") {
                                 const entry = item.entry;
                                 const drinkOption = ALCOHOL_DRINK_TYPES.find((option) => option.id === entry.drinkType);
                                 const DrinkIcon = drinkOption?.Icon ?? Wine;
                                 return (
-                                  <div
+                                  <button
                                     key={entry.id}
-                                    className="grid w-full grid-cols-[48px_1fr] items-center gap-3 rounded-lg px-1 py-2 text-left text-sm"
+                                    type="button"
+                                    onClick={() => openAlcoholEntryEditor(entry)}
+                                    className="grid w-full grid-cols-[48px_1fr] items-center gap-3 rounded-lg px-1 py-2 text-left text-sm transition-colors hover:bg-slate-50/80"
                                   >
                                     <div className="tabular-nums text-[12px] text-slate-400">
                                       {formatMedicationTime(entry.startedAt)}
@@ -8437,7 +9025,7 @@ useEffect(() => {
                                         </div>
                                       </div>
                                     </div>
-                                  </div>
+                                  </button>
                                 );
                               }
 
@@ -8486,19 +9074,20 @@ useEffect(() => {
                             })}
                         </div>
                       </div>
-                    ))
+                      );
+                    })
                   ) : (
                     <div className="border-y border-dashed border-slate-200 px-1 py-5 text-sm text-slate-400">
-                      No medication history for this filter.
+                      No Signals history for this filter.
                     </div>
                   )}
                 </div>
               </div>
             ) : (
               <div className="mt-6 min-w-0 max-w-full space-y-5 sm:space-y-6">
-                <div className="min-w-0">
-                  <h2 className="text-base font-semibold text-slate-950">Medication tracker</h2>
-                  <p className="mt-1 text-xs text-slate-500">Daily intake over the last 12 months.</p>
+                <div className="min-w-0 border-b border-slate-200/70 pb-3">
+                  <h2 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Signal archive</h2>
+                  <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.1em] text-slate-400">365 day activity</p>
                 </div>
                 {medicationTrackerSubstances.length ? (
                   <div className="min-w-0 max-w-full space-y-4 sm:space-y-5">
@@ -8518,6 +9107,21 @@ useEffect(() => {
                     No medication or caffeine intake logged yet.
                   </div>
                 )}
+                <div className="block min-w-0 max-w-full sm:hidden">
+                  <MedsTrackerGrid
+                    substance={alcoholTrackerSubstance}
+                    dates={medicationTrackerMobileDates}
+                    mobile
+                    renderSelectedDetail={(date) => <AlcoholNightTimeline date={date} entries={alcoholEntries} />}
+                  />
+                </div>
+                <div className="hidden sm:block">
+                  <MedsTrackerGrid
+                    substance={alcoholTrackerSubstance}
+                    dates={medicationTrackerDates}
+                    renderSelectedDetail={(date) => <AlcoholNightTimeline date={date} entries={alcoholEntries} />}
+                  />
+                </div>
               </div>
             )}
           </div>
@@ -10951,7 +11555,7 @@ useEffect(() => {
         </div>
       </main>
 
-      <Modal open={medsModalMode === "alcohol"} title="Log alcohol" onClose={closeMedsModal}>
+      <Modal open={medsModalMode === "alcohol"} title={editingAlcoholEntry ? "Edit alcohol" : "Log alcohol"} onClose={closeMedsModal}>
         <div className="grid gap-3">
           {medsError ? (
             <div className="rounded-2xl border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700">
@@ -10970,6 +11574,7 @@ useEffect(() => {
                     setAlcoholDrinkType(drinkType.id);
                     setAlcoholServingSizeMl(defaults.servingSizeMl);
                     setAlcoholAbvPercent(defaults.abvPercent);
+                    setAlcoholEstimateEdited(true);
                   }}
                   className={`grid min-h-[66px] place-items-center gap-1 rounded-[16px] border px-2 py-2 text-center text-[12px] font-medium transition-colors ${
                     alcoholDrinkType === drinkType.id
@@ -10981,6 +11586,15 @@ useEffect(() => {
                   <span>{drinkType.id}</span>
                 </button>
               ))}
+              {!ALCOHOL_DRINK_TYPES.some((option) => option.id === alcoholDrinkType) ? (
+                <button
+                  type="button"
+                  className="grid min-h-[66px] place-items-center gap-1 rounded-[16px] border border-rose-200 bg-rose-50 px-2 py-2 text-center text-[12px] font-medium text-slate-950"
+                >
+                  <Wine className="h-5 w-5 text-rose-500" aria-hidden />
+                  <span className="max-w-full truncate">{alcoholDrinkType}</span>
+                </button>
+              ) : null}
             </div>
           </Field>
 
@@ -10990,7 +11604,10 @@ useEffect(() => {
               min="0.1"
               step="0.1"
               value={alcoholQuantity}
-              onChange={(event) => setAlcoholQuantity(event.target.value)}
+              onChange={(event) => {
+                setAlcoholQuantity(event.target.value);
+                setAlcoholEstimateEdited(true);
+              }}
               className="h-11 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
               aria-label="Number of drinks"
             />
@@ -11003,7 +11620,10 @@ useEffect(() => {
                 min="0"
                 step="1"
                 value={alcoholServingSizeMl}
-                onChange={(event) => setAlcoholServingSizeMl(event.target.value)}
+                onChange={(event) => {
+                  setAlcoholServingSizeMl(event.target.value);
+                  setAlcoholEstimateEdited(true);
+                }}
                 className="h-11 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                 inputMode="decimal"
               />
@@ -11015,18 +11635,25 @@ useEffect(() => {
                 max="100"
                 step="0.1"
                 value={alcoholAbvPercent}
-                onChange={(event) => setAlcoholAbvPercent(event.target.value)}
+                onChange={(event) => {
+                  setAlcoholAbvPercent(event.target.value);
+                  setAlcoholEstimateEdited(true);
+                }}
                 className="h-11 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                 inputMode="decimal"
               />
             </Field>
           </div>
 
-          {estimatedAlcoholUnits !== null ? (
+          {displayedAlcoholUnits !== null ? (
             <div className="flex items-center justify-between border-t border-slate-100 pt-3">
               <span className="text-xs font-medium text-slate-500">Estimated alcohol</span>
-              <span className="text-sm font-semibold text-slate-900">{estimatedAlcoholUnits.toFixed(1)} units</span>
+              <span className="text-sm font-semibold text-slate-900">{displayedAlcoholUnits.toFixed(1)} units</span>
             </div>
+          ) : null}
+
+          {editingAlcoholEntry?.feelingsSymptoms ? (
+            <div className="text-[11px] text-slate-500">Attached feelings/symptoms metadata will be preserved.</div>
           ) : null}
 
           <div className="grid gap-3 sm:grid-cols-2">
@@ -11049,23 +11676,37 @@ useEffect(() => {
             </Field>
           </div>
 
-          <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
-            <button
-              type="button"
-              onClick={closeMedsModal}
-              disabled={medsSaving}
-              className="rounded-full border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={submitAlcoholEntry}
-              disabled={medsSaving}
-              className="rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:bg-slate-300"
-            >
-              {medsSaving ? "Saving" : "Save"}
-            </button>
+          <div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-3">
+            <div>
+              {editingAlcoholEntry ? (
+                <button
+                  type="button"
+                  onClick={removeEditingAlcoholEntry}
+                  disabled={medsSaving}
+                  className="rounded-full px-3 py-2 text-sm text-rose-600 hover:bg-rose-50 disabled:opacity-50"
+                >
+                  {medsDeleteConfirm ? "Confirm delete" : "Delete"}
+                </button>
+              ) : null}
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={closeMedsModal}
+                disabled={medsSaving}
+                className="rounded-full border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={submitAlcoholEntry}
+                disabled={medsSaving}
+                className="rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:bg-slate-300"
+              >
+                {medsSaving ? "Saving" : "Save"}
+              </button>
+            </div>
           </div>
         </div>
       </Modal>
