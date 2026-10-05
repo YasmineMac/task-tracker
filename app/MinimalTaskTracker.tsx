@@ -101,6 +101,17 @@ import {
   type CalendarEventType,
 } from "./calendarEventStore/calendarEventTypes";
 import {
+  loadGoogleCalendarEvents,
+  loadGoogleCalendarSettings,
+  syncGoogleCalendarEvents,
+  updateGoogleCalendarSelection,
+} from "./googleCalendar/googleCalendarClient";
+import type {
+  GoogleCalendarConnectionSummary,
+  GoogleCalendarEvent,
+  GoogleCalendarSummary,
+} from "./googleCalendar/googleCalendarTypes";
+import {
   type CalendarDaypart,
   type CalendarTimeMode,
   calendarEventIntersectsWeek,
@@ -449,6 +460,9 @@ const TIME_LEFT_MAX = 365;
 const PLANNER_START_HOUR = 6;
 const PLANNER_END_HOUR = 24;
 const PLANNER_HOUR_HEIGHT = 56;
+const PLANNER_MOBILE_START_HOUR = 7;
+const PLANNER_MOBILE_END_HOUR = 23;
+const PLANNER_MOBILE_HOUR_HEIGHT = 56;
 const PLANNER_SNAP_MINUTES = 15;
 const PLANNER_EVENT_TYPES: { id: CalendarEventType; label: string }[] = [
   { id: "work", label: "Work" },
@@ -1438,13 +1452,15 @@ function layoutPlannerTimedEvents(events: CalendarEvent[], day: string) {
 function buildPlannerMonthGridData(
   month: PlannerYearMonth,
   calendarEventsForRender: CalendarEvent[],
-  taskDeadlinesByDate: Record<string, Task[]>
+  taskDeadlinesByDate: Record<string, Task[]>,
+  googleEventsForRender: GoogleCalendarEvent[] = []
 ): PlannerMonthGridData {
   const eventsByDate = month.days.reduce<Record<string, PlannerDateItem[]>>((groups, day) => {
     groups[day.date] = plannerItemsForDate(
       day.date,
       calendarEventsForRender,
-      taskDeadlinesByDate
+      taskDeadlinesByDate,
+      googleEventsForRender
     );
     return groups;
   }, {});
@@ -1453,13 +1469,22 @@ function buildPlannerMonthGridData(
     const days = week.map((day) => day.date);
     const weekStart = days[0];
     const weekEnd = days[days.length - 1];
-    const items: PlannerDateItem[] = calendarEventsForRender
+    const items: PlannerDateItem[] = [
+      ...calendarEventsForRender
       .filter((event) => {
         if (!plannerEventRendersAsAllDaySpan(event) || !event.startDate || !weekStart || !weekEnd) return false;
         const endDate = event.endDate || event.startDate;
         return event.startDate <= weekEnd && endDate >= weekStart;
       })
-      .map((event) => ({ sourceType: "calendar_event" as const, event }));
+      .map((event) => ({ sourceType: "calendar_event" as const, event })),
+      ...googleEventsForRender
+        .filter((event) => {
+          if (!event.allDay || !event.startDate || !weekStart || !weekEnd) return false;
+          const endDate = event.endDate || event.startDate;
+          return event.startDate <= weekEnd && endDate >= weekStart;
+        })
+        .map((event) => ({ sourceType: "google_event" as const, event })),
+    ];
 
     return plannerAllDaySpansForDays(days, items);
   });
@@ -1952,6 +1977,9 @@ function plannerItemTemporalState(
   if (item.sourceType === "task_deadline") {
     return plannerTemporalStateForDate(item.date ?? fallbackDate, today);
   }
+  if (item.sourceType === "google_event") {
+    return googleEventTemporalState(item.event, today);
+  }
   return plannerEventTemporalState(item.event, today);
 }
 
@@ -2037,6 +2065,58 @@ function isPastUnresolvedPlannerWorkEvent(event: CalendarEvent, nowMs: number | 
 
   const endMs = Date.parse(event.endAt);
   return Number.isFinite(endMs) && endMs < nowMs;
+}
+
+function googleEventDateSpan(event: GoogleCalendarEvent) {
+  if (event.allDay) {
+    const start = event.startDate;
+    const end = event.endDate || event.startDate;
+    return start && end ? { start, end } : null;
+  }
+
+  const start = eventLocalDate(event.startAt);
+  const end = eventLocalDate(event.endAt) || start;
+  return start && end ? { start, end } : null;
+}
+
+function googleEventIntersectsWeek(event: GoogleCalendarEvent, weekStart: string, weekEnd: string) {
+  const span = googleEventDateSpan(event);
+  return Boolean(span && span.start <= weekEnd && span.end >= weekStart);
+}
+
+function googleEventTemporalState(event: GoogleCalendarEvent, today: string | null | undefined) {
+  const span = googleEventDateSpan(event);
+  return plannerTemporalStateForSpan(span?.start, span?.end, today);
+}
+
+function googleEventAccentStyle(color?: string | null): React.CSSProperties {
+  if (!color || !/^#[0-9a-f]{6}$/i.test(color)) return {};
+  return {
+    borderLeftColor: color,
+  };
+}
+
+function googleEventAsPlannerCalendarEvent(event: GoogleCalendarEvent): CalendarEvent {
+  return {
+    id: `google:${event.id}`,
+    eventType: "admin",
+    title: event.title,
+    description: event.description,
+    allDay: event.allDay,
+    startAt: event.startAt,
+    endAt: event.endAt,
+    startDate: event.startDate,
+    endDate: event.endDate,
+    timezone: event.timezone || "Europe/Madrid",
+    location: event.location,
+    videoUrl: event.htmlLink,
+    notes: null,
+    metadata: {
+      googleEventId: event.googleEventId,
+      googleCalendarId: event.googleCalendarId,
+      timeMode: event.allDay ? (event.endDate ? "multi_day" : "date_only") : event.endAt ? "time_range" : "single_time",
+    },
+  };
 }
 
 function plannedWorkTimeLogFromEvent(event: CalendarEvent): TimeLog | null {
@@ -4503,6 +4583,7 @@ export default function MinimalTaskTracker() {
   const [plannerView, setPlannerView] = useState<PlannerView>("week");
   const [plannerAnchorDate, setPlannerAnchorDate] = useState<string>("");
   const [plannerMobileSelectedDate, setPlannerMobileSelectedDate] = useState<string>("");
+  const [plannerMobileMonthSelectedDate, setPlannerMobileMonthSelectedDate] = useState<string | null>(null);
   const [plannerEventModalOpen, setPlannerEventModalOpen] = useState(false);
   const [plannerEventModalMode, setPlannerEventModalMode] = useState<PlannerEventModalMode>("create");
   const [plannerEventDraft, setPlannerEventDraft] = useState<PlannerEventDraft | null>(null);
@@ -4519,6 +4600,13 @@ export default function MinimalTaskTracker() {
   const [smartImportSaving, setSmartImportSaving] = useState(false);
   const [smartImportMessage, setSmartImportMessage] = useState<string | null>(null);
   const [googleCalendarConnectionMessage, setGoogleCalendarConnectionMessage] = useState<string | null>(null);
+  const [googleCalendarConnections, setGoogleCalendarConnections] = useState<GoogleCalendarConnectionSummary[]>([]);
+  const [googleCalendars, setGoogleCalendars] = useState<GoogleCalendarSummary[]>([]);
+  const [googleCalendarEvents, setGoogleCalendarEvents] = useState<GoogleCalendarEvent[]>([]);
+  const [googleCalendarManagerOpen, setGoogleCalendarManagerOpen] = useState(false);
+  const [googleCalendarSaving, setGoogleCalendarSaving] = useState(false);
+  const [googleCalendarSyncing, setGoogleCalendarSyncing] = useState(false);
+  const [googleEventDetail, setGoogleEventDetail] = useState<GoogleCalendarEvent | null>(null);
   const [medsView, setMedsView] = useState<MedsView>("today");
   const [medsDetailsOpen, setMedsDetailsOpen] = useState(false);
   const [medsEntryLauncherOpen, setMedsEntryLauncherOpen] = useState(false);
@@ -4758,6 +4846,19 @@ useEffect(() => {
       }
 
       console.warn("Supabase calendar event load failed. Preserving current Planner event state.");
+    })();
+
+    void (async () => {
+      const googleSettings = await loadGoogleCalendarSettings();
+      if (googleSettings.ok) {
+        setGoogleCalendarConnections(googleSettings.connections);
+        setGoogleCalendars(googleSettings.calendars);
+      }
+
+      const googleEvents = await loadGoogleCalendarEvents();
+      if (googleEvents.ok) {
+        setGoogleCalendarEvents(googleEvents.events);
+      }
     })();
 
     void (async () => {
@@ -6236,6 +6337,12 @@ useEffect(() => {
       plannerVisibleRange.end
     );
   }, [plannerCalendarBaseEventsForRender, plannerVisibleRange]);
+  const plannerGoogleEventsForRender = useMemo(() => {
+    return googleCalendarEvents.filter((event) => {
+      const span = googleEventDateSpan(event);
+      return Boolean(span && span.start <= plannerVisibleRange.end && span.end >= plannerVisibleRange.start);
+    });
+  }, [googleCalendarEvents, plannerVisibleRange]);
   const plannerTaskDeadlinesByDate = useMemo(() => {
     return activeTasks.reduce<Record<string, Task[]>>((groups, task) => {
       const hasFixedDate =
@@ -6256,6 +6363,9 @@ useEffect(() => {
   const plannerWeekEvents = useMemo(() => {
     return plannerCalendarEventsForRender.filter((event) => calendarEventIntersectsWeek(event, plannerWeekStart, plannerWeekEnd));
   }, [plannerCalendarEventsForRender, plannerWeekEnd, plannerWeekStart]);
+  const plannerWeekGoogleEvents = useMemo(() => {
+    return plannerGoogleEventsForRender.filter((event) => googleEventIntersectsWeek(event, plannerWeekStart, plannerWeekEnd));
+  }, [plannerGoogleEventsForRender, plannerWeekEnd, plannerWeekStart]);
   const plannerTaskDeadlinesInWeekByDate = useMemo(() => {
     return plannerWeekDays.reduce<Record<string, Task[]>>((groups, day) => {
       groups[day] = plannerTaskDeadlinesByDate[day] ?? [];
@@ -6267,6 +6377,9 @@ useEffect(() => {
       ...plannerWeekEvents
         .filter((event) => plannerEventRendersAsAllDaySpan(event) && event.startDate)
         .map((event) => ({ sourceType: "calendar_event" as const, event })),
+      ...plannerWeekGoogleEvents
+        .filter((event) => event.allDay && event.startDate)
+        .map((event) => ({ sourceType: "google_event" as const, event })),
       ...plannerWeekDays.flatMap((day) =>
         (plannerTaskDeadlinesInWeekByDate[day] ?? []).map((task) => ({
           sourceType: "task_deadline" as const,
@@ -6276,7 +6389,7 @@ useEffect(() => {
       ),
     ];
     return plannerAllDaySpansForDays(plannerWeekDays, items);
-  }, [plannerTaskDeadlinesInWeekByDate, plannerWeekDays, plannerWeekEvents]);
+  }, [plannerTaskDeadlinesInWeekByDate, plannerWeekDays, plannerWeekEvents, plannerWeekGoogleEvents]);
   const plannerTimedLayoutsByDate = useMemo(() => {
     return plannerWeekDays.reduce<
       Record<string, Array<ReturnType<typeof layoutPlannerTimedEvents>[number]>>
@@ -6294,6 +6407,23 @@ useEffect(() => {
       return groups;
     }, {});
   }, [plannerWeekDays, plannerWeekEvents]);
+  const plannerGoogleTimedLayoutsByDate = useMemo(() => {
+    return plannerWeekDays.reduce<
+      Record<string, Array<ReturnType<typeof layoutPlannerTimedEvents>[number] & { googleEvent: GoogleCalendarEvent }>>
+    >((groups, day) => {
+      const dayEvents = plannerWeekGoogleEvents.filter((event) => {
+        if (event.allDay || !event.startAt) return false;
+        const startDate = eventLocalDate(event.startAt);
+        const endDate = eventLocalDate(event.endAt) || startDate;
+        return Boolean(startDate && endDate && startDate <= day && endDate >= day);
+      });
+      groups[day] = layoutPlannerTimedEvents(dayEvents.map(googleEventAsPlannerCalendarEvent), day).map((layout) => {
+        const googleEvent = dayEvents.find((event) => `google:${event.id}` === layout.event.id) ?? dayEvents[0];
+        return { ...layout, googleEvent };
+      });
+      return groups;
+    }, {});
+  }, [plannerWeekDays, plannerWeekGoogleEvents]);
   const plannerMobileWeekDate = plannerWeekDays.includes(plannerMobileSelectedDate)
     ? plannerMobileSelectedDate
     : plannerWeekDays.includes(clientToday)
@@ -6303,12 +6433,14 @@ useEffect(() => {
     return plannerItemsForDate(
       plannerMobileWeekDate,
       plannerCalendarEventsForRender,
-      plannerTaskDeadlinesByDate
+      plannerTaskDeadlinesByDate,
+      plannerGoogleEventsForRender
     );
-  }, [plannerCalendarEventsForRender, plannerMobileWeekDate, plannerTaskDeadlinesByDate]);
+  }, [plannerCalendarEventsForRender, plannerGoogleEventsForRender, plannerMobileWeekDate, plannerTaskDeadlinesByDate]);
   const plannerMobileAllDayItems = useMemo(() => {
     return plannerMobileWeekItems.filter((item) => {
       if (item.sourceType === "task_deadline") return true;
+      if (item.sourceType === "google_event") return item.event.allDay || !item.event.startAt;
       return (
         plannerEventRendersAsAllDaySpan(item.event) ||
         (!item.event.startAt && getCalendarEventTimeMode(item.event) !== "daypart")
@@ -6316,19 +6448,33 @@ useEffect(() => {
     });
   }, [plannerMobileWeekItems]);
   const plannerMobileTimedLayouts = plannerTimedLayoutsByDate[plannerMobileWeekDate] ?? [];
+  const plannerMobileGoogleTimedLayouts = plannerGoogleTimedLayoutsByDate[plannerMobileWeekDate] ?? [];
+  const plannerMobileTimedLayoutItems = useMemo(() => {
+    return [
+      ...plannerMobileTimedLayouts.map((layout) => ({ ...layout, sourceType: "calendar_event" as const })),
+      ...plannerMobileGoogleTimedLayouts.map((layout) => ({ ...layout, sourceType: "google_event" as const })),
+    ].sort((a, b) => a.startMinutes - b.startMinutes || a.endMinutes - b.endMinutes);
+  }, [plannerMobileGoogleTimedLayouts, plannerMobileTimedLayouts]);
   const plannerMonthGrid = useMemo(() => {
     const month = plannerThreeMonths[0];
     return buildPlannerMonthGridData(
       month,
       plannerCalendarEventsForRender,
-      plannerTaskDeadlinesByDate
+      plannerTaskDeadlinesByDate,
+      plannerGoogleEventsForRender
     );
-  }, [plannerCalendarEventsForRender, plannerTaskDeadlinesByDate, plannerThreeMonths]);
+  }, [plannerCalendarEventsForRender, plannerGoogleEventsForRender, plannerTaskDeadlinesByDate, plannerThreeMonths]);
+  const plannerMobileMonthDate = plannerMobileMonthSelectedDate && plannerMonthGrid.eventsByDate[plannerMobileMonthSelectedDate]
+    ? plannerMobileMonthSelectedDate
+    : null;
+  const plannerMobileMonthSelectedItems = plannerMobileMonthDate
+    ? plannerMonthGrid.eventsByDate[plannerMobileMonthDate] ?? []
+    : [];
   const plannerThreeMonthGrids = useMemo(() => {
     return plannerThreeMonths.map((month) =>
-      buildPlannerMonthGridData(month, plannerCalendarEventsForRender, plannerTaskDeadlinesByDate)
+      buildPlannerMonthGridData(month, plannerCalendarEventsForRender, plannerTaskDeadlinesByDate, plannerGoogleEventsForRender)
     );
-  }, [plannerCalendarEventsForRender, plannerTaskDeadlinesByDate, plannerThreeMonths]);
+  }, [plannerCalendarEventsForRender, plannerGoogleEventsForRender, plannerTaskDeadlinesByDate, plannerThreeMonths]);
   const plannerYearEventsByDate = useMemo(() => {
     const yearStart = `${plannerYearLabel}-01-01`;
     const yearEnd = `${plannerYearLabel}-12-31`;
@@ -6347,6 +6493,19 @@ useEffect(() => {
       }
     });
 
+    plannerGoogleEventsForRender.forEach((event) => {
+      const span = googleEventDateSpan(event);
+      if (!span || span.end < yearStart || span.start > yearEnd) return;
+
+      let cursor = span.start < yearStart ? yearStart : span.start;
+      const end = span.end > yearEnd ? yearEnd : span.end;
+
+      while (cursor <= end) {
+        groups[cursor] = [...(groups[cursor] ?? []), { sourceType: "google_event", event }];
+        cursor = addDaysISO(cursor, 1);
+      }
+    });
+
     Object.entries(plannerTaskDeadlinesByDate).forEach(([date, deadlineTasks]) => {
       if (date < yearStart || date > yearEnd) return;
       groups[date] = [
@@ -6356,7 +6515,7 @@ useEffect(() => {
     });
 
     return groups;
-  }, [plannerCalendarEventsForRender, plannerTaskDeadlinesByDate, plannerYearLabel]);
+  }, [plannerCalendarEventsForRender, plannerGoogleEventsForRender, plannerTaskDeadlinesByDate, plannerYearLabel]);
   const plannerTaskOptions = useMemo(() => {
     const options = activeTasks
       .filter((task) => task.status !== "completed")
@@ -7147,6 +7306,45 @@ useEffect(() => {
   function openSmartImport() {
     setSmartImportOpen(true);
     setSmartImportMessage(null);
+  }
+
+  async function refreshGoogleCalendarState() {
+    const settings = await loadGoogleCalendarSettings();
+    if (settings.ok) {
+      setGoogleCalendarConnections(settings.connections);
+      setGoogleCalendars(settings.calendars);
+    }
+
+    const events = await loadGoogleCalendarEvents();
+    if (events.ok) {
+      setGoogleCalendarEvents(events.events);
+    }
+  }
+
+  async function toggleGoogleCalendar(calendarId: string, selected: boolean) {
+    if (googleCalendarSaving) return;
+    setGoogleCalendarSaving(true);
+    const saved = await updateGoogleCalendarSelection(calendarId, selected);
+    if (saved) {
+      setGoogleCalendars((prev) =>
+        prev.map((calendar) => (calendar.id === calendarId ? { ...calendar, selected } : calendar))
+      );
+    }
+    setGoogleCalendarSaving(false);
+  }
+
+  async function syncGoogleCalendarsNow() {
+    if (googleCalendarSyncing) return;
+    setGoogleCalendarSyncing(true);
+    const result = await syncGoogleCalendarEvents();
+    if (result.ok) {
+      const events = await loadGoogleCalendarEvents();
+      if (events.ok) setGoogleCalendarEvents(events.events);
+      setGoogleCalendarConnectionMessage(`Google Calendar synced ${result.synced} event${result.synced === 1 ? "" : "s"}.`);
+    } else {
+      setGoogleCalendarConnectionMessage("Google Calendar sync failed. Check server logs and configuration.");
+    }
+    setGoogleCalendarSyncing(false);
   }
 
   function closeSmartImport() {
@@ -8299,6 +8497,404 @@ useEffect(() => {
 
   const pageTitle = modeLabel(mode);
   const pageSubtitle = modeSubtitle(mode);
+  const plannerMobileHours = Array.from(
+    { length: PLANNER_MOBILE_END_HOUR - PLANNER_MOBILE_START_HOUR + 1 },
+    (_, index) => `${String(PLANNER_MOBILE_START_HOUR + index).padStart(2, "0")}:00`
+  );
+
+  function plannerDateItemKey(item: PlannerDateItem, prefix: string) {
+    const id =
+      item.sourceType === "calendar_event"
+        ? item.event.id
+        : item.sourceType === "google_event"
+          ? item.event.id
+          : item.task.id;
+    return `${prefix}-${item.sourceType}-${id}`;
+  }
+
+  function openPlannerDateItem(item: PlannerDateItem) {
+    if (item.sourceType === "calendar_event") openPlannerEventEdit(item.event);
+    else if (item.sourceType === "google_event") setGoogleEventDetail(item.event);
+    else openPlannerTaskDeadlineEdit(item.task);
+  }
+
+  function plannerDateItemTone(item: PlannerDateItem, date: string) {
+    const temporalState = plannerItemTemporalState(item, clientToday, date);
+    if (item.sourceType === "task_deadline") return plannerDeadlineTone(item.task, temporalState);
+    return plannerEventTone(plannerYearItemEventType(item), temporalState);
+  }
+
+  function plannerItemTimeRangeLabel(item: PlannerDateItem, date: string) {
+    if (item.sourceType === "task_deadline" || item.event.allDay) return "";
+    const startAt = item.event.startAt;
+    if (!startAt || eventLocalDate(startAt) !== date) return "";
+    const start = formatPlannerEventTime(startAt);
+    const end = item.event.endAt ? formatPlannerEventTime(item.event.endAt) : "";
+    return end ? `${start}-${end}` : start;
+  }
+
+  function plannerMobilePeriodLabel() {
+    if (plannerView === "week") return plannerWeekLabel;
+    if (plannerView === "month") return plannerMonthLabel;
+    if (plannerView === "three_month") return plannerThreeMonthLabel;
+    return plannerYearLabel;
+  }
+
+  function movePlannerCurrentView(direction: -1 | 1) {
+    if (plannerView === "week") movePlannerWeek(direction);
+    else if (plannerView === "month") {
+      setPlannerMobileMonthSelectedDate(null);
+      movePlannerMonth(direction);
+    } else if (plannerView === "three_month") movePlannerThreeMonth(direction);
+    else movePlannerYear(direction);
+  }
+
+  function selectPlannerMobileWeekDate(day: string) {
+    setPlannerMobileSelectedDate(day);
+    if (!plannerWeekDays.includes(day)) setPlannerAnchorDate(day);
+  }
+
+  function formatPlannerSheetDate(date: string) {
+    return new Intl.DateTimeFormat("en", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+    }).format(new Date(`${date}T00:00:00`));
+  }
+
+  function plannerMobileLayoutPosition(layout: { startMinutes: number; endMinutes: number; columnIndex: number; columnCount: number }) {
+    const rangeStart = PLANNER_MOBILE_START_HOUR * 60;
+    const rangeEnd = PLANNER_MOBILE_END_HOUR * 60;
+    const startMinutes = Math.max(layout.startMinutes, rangeStart);
+    const endMinutes = Math.min(layout.endMinutes, rangeEnd);
+    if (endMinutes <= startMinutes) return null;
+    const gutter = 6;
+    return {
+      top: ((startMinutes - rangeStart) / 60) * PLANNER_MOBILE_HOUR_HEIGHT,
+      height: Math.max(28, ((endMinutes - startMinutes) / 60) * PLANNER_MOBILE_HOUR_HEIGHT),
+      left: `calc(${(layout.columnIndex * 100) / layout.columnCount}% + ${gutter / 2}px)`,
+      width: `calc(${100 / layout.columnCount}% - ${gutter}px)`,
+    };
+  }
+
+  function renderPlannerMobileWeek() {
+    const selectedDate = new Date(`${plannerMobileWeekDate}T00:00:00`);
+    const currentDate = clientNowMs ? localDateISO(new Date(clientNowMs)) : "";
+    const currentDateTime = clientNowMs ? new Date(clientNowMs) : null;
+    const currentMinutes = currentDateTime ? currentDateTime.getHours() * 60 + currentDateTime.getMinutes() : null;
+    const showCurrentTime =
+      plannerMobileWeekDate === currentDate &&
+      currentMinutes !== null &&
+      currentMinutes >= PLANNER_MOBILE_START_HOUR * 60 &&
+      currentMinutes <= PLANNER_MOBILE_END_HOUR * 60;
+    const currentTimeTop =
+      currentMinutes === null
+        ? null
+        : ((currentMinutes - PLANNER_MOBILE_START_HOUR * 60) / 60) * PLANNER_MOBILE_HOUR_HEIGHT;
+
+    return (
+      <div className="md:hidden">
+        <div className="grid grid-cols-7 gap-1">
+          {plannerWeekDays.map((day) => {
+            const date = new Date(`${day}T00:00:00`);
+            const isToday = day === clientToday;
+            const isSelected = day === plannerMobileWeekDate;
+            const dayTemporalState = plannerTemporalStateForDate(day, clientToday);
+
+            return (
+              <button
+                key={`mobile-week-${day}`}
+                type="button"
+                onClick={() => selectPlannerMobileWeekDate(day)}
+                className="rounded-2xl px-1 py-1.5 text-center transition-colors"
+              >
+                <div className={`text-[9px] font-semibold uppercase tracking-[0.08em] ${isSelected ? "text-slate-900" : "text-slate-400"}`}>
+                  {new Intl.DateTimeFormat("en", { weekday: "short" }).format(date)}
+                </div>
+                <div
+                  className={`mx-auto mt-1 flex h-7 w-7 items-center justify-center rounded-full text-xs font-semibold tabular-nums ${
+                    isSelected
+                      ? "bg-slate-900 text-white"
+                      : isToday
+                        ? "bg-slate-100 text-slate-900"
+                        : dayTemporalState === "past"
+                          ? "text-slate-400"
+                          : "text-slate-600"
+                  }`}
+                >
+                  {date.getDate()}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="mt-3 grid grid-cols-[48px_1fr] gap-2 border-y border-slate-100 py-2">
+          <div className="pt-1 text-[11px] font-medium text-slate-400">All day</div>
+          <div className="min-w-0 space-y-1">
+            {plannerMobileAllDayItems.length ? (
+              plannerMobileAllDayItems.map((item) => (
+                <button
+                  key={plannerDateItemKey(item, `mobile-all-day-${plannerMobileWeekDate}`)}
+                  type="button"
+                  onClick={() => openPlannerDateItem(item)}
+                  className={`flex h-7 w-full min-w-0 items-center gap-1.5 rounded-lg border px-2 text-left text-[11px] font-medium ${plannerDateItemTone(
+                    item,
+                    plannerMobileWeekDate
+                  )}`}
+                >
+                  {item.sourceType === "task_deadline" ? (
+                    <Flag className="h-3 w-3 shrink-0" aria-hidden="true" />
+                  ) : (
+                    <PlannerEventTypeIcon eventType={plannerYearItemEventType(item)} />
+                  )}
+                  <span className="truncate">{plannerItemTitle(item)}</span>
+                  <ChevronRight className="ml-auto h-3 w-3 shrink-0 opacity-50" aria-hidden="true" />
+                </button>
+              ))
+            ) : (
+              <div className="h-7 rounded-lg border border-dashed border-slate-100 text-[11px] leading-7 text-slate-300">No all-day events</div>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-3 overflow-hidden rounded-[18px] border border-slate-100 bg-white">
+          <div
+            className="relative grid grid-cols-[48px_1fr]"
+            style={{ height: (PLANNER_MOBILE_END_HOUR - PLANNER_MOBILE_START_HOUR) * PLANNER_MOBILE_HOUR_HEIGHT }}
+          >
+            <div className="relative border-r border-slate-100 bg-white">
+              {plannerMobileHours.slice(0, -1).map((hour, index) => (
+                <div
+                  key={`mobile-hour-${hour}`}
+                  className="absolute right-2 -translate-y-2 text-[10px] tabular-nums text-slate-300"
+                  style={{ top: index * PLANNER_MOBILE_HOUR_HEIGHT }}
+                >
+                  {hour}
+                </div>
+              ))}
+            </div>
+            <div className="relative bg-white">
+              {plannerMobileHours.slice(0, -1).map((hour, index) => (
+                <div
+                  key={`mobile-grid-${hour}`}
+                  className="absolute left-0 right-0 border-t border-slate-100/80"
+                  style={{ top: index * PLANNER_MOBILE_HOUR_HEIGHT }}
+                />
+              ))}
+              {showCurrentTime && currentTimeTop !== null ? (
+                <div className="absolute left-0 right-2 z-30 flex items-center" style={{ top: currentTimeTop }}>
+                  <span className="-ml-[46px] w-10 pr-1 text-right text-[10px] tabular-nums text-rose-500">
+                    {localTimeInput(new Date(clientNowMs))}
+                  </span>
+                  <span className="h-2 w-2 rounded-full bg-rose-400" />
+                  <span className="h-px flex-1 bg-rose-300" />
+                </div>
+              ) : null}
+              {plannerMobileTimedLayoutItems.map((layout) => {
+                const position = plannerMobileLayoutPosition(layout);
+                if (!position) return null;
+                const timeRange = `${formatPlannerEventTime(layout.event.startAt)}${
+                  layout.event.endAt ? `-${formatPlannerEventTime(layout.event.endAt)}` : ""
+                }`;
+                const temporalState = plannerEventTemporalState(layout.event, clientToday);
+                const googleEvent = layout.sourceType === "google_event" ? layout.googleEvent : null;
+                return (
+                  <button
+                    key={`mobile-day-${layout.sourceType}-${layout.event.id}`}
+                    type="button"
+                    onClick={() => (googleEvent ? setGoogleEventDetail(googleEvent) : openPlannerEventEdit(layout.event))}
+                    className={`absolute z-20 overflow-hidden rounded-xl border px-2 py-1.5 text-left text-[11px] ${plannerEventTone(
+                      layout.event.eventType,
+                      temporalState
+                    )}`}
+                    style={{
+                      top: position.top,
+                      height: position.height,
+                      left: position.left,
+                      width: position.width,
+                      ...(googleEvent ? googleEventAccentStyle(googleEvent.calendarColor) : {}),
+                    }}
+                  >
+                    <div className="flex min-w-0 items-center gap-1 font-semibold leading-tight">
+                      <PlannerEventTypeIcon eventType={layout.event.eventType} />
+                      <span className="truncate">{layout.event.title}</span>
+                    </div>
+                    {position.height >= 38 ? (
+                      <div className="mt-0.5 truncate text-[10px] opacity-70">{timeRange}</div>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderPlannerMobileMonth() {
+    const dotLimit = 4;
+    return (
+      <div className="md:hidden">
+        <div className="overflow-hidden rounded-[18px] border border-slate-100 bg-white">
+          <div className="grid grid-cols-7 border-b border-slate-100 bg-slate-50/40">
+            {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((weekday) => (
+              <div key={`mobile-month-${weekday}`} className="py-2 text-center text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">
+                {weekday}
+              </div>
+            ))}
+          </div>
+          {plannerMonthGrid.weeks.map((week, weekIndex) => {
+            const weekSpans = plannerMonthGrid.allDaySpansByWeek[weekIndex] ?? [];
+            return (
+              <div key={`mobile-month-week-${week[0]?.date ?? weekIndex}`} className="relative grid grid-cols-7">
+                {week.map((day) => {
+                  const items = plannerMonthGrid.eventsByDate[day.date] ?? [];
+                  const dotItems = items.filter((item) => {
+                    if (item.sourceType === "task_deadline") return true;
+                    if (item.sourceType === "google_event") return !item.event.allDay;
+                    return !plannerEventRendersAsAllDaySpan(item.event);
+                  });
+                  const visibleDots = dotItems.slice(0, dotLimit);
+                  const hiddenCount = Math.max(0, dotItems.length - visibleDots.length);
+                  const isToday = day.date === clientToday;
+                  const isSelected = day.date === plannerMobileMonthDate;
+                  const dayTemporalState = plannerTemporalStateForDate(day.date, clientToday);
+
+                  return (
+                    <button
+                      key={`mobile-month-day-${day.date}`}
+                      type="button"
+                      onClick={() => setPlannerMobileMonthSelectedDate(day.date)}
+                      className={`relative min-h-[76px] border-b border-r border-slate-100/80 px-1.5 py-1.5 text-left [&:nth-child(7n)]:border-r-0 ${
+                        isSelected
+                          ? "bg-slate-50 ring-1 ring-inset ring-slate-300"
+                          : day.isCurrentMonth
+                            ? "bg-white"
+                            : "bg-slate-50/40"
+                      }`}
+                    >
+                      <span
+                        className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-semibold tabular-nums ${
+                          isToday
+                            ? "bg-slate-900 text-white"
+                            : day.isCurrentMonth
+                              ? dayTemporalState === "past"
+                                ? "text-slate-400"
+                                : "text-slate-700"
+                              : "text-slate-300"
+                        }`}
+                      >
+                        {Number(day.date.slice(8, 10))}
+                      </span>
+                      <div className="mt-4 flex min-h-[12px] flex-wrap items-center gap-1">
+                        {visibleDots.map((item) => (
+                          <span
+                            key={plannerDateItemKey(item, `mobile-month-dot-${day.date}`)}
+                            className="h-1.5 w-1.5 rounded-full"
+                            style={{ backgroundColor: PLANNER_EVENT_PALETTE[plannerYearItemEventType(item)].color }}
+                          />
+                        ))}
+                        {hiddenCount ? <span className="text-[9px] font-medium text-slate-400">+{hiddenCount}</span> : null}
+                      </div>
+                    </button>
+                  );
+                })}
+                {weekSpans.length ? (
+                  <div
+                    className="pointer-events-none absolute inset-x-0 top-8 grid grid-cols-7 gap-y-0.5 px-1"
+                    style={{ gridTemplateRows: `repeat(${weekSpans.length}, 11px)` }}
+                  >
+                    {weekSpans.slice(0, 3).map((span, index) => (
+                      <button
+                        key={plannerAllDaySpanKey(span, `mobile-month-${weekIndex}`)}
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openPlannerDateItem(span.item);
+                        }}
+                        className={`pointer-events-auto flex min-w-0 items-center gap-1 overflow-hidden border px-1 text-left text-[8px] font-medium leading-none ${
+                          span.startsBefore ? "rounded-l-sm" : "rounded-l-full"
+                        } ${span.endsAfter ? "rounded-r-sm" : "rounded-r-full"} ${plannerDateItemTone(span.item, week[span.startIndex]?.date ?? plannerAnchor)}`}
+                        style={{
+                          gridColumn: `${span.startIndex + 1} / span ${span.span}`,
+                          gridRow: index + 1,
+                        }}
+                        title={plannerItemTitle(span.item)}
+                      >
+                        <span className="truncate">{plannerItemTitle(span.item)}</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+
+        {plannerMobileMonthDate ? (
+          <div className="fixed inset-x-0 bottom-0 z-40 px-3 pb-[calc(env(safe-area-inset-bottom)+5.25rem)]">
+            <div className="mx-auto max-h-[46vh] max-w-lg overflow-hidden rounded-t-[24px] border border-slate-200 bg-white shadow-[0_-12px_32px_rgba(15,23,42,0.12)]">
+              <div className="flex justify-center pt-2">
+                <span className="h-1 w-9 rounded-full bg-slate-200" />
+              </div>
+              <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-4 py-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-slate-950">{formatPlannerSheetDate(plannerMobileMonthDate)}</div>
+                  <div className="mt-0.5 text-xs text-slate-400">
+                    {plannerMobileMonthSelectedItems.length
+                      ? `${plannerMobileMonthSelectedItems.length} item${plannerMobileMonthSelectedItems.length === 1 ? "" : "s"}`
+                      : "No events"}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPlannerMobileMonthSelectedDate(null)}
+                  className="rounded-full border border-slate-200 px-2.5 py-1 text-xs text-slate-500"
+                >
+                  Close
+                </button>
+              </div>
+              <div className="max-h-[34vh] overflow-y-auto px-4 py-2">
+                {plannerMobileMonthSelectedItems.length ? (
+                  <div className="divide-y divide-slate-100">
+                    {plannerMobileMonthSelectedItems.map((item) => {
+                      const timeRange = plannerItemTimeRangeLabel(item, plannerMobileMonthDate);
+                      return (
+                        <button
+                          key={plannerDateItemKey(item, `mobile-month-sheet-${plannerMobileMonthDate}`)}
+                          type="button"
+                          onClick={() => openPlannerDateItem(item)}
+                          className="flex w-full items-center gap-3 py-3 text-left"
+                        >
+                          {item.sourceType === "task_deadline" ? (
+                            <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-[#FE7877] text-white">
+                              <Flag className="h-3.5 w-3.5" aria-hidden="true" />
+                            </span>
+                          ) : (
+                            <PlannerEventTypeIcon eventType={plannerYearItemEventType(item)} />
+                          )}
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-medium text-slate-800">{plannerItemTitle(item)}</span>
+                            {timeRange ? <span className="mt-0.5 block text-xs tabular-nums text-slate-400">{timeRange}</span> : null}
+                          </span>
+                          <ChevronRight className="h-4 w-4 shrink-0 text-slate-300" aria-hidden="true" />
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="py-8 text-center text-sm text-slate-400">No events for this date.</div>
+                )}
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
 
   function renderPlannerEventLegend() {
     return (
@@ -8344,13 +8940,11 @@ useEffect(() => {
             return (
               <div key={`${grid.month.id}-week-${week[0]?.date ?? weekIndex}`} className="relative grid grid-cols-7">
                 {week.map((day) => {
-                  const events = (grid.eventsByDate[day.date] ?? []).filter(
-                    (item) =>
-                      !(
-                        item.sourceType === "calendar_event" &&
-                        plannerEventRendersAsAllDaySpan(item.event)
-                      )
-                  );
+                  const events = (grid.eventsByDate[day.date] ?? []).filter((item) => {
+                    if (item.sourceType === "calendar_event") return !plannerEventRendersAsAllDaySpan(item.event);
+                    if (item.sourceType === "google_event") return !item.event.allDay;
+                    return true;
+                  });
                   const visibleEvents = events.slice(0, visibleLimit);
                   const hiddenCount = Math.max(0, events.length - visibleEvents.length);
                   const isToday = day.date === clientToday;
@@ -8400,11 +8994,14 @@ useEffect(() => {
                           const temporalState = plannerItemTemporalState(item, clientToday, day.date);
                           return (
                             <button
-                              key={`${grid.month.id}-${day.date}-${item.sourceType === "calendar_event" ? item.event.id : item.task.id}`}
+                              key={`${grid.month.id}-${day.date}-${
+                                item.sourceType === "task_deadline" ? item.task.id : item.event.id
+                              }`}
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 if (item.sourceType === "calendar_event") openPlannerEventEdit(item.event);
+                                else if (item.sourceType === "google_event") setGoogleEventDetail(item.event);
                                 else openPlannerTaskDeadlineEdit(item.task);
                               }}
                               className={`flex w-full min-w-0 items-center gap-1 rounded-lg border px-1.5 py-0.5 text-left font-medium leading-4 ${
@@ -8412,14 +9009,19 @@ useEffect(() => {
                               } ${
                                 item.sourceType === "calendar_event"
                                   ? plannerEventTone(item.event.eventType, temporalState)
+                                  : item.sourceType === "google_event"
+                                    ? `border-slate-200 border-l-2 bg-white text-slate-600 ${plannerPastSoftening(temporalState)}`
                                   : plannerDeadlineTone(item.task, temporalState)
                               }`}
+                              style={item.sourceType === "google_event" ? googleEventAccentStyle(item.event.calendarColor) : undefined}
                               title={plannerItemTitle(item)}
                             >
                               {prefix ? (
                                 <span className="shrink-0 tabular-nums opacity-65">{prefix}</span>
                               ) : item.sourceType === "task_deadline" ? (
                                 <Flag className="h-3 w-3 shrink-0" aria-hidden="true" />
+                              ) : item.sourceType === "google_event" ? (
+                                <CalendarDays className="h-3 w-3 shrink-0" aria-hidden="true" />
                               ) : (
                                 <PlannerEventTypeIcon eventType={item.event.eventType} />
                               )}
@@ -8451,6 +9053,7 @@ useEffect(() => {
                           onClick={(e) => {
                             e.stopPropagation();
                             if (span.item.sourceType === "calendar_event") openPlannerEventEdit(span.item.event);
+                            else if (span.item.sourceType === "google_event") setGoogleEventDetail(span.item.event);
                             else openPlannerTaskDeadlineEdit(span.item.task);
                           }}
                           className={`pointer-events-auto flex min-w-0 items-center gap-1 border px-1.5 py-0.5 text-left font-medium leading-4 ${
@@ -8458,18 +9061,25 @@ useEffect(() => {
                           } ${span.startsBefore ? "rounded-l-sm" : "rounded-l-lg"} ${
                             span.endsAfter ? "rounded-r-sm" : "rounded-r-lg"
                           } ${
-                            span.item.sourceType === "calendar_event"
-                              ? plannerEventTone(span.item.event.eventType, temporalState)
-                              : plannerDeadlineTone(span.item.task, temporalState)
+                              span.item.sourceType === "calendar_event"
+                                ? plannerEventTone(span.item.event.eventType, temporalState)
+                                : span.item.sourceType === "google_event"
+                                  ? `border-slate-200 border-l-2 bg-white text-slate-600 ${plannerPastSoftening(temporalState)}`
+                                : plannerDeadlineTone(span.item.task, temporalState)
                           }`}
                           style={{
                             gridColumn: `${span.startIndex + 1} / span ${span.span}`,
                             gridRow: index + 1,
+                            ...(span.item.sourceType === "google_event"
+                              ? googleEventAccentStyle(span.item.event.calendarColor)
+                              : {}),
                           }}
                           title={plannerItemTitle(span.item)}
                         >
                           {span.item.sourceType === "calendar_event" ? (
                             <PlannerEventTypeIcon eventType={span.item.event.eventType} />
+                          ) : span.item.sourceType === "google_event" ? (
+                            <CalendarDays className="h-3 w-3 shrink-0" aria-hidden="true" />
                           ) : (
                             <Flag className="h-3 w-3 shrink-0" aria-hidden="true" />
                           )}
@@ -8593,7 +9203,7 @@ useEffect(() => {
                 {isDemoMode ? "Task Tracker Playground" : "Yasmine's Tracker"}
               </div>
               <h1 className="text-xl font-semibold tracking-tight text-slate-950">{pageTitle}</h1>
-              <p className="max-w-xl text-sm text-slate-500">{pageSubtitle}</p>
+              <p className={`max-w-xl text-sm text-slate-500 ${mode === "planner" ? "hidden md:block" : ""}`}>{pageSubtitle}</p>
             </div>
         </div>
           )}
@@ -9512,8 +10122,74 @@ useEffect(() => {
             ) : null}
           </>
         ) : mode === "planner" ? (
-          <div className="mt-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="mt-2 md:mt-4">
+            <div className="md:hidden">
+              <div className="flex items-center justify-between">
+                <div className="text-lg font-semibold tracking-tight text-slate-950">Planner</div>
+                <button
+                  type="button"
+                  onClick={openPlannerEventTypeChooser}
+                  className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-900 text-lg leading-none text-white"
+                  aria-label="Add calendar event"
+                >
+                  +
+                </button>
+              </div>
+              <div className="mt-3 grid grid-cols-4 rounded-full border border-slate-200 bg-white p-1">
+                {([
+                  { id: "week", label: "Week" },
+                  { id: "month", label: "Month" },
+                  { id: "three_month", label: "3 Months" },
+                  { id: "year", label: "Year" },
+                ] as Array<{ id: PlannerView; label: string }>).map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => setPlannerView(option.id)}
+                    className={`rounded-full px-2 py-1.5 text-[12px] font-medium ${
+                      plannerView === option.id
+                        ? "bg-slate-900 text-white"
+                        : "text-slate-500 hover:bg-slate-50"
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              <div className="mt-2 flex items-center gap-3 px-1">
+                <div className="inline-flex rounded-full border border-slate-200 bg-white p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => movePlannerCurrentView(-1)}
+                    className="flex h-7 w-7 items-center justify-center rounded-full text-sm text-slate-600 hover:bg-slate-50"
+                    aria-label="Previous period"
+                  >
+                    ‹
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => movePlannerCurrentView(1)}
+                    className="flex h-7 w-7 items-center justify-center rounded-full text-sm text-slate-600 hover:bg-slate-50"
+                    aria-label="Next period"
+                  >
+                    ›
+                  </button>
+                </div>
+                <div className="min-w-0 flex-1 truncate text-xs font-semibold text-slate-700">{plannerMobilePeriodLabel()}</div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPlannerMobileMonthSelectedDate(null);
+                    returnPlannerToToday();
+                  }}
+                  className="rounded-full px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                >
+                  Today
+                </button>
+              </div>
+            </div>
+
+            <div className="hidden flex-wrap items-center justify-between gap-2 md:flex">
               <div className="inline-flex rounded-full border border-slate-200 bg-white p-1">
                   {([
                     { id: "week", label: "Week" },
@@ -9546,16 +10222,37 @@ useEffect(() => {
                   Quick Add
                 </button>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    window.location.assign("/api/google/auth/start");
-                  }}
-                  className="flex h-9 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 text-sm text-slate-600 hover:bg-slate-50"
-                >
-                  <CalendarDays className="h-3.5 w-3.5" aria-hidden="true" />
-                  Connect Google Calendar
-                </button>
+                {googleCalendarConnections.length ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setGoogleCalendarManagerOpen(true)}
+                      className="flex h-9 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 text-sm text-slate-600 hover:bg-slate-50"
+                    >
+                      <CalendarDays className="h-3.5 w-3.5" aria-hidden="true" />
+                      Manage calendars
+                    </button>
+                    <button
+                      type="button"
+                      onClick={syncGoogleCalendarsNow}
+                      disabled={googleCalendarSyncing || !googleCalendars.some((calendar) => calendar.selected)}
+                      className="flex h-9 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 text-sm text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {googleCalendarSyncing ? "Syncing" : "Sync now"}
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      window.location.assign("/api/google/auth/start");
+                    }}
+                    className="flex h-9 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 text-sm text-slate-600 hover:bg-slate-50"
+                  >
+                    <CalendarDays className="h-3.5 w-3.5" aria-hidden="true" />
+                    Connect Google Calendar
+                  </button>
+                )}
 
                 <button
                   type="button"
@@ -9576,7 +10273,7 @@ useEffect(() => {
 
             {plannerView === "week" ? (
               <div className="pt-3">
-                <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div className="mb-3 hidden flex-col gap-2 md:flex md:flex-row md:items-center md:justify-between">
                   <div className="text-xs font-medium text-slate-500">{plannerWeekLabel}</div>
                   <div className="inline-flex w-fit rounded-full border border-slate-200 bg-white p-1">
                     <button
@@ -9604,9 +10301,10 @@ useEffect(() => {
                     </button>
 	                  </div>
 	                </div>
-	                <div className="mb-3">{renderPlannerEventLegend()}</div>
+	                <div className="mb-3 hidden md:block">{renderPlannerEventLegend()}</div>
+	                {renderPlannerMobileWeek()}
 
-	                <div className="md:hidden">
+	                <div className="hidden">
                   <div className="grid grid-cols-7 gap-1">
                     {plannerWeekDays.map((day) => {
                       const date = new Date(day + "T00:00:00");
@@ -9645,7 +10343,7 @@ useEffect(() => {
                   </div>
 
                   <div className="mt-3 rounded-[18px] border border-slate-200/70 bg-white p-3">
-                    {!plannerMobileAllDayItems.length && !plannerMobileTimedLayouts.length ? (
+                    {!plannerMobileAllDayItems.length && !plannerMobileTimedLayouts.length && !plannerMobileGoogleTimedLayouts.length ? (
                       <div className="py-1 text-xs text-slate-400">No events</div>
                     ) : (
                       <>
@@ -9656,21 +10354,30 @@ useEffect(() => {
                               const temporalState = plannerItemTemporalState(item, clientToday, plannerMobileWeekDate);
                               return (
                                 <button
-                                  key={`mobile-all-day-${plannerMobileWeekDate}-${item.sourceType === "calendar_event" ? item.event.id : item.task.id}`}
+                                  key={`mobile-all-day-${plannerMobileWeekDate}-${
+                                    item.sourceType === "task_deadline" ? item.task.id : item.event.id
+                                  }`}
                                   type="button"
                                   onClick={() =>
                                     item.sourceType === "calendar_event"
                                       ? openPlannerEventEdit(item.event)
-                                      : openPlannerTaskDeadlineEdit(item.task)
+                                      : item.sourceType === "google_event"
+                                        ? setGoogleEventDetail(item.event)
+                                        : openPlannerTaskDeadlineEdit(item.task)
                                   }
                                   className={`flex w-full min-w-0 items-center gap-2 rounded-xl border px-2 py-1.5 text-left text-xs font-medium ${
                                     item.sourceType === "calendar_event"
                                       ? plannerEventTone(item.event.eventType, temporalState)
+                                      : item.sourceType === "google_event"
+                                        ? `border-slate-200 border-l-2 bg-white text-slate-600 ${plannerPastSoftening(temporalState)}`
                                       : plannerDeadlineTone(item.task, temporalState)
                                   }`}
+                                  style={item.sourceType === "google_event" ? googleEventAccentStyle(item.event.calendarColor) : undefined}
                                 >
                                   {item.sourceType === "calendar_event" ? (
                                     <PlannerEventTypeIcon eventType={item.event.eventType} />
+                                  ) : item.sourceType === "google_event" ? (
+                                    <CalendarDays className="h-3 w-3 shrink-0" aria-hidden="true" />
                                   ) : (
                                     <Flag className="h-3 w-3 shrink-0" aria-hidden="true" />
                                   )}
@@ -9713,6 +10420,35 @@ useEffect(() => {
                                     {layout.event.title}
                                   </span>
                                   {timeRange && layout.event.endAt ? (
+                                    <span className="mt-0.5 block text-[11px] opacity-70">{timeRange}</span>
+                                  ) : null}
+                                </span>
+                              </button>
+                            );
+                          })}
+                          {plannerMobileGoogleTimedLayouts.map((layout) => {
+                            const event = layout.googleEvent;
+                            const timeRange = `${formatPlannerEventTime(event.startAt)}${
+                              event.endAt ? `-${formatPlannerEventTime(event.endAt)}` : ""
+                            }`;
+                            const temporalState = googleEventTemporalState(event, clientToday);
+                            return (
+                              <button
+                                key={`mobile-google-timed-${plannerMobileWeekDate}-${event.id}`}
+                                type="button"
+                                onClick={() => setGoogleEventDetail(event)}
+                                className={`flex w-full min-w-0 items-start gap-2 rounded-2xl border border-l-2 border-slate-200 bg-white px-3 py-2 text-left text-xs text-slate-600 ${plannerPastSoftening(
+                                  temporalState
+                                )}`}
+                                style={googleEventAccentStyle(event.calendarColor)}
+                              >
+                                <CalendarDays className="h-3 w-3 shrink-0" aria-hidden="true" />
+                                <span className="min-w-0 flex-1">
+                                  <span className="block truncate font-medium">
+                                    <span className="mr-1 tabular-nums opacity-70">{formatPlannerEventTime(event.startAt)}</span>
+                                    {event.title}
+                                  </span>
+                                  {timeRange && event.endAt ? (
                                     <span className="mt-0.5 block text-[11px] opacity-70">{timeRange}</span>
                                   ) : null}
                                 </span>
@@ -9795,23 +10531,32 @@ useEffect(() => {
                                   onClick={() =>
                                     span.item.sourceType === "calendar_event"
                                       ? openPlannerEventEdit(span.item.event)
-                                      : openPlannerTaskDeadlineEdit(span.item.task)
+                                      : span.item.sourceType === "google_event"
+                                        ? setGoogleEventDetail(span.item.event)
+                                        : openPlannerTaskDeadlineEdit(span.item.task)
                                   }
                                   className={`flex min-w-0 items-center gap-1 border px-2 py-1 text-left text-[11px] font-medium ${
                                     span.startsBefore ? "rounded-l-sm" : "rounded-l-lg"
                                   } ${span.endsAfter ? "rounded-r-sm" : "rounded-r-lg"} ${
                                     span.item.sourceType === "calendar_event"
                                       ? plannerEventTone(span.item.event.eventType, temporalState)
+                                      : span.item.sourceType === "google_event"
+                                        ? `border-slate-200 border-l-2 bg-white text-slate-600 ${plannerPastSoftening(temporalState)}`
                                       : plannerDeadlineTone(span.item.task, temporalState)
                                   }`}
                                   style={{
                                     gridColumn: `${span.startIndex + 1} / span ${span.span}`,
                                     gridRow: index + 1,
+                                    ...(span.item.sourceType === "google_event"
+                                      ? googleEventAccentStyle(span.item.event.calendarColor)
+                                      : {}),
                                   }}
                                   title={plannerItemTitle(span.item)}
                                 >
                                   {span.item.sourceType === "calendar_event" ? (
                                     <PlannerEventTypeIcon eventType={span.item.event.eventType} />
+                                  ) : span.item.sourceType === "google_event" ? (
+                                    <CalendarDays className="h-3 w-3 shrink-0" aria-hidden="true" />
                                   ) : (
                                     <Flag className="h-3 w-3 shrink-0" aria-hidden="true" />
                                   )}
@@ -9996,6 +10741,50 @@ useEffect(() => {
                                 </div>
                               );
                             })}
+                            {(plannerGoogleTimedLayoutsByDate[day] ?? []).map((layout) => {
+                              const gutter = 8;
+                              const width = `calc(${100 / layout.columnCount}% - ${gutter}px)`;
+                              const left = `calc(${(layout.columnIndex * 100) / layout.columnCount}% + ${gutter / 2}px)`;
+                              const googleEvent = layout.googleEvent;
+                              const timeRange = `${formatPlannerEventTime(googleEvent.startAt)}${
+                                googleEvent.endAt ? `-${formatPlannerEventTime(googleEvent.endAt)}` : ""
+                              }`;
+                              const temporalState = googleEventTemporalState(googleEvent, clientToday);
+
+                              return (
+                                <div
+                                  key={`${day}-${googleEvent.id}`}
+                                  role="button"
+                                  tabIndex={0}
+                                  className={`absolute z-20 select-none overflow-hidden rounded-xl border border-l-2 border-slate-200 bg-white px-2 py-1.5 text-[11px] text-slate-600 ${plannerPastSoftening(
+                                    temporalState
+                                  )}`}
+                                  style={{
+                                    top: layout.top,
+                                    height: layout.height,
+                                    left,
+                                    width,
+                                    ...googleEventAccentStyle(googleEvent.calendarColor),
+                                  }}
+                                  title={`${googleEvent.title}${timeRange ? ` • ${timeRange}` : ""}`}
+                                  onClick={() => setGoogleEventDetail(googleEvent)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") setGoogleEventDetail(googleEvent);
+                                  }}
+                                >
+                                  <div className="flex min-w-0 items-center gap-1 font-medium leading-tight">
+                                    <CalendarDays className="h-3 w-3 shrink-0" aria-hidden="true" />
+                                    {!googleEvent.endAt ? (
+                                      <span className="shrink-0 tabular-nums opacity-70">{formatPlannerEventTime(googleEvent.startAt)}</span>
+                                    ) : null}
+                                    <span className="truncate">{googleEvent.title}</span>
+                                  </div>
+                                  {layout.height >= 42 && timeRange ? (
+                                    <div className="mt-0.5 truncate text-[10px] opacity-70">{timeRange}</div>
+                                  ) : null}
+                                </div>
+                              );
+                            })}
                           </div>
                         ))}
                       </div>
@@ -10005,7 +10794,7 @@ useEffect(() => {
               </div>
             ) : plannerView === "month" ? (
               <div className="pt-3">
-	                <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+	                <div className="mb-2 hidden flex-col gap-2 md:flex md:flex-row md:items-center md:justify-between">
 	                  <div className="px-1 text-xs font-semibold text-slate-600">{plannerMonthLabel}</div>
                   <div className="inline-flex w-fit rounded-full border border-slate-200 bg-white p-1">
                     <button
@@ -10033,9 +10822,10 @@ useEffect(() => {
                     </button>
 	                  </div>
 	                </div>
-	                <div className="mb-3">{renderPlannerEventLegend()}</div>
+	                <div className="mb-3 hidden md:block">{renderPlannerEventLegend()}</div>
 
-	                {renderPlannerMonthGrid(plannerMonthGrid)}
+	                {renderPlannerMobileMonth()}
+	                <div className="hidden md:block">{renderPlannerMonthGrid(plannerMonthGrid)}</div>
               </div>
             ) : plannerView === "three_month" ? (
               <div className="pt-3">
@@ -10153,13 +10943,13 @@ useEffect(() => {
                           const uniqueSpanItems = Array.from(
                             new Map(
                               monthItems.map((item) => [
-                                item.sourceType === "calendar_event" ? item.event.id : item.task.id,
+                                item.sourceType === "task_deadline" ? item.task.id : item.event.id,
                                 item,
                               ])
                             ).values()
                           );
                           const spanItems = plannerAllDaySpansForDays(currentMonthDates, uniqueSpanItems)
-                            .filter((span) => span.item.sourceType === "calendar_event")
+                            .filter((span) => span.item.sourceType === "calendar_event" || span.item.sourceType === "google_event")
                             .map((span) => ({
                               ...span,
                               startIndex: firstCurrentMonthIndex + span.startIndex,
@@ -12565,6 +13355,130 @@ useEffect(() => {
             </button>
           </div>
         </div>
+      </Modal>
+
+      <Modal
+        open={googleCalendarManagerOpen}
+        title="Google Calendar"
+        onClose={() => {
+          if (!googleCalendarSaving && !googleCalendarSyncing) setGoogleCalendarManagerOpen(false);
+        }}
+      >
+        <div className="grid gap-3">
+          <div className="rounded-2xl border border-slate-100 bg-slate-50/60 px-3 py-2 text-xs text-slate-500">
+            Connected{googleCalendarConnections[0]?.googleEmail ? ` as ${googleCalendarConnections[0].googleEmail}` : ""}.
+            Select the calendars Pineapple should read.
+          </div>
+
+          <div className="grid max-h-[46vh] gap-2 overflow-y-auto pr-1">
+            {googleCalendars.length ? (
+              googleCalendars.map((calendar) => (
+                <label
+                  key={calendar.id}
+                  className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                >
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span
+                      className="h-3 w-3 shrink-0 rounded-full border border-slate-200"
+                      style={{ backgroundColor: calendar.backgroundColor ?? "#94a3b8" }}
+                      aria-hidden="true"
+                    />
+                    <span className="min-w-0">
+                      <span className="block truncate font-medium text-slate-700">{calendar.summary}</span>
+                      <span className="block text-[11px] text-slate-400">
+                        {calendar.primary ? "Primary" : calendar.accessRole ?? "Calendar"}
+                        {calendar.timezone ? ` · ${calendar.timezone}` : ""}
+                      </span>
+                    </span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={calendar.selected}
+                    disabled={googleCalendarSaving}
+                    onChange={(e) => toggleGoogleCalendar(calendar.id, e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300"
+                  />
+                </label>
+              ))
+            ) : (
+              <div className="rounded-2xl border border-slate-100 bg-white px-3 py-4 text-sm text-slate-500">
+                No Google calendars discovered yet.
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-3">
+            <button
+              type="button"
+              onClick={() => {
+                window.location.assign("/api/google/auth/start");
+              }}
+              className="rounded-full border border-slate-200 px-4 py-2 text-sm text-slate-600 hover:bg-slate-50"
+            >
+              Reconnect
+            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={refreshGoogleCalendarState}
+                disabled={googleCalendarSaving || googleCalendarSyncing}
+                className="rounded-full border border-slate-200 px-4 py-2 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+              >
+                Refresh
+              </button>
+              <button
+                type="button"
+                onClick={syncGoogleCalendarsNow}
+                disabled={googleCalendarSyncing || !googleCalendars.some((calendar) => calendar.selected)}
+                className="rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+              >
+                {googleCalendarSyncing ? "Syncing" : "Sync now"}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={Boolean(googleEventDetail)}
+        title="Google Calendar event"
+        onClose={() => setGoogleEventDetail(null)}
+      >
+        {googleEventDetail ? (
+          <div className="grid gap-3">
+            <div className="rounded-2xl border border-slate-100 bg-slate-50/60 px-3 py-2 text-xs text-slate-500">
+              Read-only from {googleEventDetail.calendarSummary}
+            </div>
+            <div>
+              <div className="text-base font-semibold text-slate-900">{googleEventDetail.title}</div>
+              <div className="mt-1 text-sm text-slate-500">
+                {googleEventDetail.allDay
+                  ? `${googleEventDetail.startDate}${googleEventDetail.endDate && googleEventDetail.endDate !== googleEventDetail.startDate ? ` - ${googleEventDetail.endDate}` : ""}`
+                  : `${formatPlannerEventTime(googleEventDetail.startAt)}${googleEventDetail.endAt ? ` - ${formatPlannerEventTime(googleEventDetail.endAt)}` : ""}`}
+              </div>
+            </div>
+            {googleEventDetail.location ? (
+              <div className="text-sm text-slate-600">
+                <span className="font-medium text-slate-700">Location:</span> {googleEventDetail.location}
+              </div>
+            ) : null}
+            {googleEventDetail.description ? (
+              <div className="max-h-40 overflow-y-auto rounded-2xl border border-slate-100 bg-white p-3 text-sm text-slate-600">
+                {googleEventDetail.description}
+              </div>
+            ) : null}
+            {googleEventDetail.htmlLink ? (
+              <a
+                href={googleEventDetail.htmlLink}
+                target="_blank"
+                rel="noreferrer"
+                className="w-fit rounded-full border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+              >
+                Open in Google Calendar
+              </a>
+            ) : null}
+          </div>
+        ) : null}
       </Modal>
 
       {/* Planner event modal */}

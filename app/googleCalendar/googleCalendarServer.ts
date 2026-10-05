@@ -2,12 +2,18 @@ import "server-only";
 
 import { createSupabaseServerClient } from "@/lib/supabaseServer";
 import { decryptGoogleToken, encryptGoogleToken } from "./googleTokenCrypto";
+import type {
+  GoogleCalendarConnectionSummary,
+  GoogleCalendarEvent,
+  GoogleCalendarSummary,
+} from "./googleCalendarTypes";
 
 export const GOOGLE_CALENDAR_READONLY_SCOPE = "https://www.googleapis.com/auth/calendar.readonly";
 export const GOOGLE_OAUTH_STATE_COOKIE = "pineapple_google_oauth_state";
 
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_CALENDAR_LIST_URL = "https://www.googleapis.com/calendar/v3/users/me/calendarList";
+const GOOGLE_EVENTS_URL = "https://www.googleapis.com/calendar/v3/calendars";
 
 type GoogleTokenResponse = {
   access_token?: string;
@@ -32,6 +38,35 @@ export type GoogleCalendarListEntry = {
 
 type GoogleCalendarListResponse = {
   items?: GoogleCalendarListEntry[];
+  error?: {
+    message?: string;
+  };
+};
+
+type GoogleCalendarEventDate = {
+  date?: string;
+  dateTime?: string;
+  timeZone?: string;
+};
+
+type GoogleCalendarApiEvent = {
+  id?: string;
+  summary?: string;
+  description?: string;
+  location?: string;
+  htmlLink?: string;
+  start?: GoogleCalendarEventDate;
+  end?: GoogleCalendarEventDate;
+  status?: string;
+  updated?: string;
+  etag?: string;
+  recurringEventId?: string;
+  originalStartTime?: GoogleCalendarEventDate;
+};
+
+type GoogleCalendarEventsResponse = {
+  items?: GoogleCalendarApiEvent[];
+  nextPageToken?: string;
   error?: {
     message?: string;
   };
@@ -275,4 +310,293 @@ export async function persistGoogleConnectionAndCalendars(
     calendarCount: calendars.length,
     primaryCalendarId: primaryCalendar.id,
   };
+}
+
+function googleConnectionFromRow(row: Record<string, unknown>): GoogleCalendarConnectionSummary {
+  return {
+    id: String(row.id),
+    googleAccountId: String(row.google_account_id ?? ""),
+    googleEmail: typeof row.google_email === "string" ? row.google_email : null,
+    connectedAt: typeof row.connected_at === "string" ? row.connected_at : null,
+    lastCalendarDiscoveryAt:
+      typeof row.last_calendar_discovery_at === "string" ? row.last_calendar_discovery_at : null,
+  };
+}
+
+function googleCalendarFromRow(row: Record<string, unknown>): GoogleCalendarSummary {
+  return {
+    id: String(row.id),
+    connectionId: String(row.connection_id),
+    googleCalendarId: String(row.google_calendar_id),
+    summary: String(row.summary ?? "Calendar"),
+    primary: row.primary_calendar === true,
+    backgroundColor: typeof row.background_color === "string" ? row.background_color : null,
+    foregroundColor: typeof row.foreground_color === "string" ? row.foreground_color : null,
+    selected: row.selected === true,
+    timezone: typeof row.timezone === "string" ? row.timezone : null,
+    accessRole: typeof row.access_role === "string" ? row.access_role : null,
+  };
+}
+
+function googleEventFromRow(row: Record<string, unknown>): GoogleCalendarEvent {
+  return {
+    id: String(row.id),
+    connectionId: String(row.connection_id),
+    googleCalendarRowId: String(row.google_calendar_row_id),
+    googleCalendarId: String(row.google_calendar_id),
+    googleEventId: String(row.google_event_id),
+    googleInstanceId: String(row.google_instance_id),
+    title: String(row.title ?? "Untitled Google event"),
+    description: typeof row.description === "string" ? row.description : null,
+    location: typeof row.location === "string" ? row.location : null,
+    htmlLink: typeof row.html_link === "string" ? row.html_link : null,
+    allDay: row.all_day === true,
+    startAt: typeof row.start_at === "string" ? row.start_at : null,
+    endAt: typeof row.end_at === "string" ? row.end_at : null,
+    startDate: typeof row.start_date === "string" ? row.start_date : null,
+    endDate: typeof row.end_date === "string" ? row.end_date : null,
+    timezone: typeof row.timezone === "string" ? row.timezone : null,
+    status: typeof row.status === "string" ? row.status : null,
+    googleUpdatedAt: typeof row.google_updated_at === "string" ? row.google_updated_at : null,
+    etag: typeof row.etag === "string" ? row.etag : null,
+    recurringEventId: typeof row.recurring_event_id === "string" ? row.recurring_event_id : null,
+    calendarSummary: String(row.calendar_summary ?? "Google Calendar"),
+    calendarColor: typeof row.calendar_color === "string" ? row.calendar_color : null,
+  };
+}
+
+export async function loadGoogleCalendarSettings(syncCode: string) {
+  const supabase = createSupabaseServerClient();
+  const { data: connectionsData, error: connectionsError } = await supabase
+    .from("google_calendar_connections")
+    .select("id, google_account_id, google_email, connected_at, last_calendar_discovery_at")
+    .eq("sync_code", syncCode)
+    .order("connected_at", { ascending: false });
+
+  if (connectionsError) throw new Error("Failed to load Google Calendar connections.");
+
+  const { data: calendarsData, error: calendarsError } = await supabase
+    .from("google_calendars")
+    .select(
+      "id, connection_id, google_calendar_id, summary, primary_calendar, background_color, foreground_color, selected, timezone, access_role"
+    )
+    .eq("sync_code", syncCode)
+    .order("primary_calendar", { ascending: false })
+    .order("summary", { ascending: true });
+
+  if (calendarsError) throw new Error("Failed to load Google calendars.");
+
+  return {
+    connections: (connectionsData ?? []).map((row) => googleConnectionFromRow(row as Record<string, unknown>)),
+    calendars: (calendarsData ?? []).map((row) => googleCalendarFromRow(row as Record<string, unknown>)),
+  };
+}
+
+export async function updateGoogleCalendarSelected(syncCode: string, calendarId: string, selected: boolean) {
+  const supabase = createSupabaseServerClient();
+  const { error } = await supabase
+    .from("google_calendars")
+    .update({ selected })
+    .eq("sync_code", syncCode)
+    .eq("id", calendarId);
+
+  if (error) throw new Error("Failed to update Google calendar selection.");
+}
+
+function subtractOneDay(date: string) {
+  const [year, month, day] = date.split("-").map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day - 1));
+  return parsed.toISOString().slice(0, 10);
+}
+
+function googleApiEventToPayload(
+  event: GoogleCalendarApiEvent,
+  calendar: GoogleCalendarSummary,
+  syncCode: string,
+  seenAt: string
+) {
+  const googleEventId = event.id;
+  if (!googleEventId || !event.start) return null;
+
+  const allDay = Boolean(event.start.date);
+  const startDate = event.start.date ?? null;
+  const exclusiveEndDate = event.end?.date ?? null;
+  const endDate = allDay && exclusiveEndDate ? subtractOneDay(exclusiveEndDate) : null;
+  const startAt = event.start.dateTime ?? null;
+  const endAt = event.end?.dateTime ?? null;
+  const originalStartAt = event.originalStartTime?.dateTime ?? null;
+  const originalStartDate = event.originalStartTime?.date ?? null;
+  const instanceId = event.recurringEventId
+    ? `${event.recurringEventId}:${originalStartAt ?? originalStartDate ?? googleEventId}`
+    : googleEventId;
+
+  if (allDay && !startDate) return null;
+  if (!allDay && !startAt) return null;
+
+  return {
+    sync_code: syncCode,
+    connection_id: calendar.connectionId,
+    google_calendar_row_id: calendar.id,
+    google_calendar_id: calendar.googleCalendarId,
+    google_event_id: googleEventId,
+    google_instance_id: instanceId,
+    title: event.summary || "(No title)",
+    description: event.description ?? null,
+    location: event.location ?? null,
+    html_link: event.htmlLink ?? null,
+    all_day: allDay,
+    start_at: allDay ? null : startAt,
+    end_at: allDay ? null : endAt,
+    start_date: allDay ? startDate : null,
+    end_date: allDay ? endDate : null,
+    timezone: event.start.timeZone ?? event.end?.timeZone ?? calendar.timezone,
+    status: event.status ?? null,
+    google_updated_at: event.updated ?? null,
+    etag: event.etag ?? null,
+    recurring_event_id: event.recurringEventId ?? null,
+    original_start_at: originalStartAt,
+    original_start_date: originalStartDate,
+    raw: event as Record<string, unknown>,
+    last_seen_at: seenAt,
+  };
+}
+
+async function fetchGoogleEventsForCalendar(
+  accessToken: string,
+  calendarId: string,
+  timeMin: string,
+  timeMax: string
+) {
+  const events: GoogleCalendarApiEvent[] = [];
+  let pageToken = "";
+
+  do {
+    const params = new URLSearchParams({
+      singleEvents: "true",
+      orderBy: "startTime",
+      showDeleted: "true",
+      timeMin,
+      timeMax,
+      maxResults: "2500",
+    });
+    if (pageToken) params.set("pageToken", pageToken);
+
+    const response = await fetch(`${GOOGLE_EVENTS_URL}/${encodeURIComponent(calendarId)}/events?${params}`, {
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        accept: "application/json",
+      },
+    });
+    const data = (await response.json()) as GoogleCalendarEventsResponse;
+
+    if (!response.ok) {
+      throw new Error(data.error?.message || "Google event sync failed.");
+    }
+
+    events.push(...(data.items ?? []));
+    pageToken = data.nextPageToken ?? "";
+  } while (pageToken);
+
+  return events;
+}
+
+export async function syncSelectedGoogleCalendarEvents(syncCode: string) {
+  const supabase = createSupabaseServerClient();
+  const { calendars } = await loadGoogleCalendarSettings(syncCode);
+  const selectedCalendars = calendars.filter((calendar) => calendar.selected);
+  const now = new Date();
+  const windowStart = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const windowEnd = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000).toISOString();
+  const seenAt = new Date().toISOString();
+  let synced = 0;
+
+  for (const calendar of selectedCalendars) {
+    const accessToken = await getFreshGoogleAccessToken(calendar.connectionId);
+    const googleEvents = await fetchGoogleEventsForCalendar(
+      accessToken,
+      calendar.googleCalendarId,
+      windowStart,
+      windowEnd
+    );
+    const payloads = googleEvents
+      .map((event) => googleApiEventToPayload(event, calendar, syncCode, seenAt))
+      .filter((event): event is NonNullable<typeof event> => Boolean(event));
+
+    if (payloads.length) {
+      const { error: upsertError } = await supabase
+        .from("google_calendar_events")
+        .upsert(payloads, { onConflict: "connection_id,google_calendar_id,google_instance_id" });
+
+      if (upsertError) throw new Error("Failed to upsert Google events.");
+      synced += payloads.length;
+    }
+
+    const returnedIds = payloads.map((event) => event.google_instance_id);
+    let staleQuery = supabase
+      .from("google_calendar_events")
+      .update({ status: "stale" })
+      .eq("sync_code", syncCode)
+      .eq("google_calendar_row_id", calendar.id)
+      .neq("status", "cancelled")
+      .or(`start_at.gte.${windowStart},start_date.gte.${windowStart.slice(0, 10)}`)
+      .or(`start_at.lte.${windowEnd},start_date.lte.${windowEnd.slice(0, 10)}`);
+
+    if (returnedIds.length) {
+      staleQuery = staleQuery.not("google_instance_id", "in", `(${returnedIds.map((id) => `"${id.replace(/"/g, '\\"')}"`).join(",")})`);
+    }
+
+    const { error: staleError } = await staleQuery;
+    if (staleError) throw new Error("Failed to reconcile stale Google events.");
+  }
+
+  return { synced };
+}
+
+export async function loadCachedGoogleCalendarEvents(syncCode: string) {
+  const supabase = createSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("google_calendar_events")
+    .select(
+      [
+        "id",
+        "connection_id",
+        "google_calendar_row_id",
+        "google_calendar_id",
+        "google_event_id",
+        "google_instance_id",
+        "title",
+        "description",
+        "location",
+        "html_link",
+        "all_day",
+        "start_at",
+        "end_at",
+        "start_date",
+        "end_date",
+        "timezone",
+        "status",
+        "google_updated_at",
+        "etag",
+        "recurring_event_id",
+        "google_calendars!inner(summary,background_color,selected)",
+      ].join(",")
+    )
+    .eq("sync_code", syncCode)
+    .eq("google_calendars.selected", true)
+    .neq("status", "cancelled")
+    .neq("status", "stale")
+    .order("start_date", { ascending: true })
+    .order("start_at", { ascending: true });
+
+  if (error) throw new Error("Failed to load cached Google events.");
+
+  return (data ?? []).map((rawRow) => {
+    const row = rawRow as unknown as Record<string, unknown>;
+    const calendar = row.google_calendars as { summary?: string; background_color?: string } | null;
+    return googleEventFromRow({
+      ...row,
+      calendar_summary: calendar?.summary,
+      calendar_color: calendar?.background_color,
+    });
+  });
 }

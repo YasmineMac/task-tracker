@@ -1,4 +1,5 @@
 import type { CalendarEvent, CalendarEventType } from "../calendarEventStore/calendarEventTypes";
+import type { GoogleCalendarEvent } from "../googleCalendar/googleCalendarTypes";
 import type { Task } from "../taskStore/taskTypes";
 
 export type CalendarTimeMode =
@@ -41,6 +42,7 @@ export type PlannerYearMonth = {
 
 export type PlannerDateItem =
   | { sourceType: "calendar_event"; event: CalendarEvent }
+  | { sourceType: "google_event"; event: GoogleCalendarEvent }
   | { sourceType: "task_deadline"; task: Task; date: string };
 
 export type PlannerAllDaySpan = {
@@ -328,6 +330,18 @@ export function calendarEventIntersectsDay(event: CalendarEvent, day: string) {
   return Boolean(start && end && start <= day && end >= day);
 }
 
+export function googleCalendarEventIntersectsDay(event: GoogleCalendarEvent, day: string) {
+  if (event.allDay) {
+    const start = event.startDate;
+    const end = event.endDate || event.startDate;
+    return Boolean(start && end && start <= day && end >= day);
+  }
+
+  const start = eventLocalDate(event.startAt);
+  const end = eventLocalDate(event.endAt) || start;
+  return Boolean(start && end && start <= day && end >= day);
+}
+
 export function plannerMonthEventPrefix(event: CalendarEvent, day: string) {
   if (event.allDay) return "";
   return eventLocalDate(event.startAt) === day ? formatPlannerEventTime(event.startAt) : "";
@@ -347,6 +361,17 @@ export function eventDateSpan(event: CalendarEvent) {
 
 export function plannerDateItemSortValue(item: PlannerDateItem) {
   if (item.sourceType === "task_deadline") return `0-${item.task.title}`;
+  if (item.sourceType === "google_event") {
+    const event = item.event;
+    if (!event.allDay && event.startAt) {
+      const date = eventLocalDate(event.startAt) ?? "";
+      const parsed = new Date(event.startAt);
+      const minutes = Number.isFinite(parsed.getTime()) ? parsed.getHours() * 60 + parsed.getMinutes() : 0;
+      return `2-${date}-${String(minutes).padStart(4, "0")}-${event.title}`;
+    }
+    const allDayRank = event.allDay ? 1 : 2;
+    return `${allDayRank}-${event.startAt ?? event.startDate ?? ""}-${event.title}`;
+  }
   const event = item.event;
   const mode = getCalendarEventTimeMode(event);
   const daypart = getCalendarEventDaypart(event);
@@ -366,18 +391,22 @@ export function plannerDateItemSortValue(item: PlannerDateItem) {
 export function plannerItemsForDate(
   date: string,
   calendarEventsForRender: CalendarEvent[],
-  taskDeadlinesByDate: Record<string, Task[]>
+  taskDeadlinesByDate: Record<string, Task[]>,
+  googleEventsForRender: GoogleCalendarEvent[] = []
 ) {
   const calendarItems: PlannerDateItem[] = calendarEventsForRender
     .filter((event) => calendarEventIntersectsDay(event, date))
     .map((event) => ({ sourceType: "calendar_event", event }));
+  const googleItems: PlannerDateItem[] = googleEventsForRender
+    .filter((event) => googleCalendarEventIntersectsDay(event, date))
+    .map((event) => ({ sourceType: "google_event", event }));
   const deadlineItems: PlannerDateItem[] = (taskDeadlinesByDate[date] ?? []).map((task) => ({
     sourceType: "task_deadline",
     task,
     date,
   }));
 
-  return [...deadlineItems, ...calendarItems].sort((a, b) =>
+  return [...deadlineItems, ...calendarItems, ...googleItems].sort((a, b) =>
     plannerDateItemSortValue(a).localeCompare(plannerDateItemSortValue(b))
   );
 }
@@ -388,6 +417,10 @@ export function plannerItemTitle(item: PlannerDateItem) {
 
 export function plannerItemPrefix(item: PlannerDateItem, date: string) {
   if (item.sourceType === "task_deadline") return "";
+  if (item.sourceType === "google_event") {
+    if (item.event.allDay) return "";
+    return eventLocalDate(item.event.startAt) === date ? formatPlannerEventTime(item.event.startAt) : "";
+  }
   return plannerMonthEventPrefix(item.event, date);
 }
 
@@ -396,11 +429,22 @@ export function plannerItemTimingLabel(item: PlannerDateItem) {
 }
 
 export function plannerYearItemEventType(item: PlannerDateItem): CalendarEventType {
+  if (item.sourceType === "google_event") return "admin";
   return item.sourceType === "task_deadline" ? "deadline" : item.event.eventType;
 }
 
 export function plannerItemDateSpan(item: PlannerDateItem) {
   if (item.sourceType === "task_deadline") return { start: item.date, end: item.date };
+  if (item.sourceType === "google_event") {
+    if (item.event.allDay) {
+      const start = item.event.startDate;
+      const end = item.event.endDate || item.event.startDate;
+      return start && end ? { start, end } : null;
+    }
+    const start = eventLocalDate(item.event.startAt);
+    const end = eventLocalDate(item.event.endAt) || start;
+    return start && end ? { start, end } : null;
+  }
   return eventDateSpan(item.event);
 }
 
@@ -433,6 +477,11 @@ export function plannerAllDaySpansForDays(days: string[], items: PlannerDateItem
 }
 
 export function plannerAllDaySpanKey(span: PlannerAllDaySpan, prefix: string) {
-  const id = span.item.sourceType === "calendar_event" ? span.item.event.id : span.item.task.id;
+  const id =
+    span.item.sourceType === "calendar_event"
+      ? span.item.event.id
+      : span.item.sourceType === "google_event"
+        ? span.item.event.id
+        : span.item.task.id;
   return `${prefix}-${id}-${span.startIndex}-${span.span}`;
 }
