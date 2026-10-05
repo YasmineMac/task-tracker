@@ -4518,6 +4518,7 @@ export default function MinimalTaskTracker() {
   const [smartImportProposals, setSmartImportProposals] = useState<SmartImportProposal[]>([]);
   const [smartImportSaving, setSmartImportSaving] = useState(false);
   const [smartImportMessage, setSmartImportMessage] = useState<string | null>(null);
+  const [googleCalendarConnectionMessage, setGoogleCalendarConnectionMessage] = useState<string | null>(null);
   const [medsView, setMedsView] = useState<MedsView>("today");
   const [medsDetailsOpen, setMedsDetailsOpen] = useState(false);
   const [medsEntryLauncherOpen, setMedsEntryLauncherOpen] = useState(false);
@@ -4696,7 +4697,15 @@ useEffect(() => {
     setFeelingDate(today);
     setDoseTime(timeInputFromTimestamp(new Date().toISOString()));
     setFeelingTime(timeInputFromTimestamp(new Date().toISOString()));
-    setMode(storedTabToMode(localStorage.getItem(ACTIVE_TAB_STORAGE_KEY)));
+    const params = new URLSearchParams(window.location.search);
+    const requestedTab = storedTabToMode(params.get("tab"));
+    const googleCalendarStatus = params.get("googleCalendar");
+    setMode(params.has("tab") ? requestedTab : storedTabToMode(localStorage.getItem(ACTIVE_TAB_STORAGE_KEY)));
+    if (googleCalendarStatus === "connected") {
+      setGoogleCalendarConnectionMessage("Google Calendar connected. Calendars were discovered.");
+    } else if (googleCalendarStatus === "error") {
+      setGoogleCalendarConnectionMessage("Google Calendar connection needs attention. Check server configuration and try again.");
+    }
     setSidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "true");
     setSidebarPreferenceLoaded(true);
     setBackupStatus(getLatestLocalBackupLabel());
@@ -9539,6 +9548,17 @@ useEffect(() => {
 
                 <button
                   type="button"
+                  onClick={() => {
+                    window.location.assign("/api/google/auth/start");
+                  }}
+                  className="flex h-9 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 text-sm text-slate-600 hover:bg-slate-50"
+                >
+                  <CalendarDays className="h-3.5 w-3.5" aria-hidden="true" />
+                  Connect Google Calendar
+                </button>
+
+                <button
+                  type="button"
                   onClick={openPlannerEventTypeChooser}
                   className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-lg leading-none text-slate-700 hover:bg-slate-50"
                   aria-label="Add calendar event"
@@ -9547,6 +9567,12 @@ useEffect(() => {
                 </button>
               </div>
             </div>
+
+            {googleCalendarConnectionMessage ? (
+              <div className="mt-2 px-1 text-xs text-slate-500">
+                {googleCalendarConnectionMessage}
+              </div>
+            ) : null}
 
             {plannerView === "week" ? (
               <div className="pt-3">
