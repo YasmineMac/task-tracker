@@ -1,3 +1,5 @@
+import type { CalendarEventType } from "../calendarEventStore/calendarEventTypes";
+
 export type GoogleCalendarConnectionSummary = {
   id: string;
   googleAccountId: string;
@@ -15,6 +17,8 @@ export type GoogleCalendarSummary = {
   backgroundColor: string | null;
   foregroundColor: string | null;
   selected: boolean;
+  visibleInPlanner: boolean;
+  defaultCategory: CalendarEventType;
   timezone: string | null;
   accessRole: string | null;
 };
@@ -42,4 +46,7 @@ export type GoogleCalendarEvent = {
   recurringEventId: string | null;
   calendarSummary: string;
   calendarColor: string | null;
+  calendarDefaultCategory: CalendarEventType;
+  categoryOverride: CalendarEventType | null;
+  resolvedCategory: CalendarEventType;
 };

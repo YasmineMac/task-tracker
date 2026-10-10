@@ -19,20 +19,23 @@ export async function loadGoogleCalendarSettings() {
   };
 }
 
-export async function updateGoogleCalendarSelection(calendarId: string, selected: boolean) {
+export async function updateGoogleCalendarSettings(
+  calendarId: string,
+  changes: { selected?: boolean; visibleInPlanner?: boolean; defaultCategory?: string }
+) {
   const response = await fetch("/api/google/calendars", {
     method: "PATCH",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ calendarId, selected }),
+    body: JSON.stringify({ calendarId, ...changes }),
   });
   return response.ok;
 }
 
 export async function syncGoogleCalendarEvents() {
   const response = await fetch("/api/google/sync", { method: "POST" });
-  if (!response.ok) return { ok: false, synced: 0 };
-  const data = (await response.json()) as { ok: boolean; synced?: number };
-  return { ok: data.ok === true, synced: data.synced ?? 0 };
+  if (!response.ok) return { ok: false, synced: 0, errors: 0 };
+  const data = (await response.json()) as { ok: boolean; synced?: number; errors?: number };
+  return { ok: data.ok === true, synced: data.synced ?? 0, errors: data.errors ?? 0 };
 }
 
 export async function loadGoogleCalendarEvents() {
@@ -40,4 +43,15 @@ export async function loadGoogleCalendarEvents() {
   if (!response.ok) return { ok: false, events: [] };
   const data = (await response.json()) as { ok: boolean; events?: GoogleCalendarEvent[] };
   return { ok: data.ok === true, events: data.events ?? [] };
+}
+
+export async function updateGoogleEventCategoryOverride(eventId: string, categoryOverride: string | null) {
+  const response = await fetch("/api/google/events", {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ eventId, categoryOverride }),
+  });
+  if (!response.ok) return { ok: false, event: null as GoogleCalendarEvent | null };
+  const data = (await response.json()) as { ok: boolean; event?: GoogleCalendarEvent };
+  return { ok: data.ok === true, event: data.event ?? null };
 }

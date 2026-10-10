@@ -429,7 +429,7 @@ export function plannerItemTimingLabel(item: PlannerDateItem) {
 }
 
 export function plannerYearItemEventType(item: PlannerDateItem): CalendarEventType {
-  if (item.sourceType === "google_event") return "admin";
+  if (item.sourceType === "google_event") return item.event.resolvedCategory;
   return item.sourceType === "task_deadline" ? "deadline" : item.event.eventType;
 }
 

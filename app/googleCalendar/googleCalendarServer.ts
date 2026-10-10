@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createSupabaseServerClient } from "@/lib/supabaseServer";
+import { isCalendarEventType, type CalendarEventType } from "../calendarEventStore/calendarEventTypes";
 import { decryptGoogleToken, encryptGoogleToken } from "./googleTokenCrypto";
 import type {
   GoogleCalendarConnectionSummary,
@@ -14,6 +15,15 @@ export const GOOGLE_OAUTH_STATE_COOKIE = "pineapple_google_oauth_state";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_CALENDAR_LIST_URL = "https://www.googleapis.com/calendar/v3/users/me/calendarList";
 const GOOGLE_EVENTS_URL = "https://www.googleapis.com/calendar/v3/calendars";
+const GOOGLE_CATEGORY_FALLBACK: CalendarEventType = "personal";
+const GOOGLE_CALENDAR_DEFAULT_CATEGORY_BY_ID_OR_SUMMARY = new Map<string, CalendarEventType>([
+  ["yasmine.maccallum.laraki@students.iaac.net", "class"],
+  ["25/26 iaac precourse", "class"],
+  ["yasmine.maccallum@hotmail.com", "personal"],
+  ["yasmine.maccallum@gmail.com", "personal"],
+  ["ymaccallum.laraki@gmail.com", "personal"],
+  ["holidays in spain", "personal"],
+]);
 
 type GoogleTokenResponse = {
   access_token?: string;
@@ -71,6 +81,26 @@ type GoogleCalendarEventsResponse = {
     message?: string;
   };
 };
+
+function normalizedCalendarKey(value?: string | null) {
+  return (value ?? "").trim().toLowerCase();
+}
+
+function defaultCategoryForGoogleCalendar(calendar: Pick<GoogleCalendarListEntry, "id" | "summary">) {
+  return (
+    GOOGLE_CALENDAR_DEFAULT_CATEGORY_BY_ID_OR_SUMMARY.get(normalizedCalendarKey(calendar.id)) ??
+    GOOGLE_CALENDAR_DEFAULT_CATEGORY_BY_ID_OR_SUMMARY.get(normalizedCalendarKey(calendar.summary)) ??
+    GOOGLE_CATEGORY_FALLBACK
+  );
+}
+
+function normalizeGoogleCategory(value: unknown): CalendarEventType {
+  return isCalendarEventType(value) ? value : GOOGLE_CATEGORY_FALLBACK;
+}
+
+function nullableGoogleCategory(value: unknown): CalendarEventType | null {
+  return isCalendarEventType(value) ? value : null;
+}
 
 function googleEnv() {
   const clientId = process.env.GOOGLE_CLIENT_ID;
@@ -265,34 +295,39 @@ export async function persistGoogleConnectionAndCalendars(
 
   const { data: existingCalendars, error: calendarsReadError } = await supabase
     .from("google_calendars")
-    .select("google_calendar_id, selected")
+    .select("google_calendar_id, selected, visible_in_planner, default_category")
     .eq("connection_id", connection.id);
 
   if (calendarsReadError) {
     throw new Error("Failed to read existing Google calendars.");
   }
 
-  const selectedByCalendarId = new Map(
-    (existingCalendars ?? []).map((calendar) => [
-      String(calendar.google_calendar_id),
-      calendar.selected === true,
-    ])
+  const existingByCalendarId = new Map(
+    (existingCalendars ?? []).map((calendar) => [String(calendar.google_calendar_id), calendar])
   );
 
   if (calendars.length) {
-    const calendarRows = calendars.map((calendar) => ({
-      sync_code: syncCode,
-      connection_id: connection.id,
-      google_calendar_id: calendar.id,
-      summary: calendar.summary || calendar.id,
-      description: calendar.description ?? null,
-      primary_calendar: calendar.primary === true,
-      background_color: calendar.backgroundColor ?? null,
-      foreground_color: calendar.foregroundColor ?? null,
-      selected: selectedByCalendarId.get(calendar.id) ?? calendar.primary === true,
-      timezone: calendar.timeZone ?? null,
-      access_role: calendar.accessRole ?? null,
-    }));
+    const calendarRows = calendars.map((calendar) => {
+      const existing = existingByCalendarId.get(calendar.id);
+      return {
+        sync_code: syncCode,
+        connection_id: connection.id,
+        google_calendar_id: calendar.id,
+        summary: calendar.summary || calendar.id,
+        description: calendar.description ?? null,
+        primary_calendar: calendar.primary === true,
+        background_color: calendar.backgroundColor ?? null,
+        foreground_color: calendar.foregroundColor ?? null,
+        selected: existing ? existing.selected === true : calendar.primary === true,
+        visible_in_planner: existing ? existing.visible_in_planner !== false : true,
+        default_category:
+          existing && isCalendarEventType(existing.default_category)
+            ? existing.default_category
+            : defaultCategoryForGoogleCalendar(calendar),
+        timezone: calendar.timeZone ?? null,
+        access_role: calendar.accessRole ?? null,
+      };
+    });
 
     const { error: calendarsUpsertError } = await supabase
       .from("google_calendars")
@@ -333,6 +368,8 @@ function googleCalendarFromRow(row: Record<string, unknown>): GoogleCalendarSumm
     backgroundColor: typeof row.background_color === "string" ? row.background_color : null,
     foregroundColor: typeof row.foreground_color === "string" ? row.foreground_color : null,
     selected: row.selected === true,
+    visibleInPlanner: row.visible_in_planner !== false,
+    defaultCategory: normalizeGoogleCategory(row.default_category),
     timezone: typeof row.timezone === "string" ? row.timezone : null,
     accessRole: typeof row.access_role === "string" ? row.access_role : null,
   };
@@ -362,6 +399,11 @@ function googleEventFromRow(row: Record<string, unknown>): GoogleCalendarEvent {
     recurringEventId: typeof row.recurring_event_id === "string" ? row.recurring_event_id : null,
     calendarSummary: String(row.calendar_summary ?? "Google Calendar"),
     calendarColor: typeof row.calendar_color === "string" ? row.calendar_color : null,
+    calendarDefaultCategory: normalizeGoogleCategory(row.calendar_default_category),
+    categoryOverride: nullableGoogleCategory(row.category_override),
+    resolvedCategory:
+      nullableGoogleCategory(row.category_override) ??
+      normalizeGoogleCategory(row.calendar_default_category),
   };
 }
 
@@ -379,6 +421,7 @@ export async function loadGoogleCalendarSettings(syncCode: string) {
     .from("google_calendars")
     .select(
       "id, connection_id, google_calendar_id, summary, primary_calendar, background_color, foreground_color, selected, timezone, access_role"
+        + ", visible_in_planner, default_category"
     )
     .eq("sync_code", syncCode)
     .order("primary_calendar", { ascending: false })
@@ -387,8 +430,8 @@ export async function loadGoogleCalendarSettings(syncCode: string) {
   if (calendarsError) throw new Error("Failed to load Google calendars.");
 
   return {
-    connections: (connectionsData ?? []).map((row) => googleConnectionFromRow(row as Record<string, unknown>)),
-    calendars: (calendarsData ?? []).map((row) => googleCalendarFromRow(row as Record<string, unknown>)),
+    connections: (connectionsData ?? []).map((row) => googleConnectionFromRow(row as unknown as Record<string, unknown>)),
+    calendars: (calendarsData ?? []).map((row) => googleCalendarFromRow(row as unknown as Record<string, unknown>)),
   };
 }
 
@@ -401,6 +444,30 @@ export async function updateGoogleCalendarSelected(syncCode: string, calendarId:
     .eq("id", calendarId);
 
   if (error) throw new Error("Failed to update Google calendar selection.");
+}
+
+export async function updateGoogleCalendarSettings(
+  syncCode: string,
+  calendarId: string,
+  changes: { selected?: boolean; visibleInPlanner?: boolean; defaultCategory?: string }
+) {
+  const update: Record<string, unknown> = {};
+  if (typeof changes.selected === "boolean") update.selected = changes.selected;
+  if (typeof changes.visibleInPlanner === "boolean") update.visible_in_planner = changes.visibleInPlanner;
+  if (isCalendarEventType(changes.defaultCategory)) update.default_category = changes.defaultCategory;
+
+  if (Object.keys(update).length === 0) {
+    throw new Error("No valid Google calendar setting was provided.");
+  }
+
+  const supabase = createSupabaseServerClient();
+  const { error } = await supabase
+    .from("google_calendars")
+    .update(update)
+    .eq("sync_code", syncCode)
+    .eq("id", calendarId);
+
+  if (error) throw new Error("Failed to update Google calendar settings.");
 }
 
 function subtractOneDay(date: string) {
@@ -509,47 +576,53 @@ export async function syncSelectedGoogleCalendarEvents(syncCode: string) {
   const windowEnd = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000).toISOString();
   const seenAt = new Date().toISOString();
   let synced = 0;
+  let errors = 0;
 
   for (const calendar of selectedCalendars) {
-    const accessToken = await getFreshGoogleAccessToken(calendar.connectionId);
-    const googleEvents = await fetchGoogleEventsForCalendar(
-      accessToken,
-      calendar.googleCalendarId,
-      windowStart,
-      windowEnd
-    );
-    const payloads = googleEvents
-      .map((event) => googleApiEventToPayload(event, calendar, syncCode, seenAt))
-      .filter((event): event is NonNullable<typeof event> => Boolean(event));
+    try {
+      const accessToken = await getFreshGoogleAccessToken(calendar.connectionId);
+      const googleEvents = await fetchGoogleEventsForCalendar(
+        accessToken,
+        calendar.googleCalendarId,
+        windowStart,
+        windowEnd
+      );
+      const payloads = googleEvents
+        .map((event) => googleApiEventToPayload(event, calendar, syncCode, seenAt))
+        .filter((event): event is NonNullable<typeof event> => Boolean(event));
 
-    if (payloads.length) {
-      const { error: upsertError } = await supabase
+      if (payloads.length) {
+        const { error: upsertError } = await supabase
+          .from("google_calendar_events")
+          .upsert(payloads, { onConflict: "connection_id,google_calendar_id,google_instance_id" });
+
+        if (upsertError) throw new Error("Failed to upsert Google events.");
+        synced += payloads.length;
+      }
+
+      const returnedIds = payloads.map((event) => event.google_instance_id);
+      let staleQuery = supabase
         .from("google_calendar_events")
-        .upsert(payloads, { onConflict: "connection_id,google_calendar_id,google_instance_id" });
+        .update({ status: "stale" })
+        .eq("sync_code", syncCode)
+        .eq("google_calendar_row_id", calendar.id)
+        .neq("status", "cancelled")
+        .or(`start_at.gte.${windowStart},start_date.gte.${windowStart.slice(0, 10)}`)
+        .or(`start_at.lte.${windowEnd},start_date.lte.${windowEnd.slice(0, 10)}`);
 
-      if (upsertError) throw new Error("Failed to upsert Google events.");
-      synced += payloads.length;
+      if (returnedIds.length) {
+        staleQuery = staleQuery.not("google_instance_id", "in", `(${returnedIds.map((id) => `"${id.replace(/"/g, '\\"')}"`).join(",")})`);
+      }
+
+      const { error: staleError } = await staleQuery;
+      if (staleError) throw new Error("Failed to reconcile stale Google events.");
+    } catch (error) {
+      errors += 1;
+      console.error(`Failed to sync Google calendar ${calendar.googleCalendarId}:`, error);
     }
-
-    const returnedIds = payloads.map((event) => event.google_instance_id);
-    let staleQuery = supabase
-      .from("google_calendar_events")
-      .update({ status: "stale" })
-      .eq("sync_code", syncCode)
-      .eq("google_calendar_row_id", calendar.id)
-      .neq("status", "cancelled")
-      .or(`start_at.gte.${windowStart},start_date.gte.${windowStart.slice(0, 10)}`)
-      .or(`start_at.lte.${windowEnd},start_date.lte.${windowEnd.slice(0, 10)}`);
-
-    if (returnedIds.length) {
-      staleQuery = staleQuery.not("google_instance_id", "in", `(${returnedIds.map((id) => `"${id.replace(/"/g, '\\"')}"`).join(",")})`);
-    }
-
-    const { error: staleError } = await staleQuery;
-    if (staleError) throw new Error("Failed to reconcile stale Google events.");
   }
 
-  return { synced };
+  return { synced, errors };
 }
 
 export async function loadCachedGoogleCalendarEvents(syncCode: string) {
@@ -578,11 +651,13 @@ export async function loadCachedGoogleCalendarEvents(syncCode: string) {
         "google_updated_at",
         "etag",
         "recurring_event_id",
-        "google_calendars!inner(summary,background_color,selected)",
+        "google_calendars!inner(summary,background_color,selected,visible_in_planner,default_category)",
+        "google_calendar_event_overrides(category_override)",
       ].join(",")
     )
     .eq("sync_code", syncCode)
     .eq("google_calendars.selected", true)
+    .eq("google_calendars.visible_in_planner", true)
     .neq("status", "cancelled")
     .neq("status", "stale")
     .order("start_date", { ascending: true })
@@ -592,11 +667,62 @@ export async function loadCachedGoogleCalendarEvents(syncCode: string) {
 
   return (data ?? []).map((rawRow) => {
     const row = rawRow as unknown as Record<string, unknown>;
-    const calendar = row.google_calendars as { summary?: string; background_color?: string } | null;
+    const calendar = row.google_calendars as { summary?: string; background_color?: string; default_category?: string } | null;
+    const overrides = row.google_calendar_event_overrides as Array<{ category_override?: string | null }> | null;
+    const override = Array.isArray(overrides) ? overrides[0] : null;
     return googleEventFromRow({
       ...row,
       calendar_summary: calendar?.summary,
       calendar_color: calendar?.background_color,
+      calendar_default_category: calendar?.default_category,
+      category_override: override?.category_override,
     });
   });
+}
+
+export async function updateGoogleEventCategoryOverride(
+  syncCode: string,
+  eventId: string,
+  categoryOverride: string | null
+) {
+  const supabase = createSupabaseServerClient();
+  const { data: event, error: eventError } = await supabase
+    .from("google_calendar_events")
+    .select("id, sync_code, connection_id, google_calendar_id, google_instance_id")
+    .eq("sync_code", syncCode)
+    .eq("id", eventId)
+    .single();
+
+  if (eventError || !event) {
+    throw new Error("Google event was not found.");
+  }
+
+  if (categoryOverride === null || categoryOverride === "") {
+    const { error } = await supabase
+      .from("google_calendar_event_overrides")
+      .delete()
+      .eq("sync_code", syncCode)
+      .eq("google_calendar_event_row_id", eventId);
+    if (error) throw new Error("Failed to clear Google event category override.");
+  } else if (isCalendarEventType(categoryOverride)) {
+    const { error } = await supabase
+      .from("google_calendar_event_overrides")
+      .upsert(
+        {
+          sync_code: syncCode,
+          google_calendar_event_row_id: event.id,
+          connection_id: event.connection_id,
+          google_calendar_id: event.google_calendar_id,
+          google_instance_id: event.google_instance_id,
+          category_override: categoryOverride,
+        },
+        { onConflict: "google_calendar_event_row_id" }
+      );
+    if (error) throw new Error("Failed to save Google event category override.");
+  } else {
+    throw new Error("Invalid Google event category override.");
+  }
+
+  const events = await loadCachedGoogleCalendarEvents(syncCode);
+  return events.find((item) => item.id === eventId) ?? null;
 }

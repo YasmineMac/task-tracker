@@ -104,7 +104,8 @@ import {
   loadGoogleCalendarEvents,
   loadGoogleCalendarSettings,
   syncGoogleCalendarEvents,
-  updateGoogleCalendarSelection,
+  updateGoogleCalendarSettings,
+  updateGoogleEventCategoryOverride,
 } from "./googleCalendar/googleCalendarClient";
 import type {
   GoogleCalendarConnectionSummary,
@@ -2089,17 +2090,14 @@ function googleEventTemporalState(event: GoogleCalendarEvent, today: string | nu
   return plannerTemporalStateForSpan(span?.start, span?.end, today);
 }
 
-function googleEventAccentStyle(color?: string | null): React.CSSProperties {
-  if (!color || !/^#[0-9a-f]{6}$/i.test(color)) return {};
-  return {
-    borderLeftColor: color,
-  };
+function googleEventPlannerCategory(event: GoogleCalendarEvent): CalendarEventType {
+  return event.resolvedCategory ?? event.categoryOverride ?? event.calendarDefaultCategory ?? "personal";
 }
 
 function googleEventAsPlannerCalendarEvent(event: GoogleCalendarEvent): CalendarEvent {
   return {
     id: `google:${event.id}`,
-    eventType: "admin",
+    eventType: googleEventPlannerCategory(event),
     title: event.title,
     description: event.description,
     allDay: event.allDay,
@@ -7321,14 +7319,34 @@ useEffect(() => {
     }
   }
 
-  async function toggleGoogleCalendar(calendarId: string, selected: boolean) {
+  async function updateGoogleCalendarLocalSettings(
+    calendarId: string,
+    changes: { selected?: boolean; visibleInPlanner?: boolean; defaultCategory?: CalendarEventType }
+  ) {
     if (googleCalendarSaving) return;
     setGoogleCalendarSaving(true);
-    const saved = await updateGoogleCalendarSelection(calendarId, selected);
+    const saved = await updateGoogleCalendarSettings(calendarId, changes);
     if (saved) {
       setGoogleCalendars((prev) =>
-        prev.map((calendar) => (calendar.id === calendarId ? { ...calendar, selected } : calendar))
+        prev.map((calendar) => (calendar.id === calendarId ? { ...calendar, ...changes } : calendar))
       );
+      if (typeof changes.selected === "boolean" || typeof changes.visibleInPlanner === "boolean" || changes.defaultCategory) {
+        const events = await loadGoogleCalendarEvents();
+        if (events.ok) setGoogleCalendarEvents(events.events);
+      }
+    }
+    setGoogleCalendarSaving(false);
+  }
+
+  async function updateGoogleEventLocalCategory(event: GoogleCalendarEvent, categoryOverride: CalendarEventType | null) {
+    if (googleCalendarSaving) return;
+    setGoogleCalendarSaving(true);
+    const result = await updateGoogleEventCategoryOverride(event.id, categoryOverride);
+    if (result.ok && result.event) {
+      setGoogleCalendarEvents((prev) =>
+        prev.map((item) => (item.id === event.id ? result.event ?? item : item))
+      );
+      setGoogleEventDetail(result.event);
     }
     setGoogleCalendarSaving(false);
   }
@@ -7340,7 +7358,11 @@ useEffect(() => {
     if (result.ok) {
       const events = await loadGoogleCalendarEvents();
       if (events.ok) setGoogleCalendarEvents(events.events);
-      setGoogleCalendarConnectionMessage(`Google Calendar synced ${result.synced} event${result.synced === 1 ? "" : "s"}.`);
+      setGoogleCalendarConnectionMessage(
+        `Google Calendar synced ${result.synced} event${result.synced === 1 ? "" : "s"}${
+          result.errors ? ` · ${result.errors} calendar${result.errors === 1 ? "" : "s"} failed` : ""
+        }.`
+      );
     } else {
       setGoogleCalendarConnectionMessage("Google Calendar sync failed. Check server logs and configuration.");
     }
@@ -8714,7 +8736,6 @@ useEffect(() => {
                       height: position.height,
                       left: position.left,
                       width: position.width,
-                      ...(googleEvent ? googleEventAccentStyle(googleEvent.calendarColor) : {}),
                     }}
                   >
                     <div className="flex min-w-0 items-center gap-1 font-semibold leading-tight">
@@ -9007,13 +9028,8 @@ useEffect(() => {
                               className={`flex w-full min-w-0 items-center gap-1 rounded-lg border px-1.5 py-0.5 text-left font-medium leading-4 ${
                                 compact ? "text-[9px]" : "text-[10px]"
                               } ${
-                                item.sourceType === "calendar_event"
-                                  ? plannerEventTone(item.event.eventType, temporalState)
-                                  : item.sourceType === "google_event"
-                                    ? `border-slate-200 border-l-2 bg-white text-slate-600 ${plannerPastSoftening(temporalState)}`
-                                  : plannerDeadlineTone(item.task, temporalState)
+                                plannerDateItemTone(item, day.date)
                               }`}
-                              style={item.sourceType === "google_event" ? googleEventAccentStyle(item.event.calendarColor) : undefined}
                               title={plannerItemTitle(item)}
                             >
                               {prefix ? (
@@ -9021,7 +9037,7 @@ useEffect(() => {
                               ) : item.sourceType === "task_deadline" ? (
                                 <Flag className="h-3 w-3 shrink-0" aria-hidden="true" />
                               ) : item.sourceType === "google_event" ? (
-                                <CalendarDays className="h-3 w-3 shrink-0" aria-hidden="true" />
+                                <PlannerEventTypeIcon eventType={googleEventPlannerCategory(item.event)} />
                               ) : (
                                 <PlannerEventTypeIcon eventType={item.event.eventType} />
                               )}
@@ -9061,25 +9077,18 @@ useEffect(() => {
                           } ${span.startsBefore ? "rounded-l-sm" : "rounded-l-lg"} ${
                             span.endsAfter ? "rounded-r-sm" : "rounded-r-lg"
                           } ${
-                              span.item.sourceType === "calendar_event"
-                                ? plannerEventTone(span.item.event.eventType, temporalState)
-                                : span.item.sourceType === "google_event"
-                                  ? `border-slate-200 border-l-2 bg-white text-slate-600 ${plannerPastSoftening(temporalState)}`
-                                : plannerDeadlineTone(span.item.task, temporalState)
+                              plannerDateItemTone(span.item, plannerWeekDays[span.startIndex] ?? plannerWeekStart)
                           }`}
                           style={{
                             gridColumn: `${span.startIndex + 1} / span ${span.span}`,
                             gridRow: index + 1,
-                            ...(span.item.sourceType === "google_event"
-                              ? googleEventAccentStyle(span.item.event.calendarColor)
-                              : {}),
                           }}
                           title={plannerItemTitle(span.item)}
                         >
                           {span.item.sourceType === "calendar_event" ? (
                             <PlannerEventTypeIcon eventType={span.item.event.eventType} />
                           ) : span.item.sourceType === "google_event" ? (
-                            <CalendarDays className="h-3 w-3 shrink-0" aria-hidden="true" />
+                            <PlannerEventTypeIcon eventType={googleEventPlannerCategory(span.item.event)} />
                           ) : (
                             <Flag className="h-3 w-3 shrink-0" aria-hidden="true" />
                           )}
@@ -10366,18 +10375,13 @@ useEffect(() => {
                                         : openPlannerTaskDeadlineEdit(item.task)
                                   }
                                   className={`flex w-full min-w-0 items-center gap-2 rounded-xl border px-2 py-1.5 text-left text-xs font-medium ${
-                                    item.sourceType === "calendar_event"
-                                      ? plannerEventTone(item.event.eventType, temporalState)
-                                      : item.sourceType === "google_event"
-                                        ? `border-slate-200 border-l-2 bg-white text-slate-600 ${plannerPastSoftening(temporalState)}`
-                                      : plannerDeadlineTone(item.task, temporalState)
+                                    plannerDateItemTone(item, plannerMobileWeekDate)
                                   }`}
-                                  style={item.sourceType === "google_event" ? googleEventAccentStyle(item.event.calendarColor) : undefined}
                                 >
                                   {item.sourceType === "calendar_event" ? (
                                     <PlannerEventTypeIcon eventType={item.event.eventType} />
                                   ) : item.sourceType === "google_event" ? (
-                                    <CalendarDays className="h-3 w-3 shrink-0" aria-hidden="true" />
+                                    <PlannerEventTypeIcon eventType={googleEventPlannerCategory(item.event)} />
                                   ) : (
                                     <Flag className="h-3 w-3 shrink-0" aria-hidden="true" />
                                   )}
@@ -10437,12 +10441,12 @@ useEffect(() => {
                                 key={`mobile-google-timed-${plannerMobileWeekDate}-${event.id}`}
                                 type="button"
                                 onClick={() => setGoogleEventDetail(event)}
-                                className={`flex w-full min-w-0 items-start gap-2 rounded-2xl border border-l-2 border-slate-200 bg-white px-3 py-2 text-left text-xs text-slate-600 ${plannerPastSoftening(
+                                className={`flex w-full min-w-0 items-start gap-2 rounded-2xl border px-3 py-2 text-left text-xs ${plannerEventTone(
+                                  googleEventPlannerCategory(event),
                                   temporalState
                                 )}`}
-                                style={googleEventAccentStyle(event.calendarColor)}
                               >
-                                <CalendarDays className="h-3 w-3 shrink-0" aria-hidden="true" />
+                                <PlannerEventTypeIcon eventType={googleEventPlannerCategory(event)} />
                                 <span className="min-w-0 flex-1">
                                   <span className="block truncate font-medium">
                                     <span className="mr-1 tabular-nums opacity-70">{formatPlannerEventTime(event.startAt)}</span>
@@ -10538,25 +10542,18 @@ useEffect(() => {
                                   className={`flex min-w-0 items-center gap-1 border px-2 py-1 text-left text-[11px] font-medium ${
                                     span.startsBefore ? "rounded-l-sm" : "rounded-l-lg"
                                   } ${span.endsAfter ? "rounded-r-sm" : "rounded-r-lg"} ${
-                                    span.item.sourceType === "calendar_event"
-                                      ? plannerEventTone(span.item.event.eventType, temporalState)
-                                      : span.item.sourceType === "google_event"
-                                        ? `border-slate-200 border-l-2 bg-white text-slate-600 ${plannerPastSoftening(temporalState)}`
-                                      : plannerDeadlineTone(span.item.task, temporalState)
+                                    plannerDateItemTone(span.item, plannerWeekDays[span.startIndex] ?? plannerWeekStart)
                                   }`}
                                   style={{
                                     gridColumn: `${span.startIndex + 1} / span ${span.span}`,
                                     gridRow: index + 1,
-                                    ...(span.item.sourceType === "google_event"
-                                      ? googleEventAccentStyle(span.item.event.calendarColor)
-                                      : {}),
                                   }}
                                   title={plannerItemTitle(span.item)}
                                 >
                                   {span.item.sourceType === "calendar_event" ? (
                                     <PlannerEventTypeIcon eventType={span.item.event.eventType} />
                                   ) : span.item.sourceType === "google_event" ? (
-                                    <CalendarDays className="h-3 w-3 shrink-0" aria-hidden="true" />
+                                    <PlannerEventTypeIcon eventType={googleEventPlannerCategory(span.item.event)} />
                                   ) : (
                                     <Flag className="h-3 w-3 shrink-0" aria-hidden="true" />
                                   )}
@@ -10756,7 +10753,8 @@ useEffect(() => {
                                   key={`${day}-${googleEvent.id}`}
                                   role="button"
                                   tabIndex={0}
-                                  className={`absolute z-20 select-none overflow-hidden rounded-xl border border-l-2 border-slate-200 bg-white px-2 py-1.5 text-[11px] text-slate-600 ${plannerPastSoftening(
+                                  className={`absolute z-20 select-none overflow-hidden rounded-xl border px-2 py-1.5 text-[11px] ${plannerEventTone(
+                                    googleEventPlannerCategory(googleEvent),
                                     temporalState
                                   )}`}
                                   style={{
@@ -10764,7 +10762,6 @@ useEffect(() => {
                                     height: layout.height,
                                     left,
                                     width,
-                                    ...googleEventAccentStyle(googleEvent.calendarColor),
                                   }}
                                   title={`${googleEvent.title}${timeRange ? ` • ${timeRange}` : ""}`}
                                   onClick={() => setGoogleEventDetail(googleEvent)}
@@ -10773,7 +10770,7 @@ useEffect(() => {
                                   }}
                                 >
                                   <div className="flex min-w-0 items-center gap-1 font-medium leading-tight">
-                                    <CalendarDays className="h-3 w-3 shrink-0" aria-hidden="true" />
+                                    <PlannerEventTypeIcon eventType={googleEventPlannerCategory(googleEvent)} />
                                     {!googleEvent.endAt ? (
                                       <span className="shrink-0 tabular-nums opacity-70">{formatPlannerEventTime(googleEvent.startAt)}</span>
                                     ) : null}
@@ -13367,38 +13364,74 @@ useEffect(() => {
         <div className="grid gap-3">
           <div className="rounded-2xl border border-slate-100 bg-slate-50/60 px-3 py-2 text-xs text-slate-500">
             Connected{googleCalendarConnections[0]?.googleEmail ? ` as ${googleCalendarConnections[0].googleEmail}` : ""}.
-            Select the calendars Pineapple should read.
+            Choose which calendars Pineapple syncs, shows, and how they appear locally.
           </div>
 
           <div className="grid max-h-[46vh] gap-2 overflow-y-auto pr-1">
             {googleCalendars.length ? (
               googleCalendars.map((calendar) => (
-                <label
+                <div
                   key={calendar.id}
-                  className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                  className="grid gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm"
                 >
-                  <span className="flex min-w-0 items-center gap-2">
-                    <span
-                      className="h-3 w-3 shrink-0 rounded-full border border-slate-200"
-                      style={{ backgroundColor: calendar.backgroundColor ?? "#94a3b8" }}
-                      aria-hidden="true"
-                    />
-                    <span className="min-w-0">
-                      <span className="block truncate font-medium text-slate-700">{calendar.summary}</span>
-                      <span className="block text-[11px] text-slate-400">
-                        {calendar.primary ? "Primary" : calendar.accessRole ?? "Calendar"}
-                        {calendar.timezone ? ` · ${calendar.timezone}` : ""}
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span
+                        className="h-3 w-3 shrink-0 rounded-full border border-slate-200"
+                        style={{ backgroundColor: calendar.backgroundColor ?? "#94a3b8" }}
+                        aria-hidden="true"
+                      />
+                      <span className="min-w-0">
+                        <span className="block truncate font-medium text-slate-700">{calendar.summary}</span>
+                        <span className="block text-[11px] text-slate-400">
+                          {calendar.primary ? "Primary" : calendar.accessRole ?? "Calendar"}
+                          {calendar.timezone ? ` · ${calendar.timezone}` : ""}
+                        </span>
                       </span>
                     </span>
-                  </span>
-                  <input
-                    type="checkbox"
-                    checked={calendar.selected}
-                    disabled={googleCalendarSaving}
-                    onChange={(e) => toggleGoogleCalendar(calendar.id, e.target.checked)}
-                    className="h-4 w-4 rounded border-slate-300"
-                  />
-                </label>
+                    <label className="flex shrink-0 items-center gap-1.5 text-[11px] font-medium text-slate-500">
+                      Sync
+                      <input
+                        type="checkbox"
+                        checked={calendar.selected}
+                        disabled={googleCalendarSaving}
+                        onChange={(e) => updateGoogleCalendarLocalSettings(calendar.id, { selected: e.target.checked })}
+                        className="h-4 w-4 rounded border-slate-300"
+                      />
+                    </label>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-[auto_1fr] sm:items-center">
+                    <label className="flex items-center gap-1.5 text-[11px] font-medium text-slate-500">
+                      Show
+                      <input
+                        type="checkbox"
+                        checked={calendar.visibleInPlanner}
+                        disabled={googleCalendarSaving || !calendar.selected}
+                        onChange={(e) => updateGoogleCalendarLocalSettings(calendar.id, { visibleInPlanner: e.target.checked })}
+                        className="h-4 w-4 rounded border-slate-300"
+                      />
+                    </label>
+                    <label className="grid gap-1 text-[11px] font-medium text-slate-500 sm:grid-cols-[auto_1fr] sm:items-center">
+                      <span>Category</span>
+                      <select
+                        value={calendar.defaultCategory}
+                        disabled={googleCalendarSaving || !calendar.selected}
+                        onChange={(e) =>
+                          updateGoogleCalendarLocalSettings(calendar.id, {
+                            defaultCategory: e.target.value as CalendarEventType,
+                          })
+                        }
+                        className="h-8 min-w-0 rounded-xl border border-slate-200 bg-white px-2 text-xs text-slate-700 outline-none focus:ring-2 focus:ring-slate-200"
+                      >
+                        {PLANNER_EVENT_TYPES.map((option) => (
+                          <option key={option.id} value={option.id}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                </div>
               ))
             ) : (
               <div className="rounded-2xl border border-slate-100 bg-white px-3 py-4 text-sm text-slate-500">
@@ -13449,6 +13482,32 @@ useEffect(() => {
             <div className="rounded-2xl border border-slate-100 bg-slate-50/60 px-3 py-2 text-xs text-slate-500">
               Read-only from {googleEventDetail.calendarSummary}
             </div>
+            <Field label="Pineapple category">
+              <select
+                value={googleEventDetail.categoryOverride ?? ""}
+                disabled={googleCalendarSaving}
+                onChange={(e) =>
+                  updateGoogleEventLocalCategory(
+                    googleEventDetail,
+                    e.target.value ? (e.target.value as CalendarEventType) : null
+                  )
+                }
+                className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+              >
+                <option value="">
+                  Calendar default ({plannerEventTypeLabel(googleEventDetail.calendarDefaultCategory)})
+                </option>
+                {PLANNER_EVENT_TYPES.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <div className="mt-1 flex items-center gap-1.5 text-[11px] text-slate-400">
+                <PlannerEventTypeIcon eventType={googleEventPlannerCategory(googleEventDetail)} />
+                <span>Currently shown as {plannerEventTypeLabel(googleEventPlannerCategory(googleEventDetail))}</span>
+              </div>
+            </Field>
             <div>
               <div className="text-base font-semibold text-slate-900">{googleEventDetail.title}</div>
               <div className="mt-1 text-sm text-slate-500">
