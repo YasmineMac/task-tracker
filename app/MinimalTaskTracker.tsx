@@ -168,6 +168,18 @@ import {
 } from "./signalEntryStore/supabaseSignalEntryStore";
 import { createAlcoholEntryId, type AlcoholEntry } from "./signalEntryStore/alcoholEntryTypes";
 import {
+  loadReminderPreference,
+  resetReminderPreference,
+  saveReminderPreference,
+} from "./reminderPreferences/reminderPreferenceClient";
+import {
+  reminderPreferenceKey,
+  type ReminderMode,
+  type ReminderOffsetUnit,
+  type ReminderPreference,
+  type ReminderSourceType,
+} from "./reminderPreferences/reminderPreferenceTypes";
+import {
   alcoholSessionAbsorptionBounds,
   calculateEstimatedBacSeries,
   estimatedSessionClearanceTime,
@@ -4336,6 +4348,156 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+type ReminderTimingKind = "timed_event" | "all_day_event" | "task_due_date" | "no_due_date";
+
+function reminderOffsetLabel(amount: number, unit: ReminderOffsetUnit) {
+  const unitLabel = amount === 1 ? unit.replace(/s$/, "") : unit;
+  return `${amount} ${unitLabel} before`;
+}
+
+function reminderPreferenceLabel(preference: ReminderPreference | null | undefined, kind: ReminderTimingKind) {
+  if (!preference || preference.reminderMode === "default") {
+    if (kind === "timed_event") return "Default: 1 hour before";
+    if (kind === "task_due_date") return "Default: 1 day before";
+    if (kind === "no_due_date") return "Default: no fixed due date";
+    return "Default: off for all-day events";
+  }
+
+  if (preference.reminderMode === "off") return "Off";
+  if (preference.reminderMode === "at_start") return "At start time";
+  if (preference.reminderMode === "offset" && preference.offsetAmount && preference.offsetUnit) {
+    return reminderOffsetLabel(preference.offsetAmount, preference.offsetUnit);
+  }
+
+  return "Custom reminder";
+}
+
+function reminderPresetValue(preference: ReminderPreference | null | undefined) {
+  if (!preference || preference.reminderMode === "default") return "default";
+  if (preference.reminderMode === "off") return "off";
+  if (preference.reminderMode === "at_start") return "at_start";
+  if (preference.reminderMode === "offset") {
+    const key = `${preference.offsetAmount}:${preference.offsetUnit}`;
+    if (["5:minutes", "10:minutes", "30:minutes", "1:hours", "1:days"].includes(key)) return key;
+    return "custom";
+  }
+  return "default";
+}
+
+function ReminderPreferenceControl({
+  sourceType,
+  sourceId,
+  kind,
+  preference,
+  loading,
+  saving,
+  error,
+  onSave,
+  onReset,
+}: {
+  sourceType: ReminderSourceType;
+  sourceId: string;
+  kind: ReminderTimingKind;
+  preference: ReminderPreference | null | undefined;
+  loading: boolean;
+  saving: boolean;
+  error: string | null;
+  onSave: (input: {
+    sourceType: ReminderSourceType;
+    sourceId: string;
+    reminderMode: ReminderMode;
+    offsetAmount?: number | null;
+    offsetUnit?: ReminderOffsetUnit | null;
+  }) => void;
+  onReset: (sourceType: ReminderSourceType, sourceId: string) => void;
+}) {
+  const [customAmount, setCustomAmount] = useState("1");
+  const [customUnit, setCustomUnit] = useState<ReminderOffsetUnit>(kind === "task_due_date" ? "days" : "minutes");
+  const selectedValue = reminderPresetValue(preference);
+  const dayOnly = kind === "task_due_date" || kind === "all_day_event" || kind === "no_due_date";
+
+  useEffect(() => {
+    if (preference?.reminderMode === "offset" && preference.offsetAmount && preference.offsetUnit) {
+      setCustomAmount(String(preference.offsetAmount));
+      setCustomUnit(preference.offsetUnit);
+    } else if (dayOnly) {
+      setCustomUnit("days");
+    }
+  }, [dayOnly, preference]);
+
+  const saveOffset = (amount: number, unit: ReminderOffsetUnit) =>
+    onSave({ sourceType, sourceId, reminderMode: "offset", offsetAmount: amount, offsetUnit: unit });
+
+  return (
+    <Field label="Remind me">
+      <div className="grid gap-2 rounded-2xl border border-slate-100 bg-slate-50/60 p-2">
+        <select
+          value={selectedValue}
+          disabled={loading || saving}
+          onChange={(event) => {
+            const value = event.target.value;
+            if (value === "default") onReset(sourceType, sourceId);
+            else if (value === "off") onSave({ sourceType, sourceId, reminderMode: "off" });
+            else if (value === "at_start") onSave({ sourceType, sourceId, reminderMode: "at_start" });
+            else if (value === "5:minutes") saveOffset(5, "minutes");
+            else if (value === "10:minutes") saveOffset(10, "minutes");
+            else if (value === "30:minutes") saveOffset(30, "minutes");
+            else if (value === "1:hours") saveOffset(1, "hours");
+            else if (value === "1:days") saveOffset(1, "days");
+          }}
+          className="h-9 w-full rounded-[14px] border border-slate-200 bg-white px-3 text-xs text-slate-700 outline-none focus:ring-2 focus:ring-slate-200 disabled:opacity-60"
+        >
+          <option value="default">Use default</option>
+          {!dayOnly ? <option value="at_start">At start time</option> : null}
+          {!dayOnly ? <option value="5:minutes">5 minutes before</option> : null}
+          {!dayOnly ? <option value="10:minutes">10 minutes before</option> : null}
+          {!dayOnly ? <option value="30:minutes">30 minutes before</option> : null}
+          {!dayOnly ? <option value="1:hours">1 hour before</option> : null}
+          <option value="1:days">1 day before</option>
+          <option value="custom">Custom...</option>
+          <option value="off">Off</option>
+        </select>
+
+        {selectedValue === "custom" ? (
+          <div className="grid grid-cols-[1fr_1.2fr_auto] gap-2">
+            <input
+              type="number"
+              min="1"
+              value={customAmount}
+              onChange={(event) => setCustomAmount(event.target.value)}
+              disabled={saving}
+              className="h-9 min-w-0 rounded-[14px] border border-slate-200 bg-white px-3 text-xs outline-none focus:ring-2 focus:ring-slate-200"
+            />
+            <select
+              value={customUnit}
+              onChange={(event) => setCustomUnit(event.target.value as ReminderOffsetUnit)}
+              disabled={saving || dayOnly}
+              className="h-9 min-w-0 rounded-[14px] border border-slate-200 bg-white px-3 text-xs outline-none focus:ring-2 focus:ring-slate-200 disabled:opacity-60"
+            >
+              {!dayOnly ? <option value="minutes">minutes</option> : null}
+              {!dayOnly ? <option value="hours">hours</option> : null}
+              <option value="days">days</option>
+            </select>
+            <button
+              type="button"
+              disabled={saving || !Number.isInteger(Number(customAmount)) || Number(customAmount) <= 0}
+              onClick={() => saveOffset(Number(customAmount), customUnit)}
+              className="rounded-full bg-slate-900 px-3 text-xs font-medium text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              Save
+            </button>
+          </div>
+        ) : null}
+
+        <div className="text-[11px] text-slate-500">
+          {loading ? "Loading reminder..." : saving ? "Saving..." : `Effective: ${reminderPreferenceLabel(preference, kind)}`}
+        </div>
+        {error ? <div className="text-[11px] text-rose-600">{error}</div> : null}
+      </div>
+    </Field>
+  );
+}
+
 function SectionHeading({ children }: { children: React.ReactNode }) {
   return (
     <div className="border-t border-slate-100 pt-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
@@ -4605,6 +4767,10 @@ export default function MinimalTaskTracker() {
   const [googleCalendarSaving, setGoogleCalendarSaving] = useState(false);
   const [googleCalendarSyncing, setGoogleCalendarSyncing] = useState(false);
   const [googleEventDetail, setGoogleEventDetail] = useState<GoogleCalendarEvent | null>(null);
+  const [reminderPreferences, setReminderPreferences] = useState<Record<string, ReminderPreference | null>>({});
+  const [reminderLoadingKeys, setReminderLoadingKeys] = useState<string[]>([]);
+  const [reminderSavingKey, setReminderSavingKey] = useState<string | null>(null);
+  const [reminderErrorByKey, setReminderErrorByKey] = useState<Record<string, string | null>>({});
   const [medsView, setMedsView] = useState<MedsView>("today");
   const [medsDetailsOpen, setMedsDetailsOpen] = useState(false);
   const [medsEntryLauncherOpen, setMedsEntryLauncherOpen] = useState(false);
@@ -7352,6 +7518,75 @@ useEffect(() => {
       setGoogleCalendarEvents(events.events);
     }
   }
+
+  async function ensureReminderPreferenceLoaded(sourceType: ReminderSourceType, sourceId: string) {
+    const key = reminderPreferenceKey(sourceType, sourceId);
+    if (Object.prototype.hasOwnProperty.call(reminderPreferences, key) || reminderLoadingKeys.includes(key)) return;
+
+    setReminderLoadingKeys((prev) => [...prev, key]);
+    setReminderErrorByKey((prev) => ({ ...prev, [key]: null }));
+    const result = await loadReminderPreference(sourceType, sourceId);
+    if (result.ok) {
+      setReminderPreferences((prev) => ({ ...prev, [key]: result.preference }));
+    } else {
+      setReminderErrorByKey((prev) => ({ ...prev, [key]: "Could not load reminder." }));
+    }
+    setReminderLoadingKeys((prev) => prev.filter((item) => item !== key));
+  }
+
+  async function saveReminderPreferenceLocal(input: {
+    sourceType: ReminderSourceType;
+    sourceId: string;
+    reminderMode: ReminderMode;
+    offsetAmount?: number | null;
+    offsetUnit?: ReminderOffsetUnit | null;
+  }) {
+    const key = reminderPreferenceKey(input.sourceType, input.sourceId);
+    if (reminderSavingKey) return;
+
+    setReminderSavingKey(key);
+    setReminderErrorByKey((prev) => ({ ...prev, [key]: null }));
+    const result = await saveReminderPreference(input);
+    if (result.ok && result.preference) {
+      setReminderPreferences((prev) => ({ ...prev, [key]: result.preference }));
+    } else {
+      setReminderErrorByKey((prev) => ({ ...prev, [key]: "Could not save reminder." }));
+    }
+    setReminderSavingKey(null);
+  }
+
+  async function resetReminderPreferenceLocal(sourceType: ReminderSourceType, sourceId: string) {
+    const key = reminderPreferenceKey(sourceType, sourceId);
+    if (reminderSavingKey) return;
+
+    setReminderSavingKey(key);
+    setReminderErrorByKey((prev) => ({ ...prev, [key]: null }));
+    const ok = await resetReminderPreference(sourceType, sourceId);
+    if (ok) {
+      setReminderPreferences((prev) => ({ ...prev, [key]: null }));
+    } else {
+      setReminderErrorByKey((prev) => ({ ...prev, [key]: "Could not reset reminder." }));
+    }
+    setReminderSavingKey(null);
+  }
+
+  useEffect(() => {
+    if (!googleEventDetail) return;
+    void ensureReminderPreferenceLoaded("google_event", googleEventDetail.id);
+  }, [googleEventDetail?.id]);
+
+  useEffect(() => {
+    if (!plannerEventDraft || plannerEventModalMode !== "edit") return;
+    void ensureReminderPreferenceLoaded(
+      "calendar_event",
+      plannerEventDraft.recurrenceParentId ?? plannerEventDraft.id
+    );
+  }, [plannerEventDraft?.id, plannerEventDraft?.recurrenceParentId, plannerEventModalMode]);
+
+  useEffect(() => {
+    if (!draft || !editOpen) return;
+    void ensureReminderPreferenceLoaded("task", draft.id);
+  }, [draft?.id, editOpen]);
 
   async function updateGoogleCalendarLocalSettings(
     calendarId: string,
@@ -13565,6 +13800,17 @@ useEffect(() => {
                 <span>Currently shown as {plannerEventTypeLabel(googleEventPlannerCategory(googleEventDetail))}</span>
               </div>
             </Field>
+            <ReminderPreferenceControl
+              sourceType="google_event"
+              sourceId={googleEventDetail.id}
+              kind={googleEventDetail.allDay ? "all_day_event" : "timed_event"}
+              preference={reminderPreferences[reminderPreferenceKey("google_event", googleEventDetail.id)]}
+              loading={reminderLoadingKeys.includes(reminderPreferenceKey("google_event", googleEventDetail.id))}
+              saving={reminderSavingKey === reminderPreferenceKey("google_event", googleEventDetail.id)}
+              error={reminderErrorByKey[reminderPreferenceKey("google_event", googleEventDetail.id)] ?? null}
+              onSave={saveReminderPreferenceLocal}
+              onReset={resetReminderPreferenceLocal}
+            />
             <div>
               <div className="text-base font-semibold text-slate-900">{googleEventDetail.title}</div>
               <div className="mt-1 text-sm text-slate-500">
@@ -13845,6 +14091,49 @@ useEffect(() => {
                   />
                 </Field>
               </div>
+            ) : null}
+
+            {plannerEventModalMode === "edit" ? (
+              <ReminderPreferenceControl
+                sourceType="calendar_event"
+                sourceId={plannerEventDraft.recurrenceParentId ?? plannerEventDraft.id}
+                kind={
+                  plannerEventDraft.allDay || !plannerEventDraft.startTime
+                    ? "all_day_event"
+                    : "timed_event"
+                }
+                preference={
+                  reminderPreferences[
+                    reminderPreferenceKey(
+                      "calendar_event",
+                      plannerEventDraft.recurrenceParentId ?? plannerEventDraft.id
+                    )
+                  ]
+                }
+                loading={reminderLoadingKeys.includes(
+                  reminderPreferenceKey(
+                    "calendar_event",
+                    plannerEventDraft.recurrenceParentId ?? plannerEventDraft.id
+                  )
+                )}
+                saving={
+                  reminderSavingKey ===
+                  reminderPreferenceKey(
+                    "calendar_event",
+                    plannerEventDraft.recurrenceParentId ?? plannerEventDraft.id
+                  )
+                }
+                error={
+                  reminderErrorByKey[
+                    reminderPreferenceKey(
+                      "calendar_event",
+                      plannerEventDraft.recurrenceParentId ?? plannerEventDraft.id
+                    )
+                  ] ?? null
+                }
+                onSave={saveReminderPreferenceLocal}
+                onReset={resetReminderPreferenceLocal}
+              />
             ) : null}
 
             {plannerEventDraft.eventType === "work" ? (
@@ -14644,6 +14933,18 @@ useEffect(() => {
                   visionHorizon: horizon,
                 })
               }
+            />
+
+            <ReminderPreferenceControl
+              sourceType="task"
+              sourceId={draft.id}
+              kind={draft.deadlineMode === "date" || draft.due ? "task_due_date" : "no_due_date"}
+              preference={reminderPreferences[reminderPreferenceKey("task", draft.id)]}
+              loading={reminderLoadingKeys.includes(reminderPreferenceKey("task", draft.id))}
+              saving={reminderSavingKey === reminderPreferenceKey("task", draft.id)}
+              error={reminderErrorByKey[reminderPreferenceKey("task", draft.id)] ?? null}
+              onSave={saveReminderPreferenceLocal}
+              onReset={resetReminderPreferenceLocal}
             />
 
             <SectionHeading>Type</SectionHeading>
