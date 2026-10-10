@@ -4662,6 +4662,9 @@ export default function MinimalTaskTracker() {
   const displayedAlcoholUnits =
     editingAlcoholEntry && !alcoholEstimateEdited ? editingAlcoholEntry.alcoholUnits ?? null : estimatedAlcoholUnits;
   const [backupStatus, setBackupStatus] = useState({ label: "—", count: 0 });
+  const [notificationSupported, setNotificationSupported] = useState(false);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">("unsupported");
+  const [serviceWorkerStatus, setServiceWorkerStatus] = useState<"idle" | "registered" | "unavailable">("idle");
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
   const [attentionCategoryMenuOpen, setAttentionCategoryMenuOpen] = useState(false);
@@ -4683,6 +4686,37 @@ const [weights, setWeights] = useState(() => {
 useEffect(() => {
   localStorage.setItem("attentionWeights", JSON.stringify(weights));
 }, [weights]);
+
+useEffect(() => {
+  if (typeof window === "undefined") return;
+
+  const supported =
+    "serviceWorker" in navigator &&
+    "Notification" in window &&
+    "PushManager" in window;
+
+  setNotificationSupported(supported);
+  setNotificationPermission(supported ? Notification.permission : "unsupported");
+
+  if (!("serviceWorker" in navigator)) {
+    setServiceWorkerStatus("unavailable");
+    return;
+  }
+
+  navigator.serviceWorker
+    .register("/sw.js")
+    .then(() => setServiceWorkerStatus("registered"))
+    .catch((error) => {
+      console.warn("Pineapple service worker registration failed:", error);
+      setServiceWorkerStatus("unavailable");
+    });
+}, []);
+
+async function requestNotificationPermission() {
+  if (!notificationSupported || typeof Notification === "undefined") return;
+  const permission = await Notification.requestPermission();
+  setNotificationPermission(permission);
+}
 
   const [query, setQuery] = useState("");
   const [courseFilter, setCourseFilter] = useState<string>("all");
@@ -12332,6 +12366,29 @@ useEffect(() => {
               <div className="mt-2 text-xs text-slate-500">
                 Last local backup: {hasMounted ? backupStatus.label : "—"} · Backups kept:{" "}
                 {hasMounted ? backupStatus.count : "—"}
+              </div>
+              <div className="mt-3 rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2 text-xs text-slate-500">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <div className="font-medium text-slate-700">Notifications</div>
+                    <div className="mt-0.5">
+                      {notificationSupported
+                        ? `Permission: ${notificationPermission}`
+                        : "Not supported in this browser. On iPhone, open Pineapple from the Home Screen."}
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-slate-400">
+                      Service worker: {serviceWorkerStatus}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={requestNotificationPermission}
+                    disabled={!notificationSupported || notificationPermission === "granted"}
+                    className="self-start rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 sm:self-auto"
+                  >
+                    {notificationPermission === "granted" ? "Allowed" : "Allow notifications"}
+                  </button>
+                </div>
               </div>
             </div>
 
