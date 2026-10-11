@@ -4348,6 +4348,25 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+type PushSubscriptionStatus =
+  | "checking"
+  | "not_supported"
+  | "permission_required"
+  | "ready"
+  | "subscribed"
+  | "error";
+
+function vapidPublicKeyToUint8Array(publicKey: string) {
+  const padding = "=".repeat((4 - (publicKey.length % 4)) % 4);
+  const base64 = (publicKey + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = window.atob(base64);
+  const output = new Uint8Array(rawData.length);
+  for (let index = 0; index < rawData.length; index += 1) {
+    output[index] = rawData.charCodeAt(index);
+  }
+  return output;
+}
+
 type ReminderTimingKind = "timed_event" | "all_day_event" | "task_due_date" | "no_due_date";
 
 function reminderOffsetLabel(amount: number, unit: ReminderOffsetUnit) {
@@ -4831,6 +4850,9 @@ export default function MinimalTaskTracker() {
   const [notificationSupported, setNotificationSupported] = useState(false);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">("unsupported");
   const [serviceWorkerStatus, setServiceWorkerStatus] = useState<"idle" | "registered" | "unavailable">("idle");
+  const [pushSubscriptionStatus, setPushSubscriptionStatus] = useState<PushSubscriptionStatus>("checking");
+  const [pushSubscriptionBusy, setPushSubscriptionBusy] = useState(false);
+  const [pushSubscriptionError, setPushSubscriptionError] = useState<string | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
   const [attentionCategoryMenuOpen, setAttentionCategoryMenuOpen] = useState(false);
@@ -4863,6 +4885,9 @@ useEffect(() => {
 
   setNotificationSupported(supported);
   setNotificationPermission(supported ? Notification.permission : "unsupported");
+  if (!supported) {
+    setPushSubscriptionStatus("not_supported");
+  }
 
   if (!("serviceWorker" in navigator)) {
     setServiceWorkerStatus("unavailable");
@@ -4871,10 +4896,19 @@ useEffect(() => {
 
   navigator.serviceWorker
     .register("/sw.js")
-    .then(() => setServiceWorkerStatus("registered"))
+    .then(async (registration) => {
+      setServiceWorkerStatus("registered");
+      if (Notification.permission !== "granted") {
+        setPushSubscriptionStatus("permission_required");
+        return;
+      }
+      const subscription = await registration.pushManager.getSubscription();
+      setPushSubscriptionStatus(subscription ? "subscribed" : "ready");
+    })
     .catch((error) => {
       console.warn("Pineapple service worker registration failed:", error);
       setServiceWorkerStatus("unavailable");
+      setPushSubscriptionStatus("error");
     });
 }, []);
 
@@ -4882,6 +4916,89 @@ async function requestNotificationPermission() {
   if (!notificationSupported || typeof Notification === "undefined") return;
   const permission = await Notification.requestPermission();
   setNotificationPermission(permission);
+  if (permission === "granted") {
+    setPushSubscriptionStatus("ready");
+  } else {
+    setPushSubscriptionStatus("permission_required");
+  }
+}
+
+async function subscribeToPushNotifications() {
+  if (!notificationSupported || pushSubscriptionBusy) return;
+  setPushSubscriptionBusy(true);
+  setPushSubscriptionError(null);
+
+  try {
+    if (Notification.permission !== "granted") {
+      setPushSubscriptionStatus("permission_required");
+      return;
+    }
+
+    const registration = await navigator.serviceWorker.ready;
+    const existing = await registration.pushManager.getSubscription();
+    const keyResponse = await fetch("/api/push/public-key", { cache: "no-store" });
+    const keyData = (await keyResponse.json()) as { ok?: boolean; publicKey?: string };
+    if (!keyResponse.ok || keyData.ok !== true || !keyData.publicKey) {
+      throw new Error("Missing VAPID public key.");
+    }
+
+    const subscription =
+      existing ??
+      (await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: vapidPublicKeyToUint8Array(keyData.publicKey),
+      }));
+
+    const response = await fetch("/api/push/subscribe", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(subscription.toJSON()),
+    });
+
+    if (!response.ok) {
+      if (!existing) await subscription.unsubscribe();
+      throw new Error("Could not save subscription.");
+    }
+
+    setPushSubscriptionStatus("subscribed");
+  } catch (error) {
+    console.warn("Pineapple push subscription failed:", error);
+    setPushSubscriptionStatus("error");
+    setPushSubscriptionError("Could not subscribe this device.");
+  } finally {
+    setPushSubscriptionBusy(false);
+  }
+}
+
+async function unsubscribeFromPushNotifications() {
+  if (!notificationSupported || pushSubscriptionBusy) return;
+  setPushSubscriptionBusy(true);
+  setPushSubscriptionError(null);
+
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    if (!subscription) {
+      setPushSubscriptionStatus(Notification.permission === "granted" ? "ready" : "permission_required");
+      return;
+    }
+
+    const response = await fetch("/api/push/unsubscribe", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ endpoint: subscription.endpoint }),
+    });
+    if (!response.ok) throw new Error("Could not disable subscription.");
+
+    await subscription.unsubscribe();
+    setPushSubscriptionStatus("ready");
+  } catch (error) {
+    console.warn("Pineapple push unsubscribe failed:", error);
+    setPushSubscriptionStatus("error");
+    setPushSubscriptionError("Could not disable this device subscription.");
+  } finally {
+    setPushSubscriptionBusy(false);
+  }
 }
 
   const [query, setQuery] = useState("");
@@ -12614,15 +12731,58 @@ useEffect(() => {
                     <div className="mt-0.5 text-[11px] text-slate-400">
                       Service worker: {serviceWorkerStatus}
                     </div>
+                    <div className="mt-0.5 text-[11px] text-slate-400">
+                      Push:{" "}
+                      {pushSubscriptionStatus === "not_supported"
+                        ? "not supported"
+                        : pushSubscriptionStatus === "permission_required"
+                          ? "permission required"
+                          : pushSubscriptionStatus === "ready"
+                            ? "ready to subscribe"
+                            : pushSubscriptionStatus === "subscribed"
+                              ? "subscribed"
+                              : pushSubscriptionStatus === "error"
+                                ? "error"
+                                : "checking"}
+                    </div>
+                    {pushSubscriptionError ? (
+                      <div className="mt-1 text-[11px] text-rose-600">{pushSubscriptionError}</div>
+                    ) : null}
                   </div>
-                  <button
-                    type="button"
-                    onClick={requestNotificationPermission}
-                    disabled={!notificationSupported || notificationPermission === "granted"}
-                    className="self-start rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 sm:self-auto"
-                  >
-                    {notificationPermission === "granted" ? "Allowed" : "Allow notifications"}
-                  </button>
+                  <div className="flex flex-wrap gap-2 sm:justify-end">
+                    <button
+                      type="button"
+                      onClick={requestNotificationPermission}
+                      disabled={!notificationSupported || notificationPermission === "granted"}
+                      className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {notificationPermission === "granted" ? "Allowed" : "Allow notifications"}
+                    </button>
+                    {pushSubscriptionStatus === "subscribed" ? (
+                      <button
+                        type="button"
+                        onClick={unsubscribeFromPushNotifications}
+                        disabled={pushSubscriptionBusy}
+                        className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {pushSubscriptionBusy ? "Saving..." : "Disable push"}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={subscribeToPushNotifications}
+                        disabled={
+                          !notificationSupported ||
+                          notificationPermission !== "granted" ||
+                          serviceWorkerStatus !== "registered" ||
+                          pushSubscriptionBusy
+                        }
+                        className="rounded-full bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                      >
+                        {pushSubscriptionBusy ? "Saving..." : "Subscribe device"}
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
