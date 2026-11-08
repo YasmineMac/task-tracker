@@ -6,6 +6,7 @@ function taskFromSupabaseRow(t: Record<string, unknown>) {
   return normalizeTask({
     id: t.id,
     title: t.title,
+    checklist: t.checklist,
     courseId: t.course_id,
     status: t.status,
     priority: t.priority,
@@ -111,7 +112,13 @@ export const supabaseTaskStore: TaskStore = {
       console.warn("Supabase backup failed before a non-destructive task upsert. Continuing with task save.");
     }
 
+    const checklistReady = await taskChecklistAvailable();
+    if (!checklistReady && tasks.some((task) => task.checklist?.length)) {
+      console.warn("Checklist save blocked: apply the checklist migration first.");
+      return false;
+    }
     const tasksToUpsert = tasks.map((t) => ({
+      ...(checklistReady ? { checklist: t.checklist ?? [] } : {}),
       id: t.id,
       sync_code: options.syncCode,
       title: t.title,
@@ -197,3 +204,11 @@ export const supabaseTaskStore: TaskStore = {
     return true;
   },
 };
+
+export async function taskChecklistAvailable() {
+  if (!supabase) return false;
+  try {
+    const { error } = await supabase.from("tasks").select("checklist").limit(0);
+    return !error;
+  } catch { return false; }
+}

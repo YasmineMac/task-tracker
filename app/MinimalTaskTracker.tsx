@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { taskChecklistAvailable } from "./taskStore/supabaseTaskStore";
 import {
   Activity,
   ArrowDown,
@@ -21,6 +22,9 @@ import {
   Clock,
   Clock3,
   CalendarDays,
+  CalendarClock,
+  SlidersHorizontal,
+  Settings,
   Coffee,
   CupSoda,
   Eye,
@@ -391,11 +395,10 @@ type CaffeineDrinkId =
 type AttentionWeights = {
   time: number;
   duration: number;
-  difficulty: number;
+  priority: number;
 };
 
-const DEFAULT_ATTENTION_WEIGHTS: AttentionWeights = { time: 50, duration: 15, difficulty: 15 };
-const FIXED_PRIORITY_WEIGHT = 20;
+const DEFAULT_ATTENTION_WEIGHTS: AttentionWeights = { time: 59, priority: 24, duration: 17 };
 const COMPLETED_RECOVERY_DAYS = 30;
 const RECENTLY_DELETED_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -414,11 +417,6 @@ const EFFORT_LEVELS: { id: EffortLevel; label: string }[] = [
   { id: "moderate", label: "Moderate" },
   { id: "extensive", label: "Extensive" },
 ];
-const EFFORT_RUNWAY_FACTORS: Record<EffortLevel, number> = {
-  quick: 0.7,
-  moderate: 1.4,
-  extensive: 2.8,
-};
 const CATEGORY_COLOURS = [
   { id: "slate", label: "Slate", swatch: "bg-slate-300" },
   { id: "sky", label: "Sky", swatch: "bg-sky-300" },
@@ -812,13 +810,18 @@ function optionalFiniteNumber(raw: string) {
 }
 
 function normalizeAttentionWeights(raw: unknown): AttentionWeights {
-  if (!raw || typeof raw !== "object") return DEFAULT_ATTENTION_WEIGHTS;
-  const candidate = raw as Partial<Record<keyof AttentionWeights, unknown>>;
-  return {
-    time: Number.isFinite(Number(candidate.time)) ? Number(candidate.time) : DEFAULT_ATTENTION_WEIGHTS.time,
-    duration: Number.isFinite(Number(candidate.duration)) ? Number(candidate.duration) : DEFAULT_ATTENTION_WEIGHTS.duration,
-    difficulty: Number.isFinite(Number(candidate.difficulty)) ? Number(candidate.difficulty) : DEFAULT_ATTENTION_WEIGHTS.difficulty,
-  };
+ const r = raw as AttentionWeights;
+ if (!r || ![r.time,r.priority,r.duration].every(v => typeof v === "number" && Number.isFinite(v) && v >= 0)) return {...DEFAULT_ATTENTION_WEIGHTS};
+ const sum=r.time+r.priority+r.duration;
+ if (!sum) return {...DEFAULT_ATTENTION_WEIGHTS};
+ const time=Math.round(r.time/sum*100), priority=Math.round(r.priority/sum*100);
+ return {time,priority,duration:100-time-priority};
+}
+function redistributeAttentionWeight(w: AttentionWeights, key: keyof AttentionWeights, value: number): AttentionWeights {
+ const others=(Object.keys(w) as (keyof AttentionWeights)[]).filter(k=>k!==key);
+ const rest=100-value, sum=w[others[0]]+w[others[1]];
+ const first=Math.round(rest*(sum ? w[others[0]]/sum : 0.5));
+ return {...w,[key]:value,[others[0]]:first,[others[1]]:rest-first};
 }
 
 function toggleFilterValue<T extends string>(values: T[], value: T) {
@@ -2600,6 +2603,14 @@ function modeLabel(mode: ViewMode) {
   return APP_NAV_ITEMS.find((item) => item.id === mode)?.label ?? "Dashboard";
 }
 
+type DashboardTaskFilter = "correspondence" | "due7" | "due30";
+
+function matchesDashboardTaskFilter(task: Task, filter: DashboardTaskFilter, today: string) {
+  if (task.deletedAt || task.status === "completed") return false;
+  if (filter === "correspondence") return task.activityType === "correspondence";
+  return Boolean(task.due && isValidISODate(task.due) && task.deadlineMode !== "vision" && task.due <= addDaysISO(today, filter === "due7" ? 7 : 30));
+}
+
 function modeSubtitle(mode: ViewMode) {
   if (mode === "board") return "What needs attention, then everything by category.";
   if (mode === "planner") return "Calendar structure and scheduled blocks.";
@@ -3723,17 +3734,10 @@ function urgencyScore(
 ) {
   const d = daysUntil(t.due);
   const dur = t.durationHrs ?? 0;
-  const diff = t.difficulty ?? 1;
+
   // adjust difficulty
 
-if (t.mode === "practice") {
-  const last =
-    typeof t.lastPracticedAt === "string"
-      ? daysUntil(t.lastPracticedAt)
-      : 30;
 
-  return clamp(last * 3, 0, 60);
-}
 
 
   // adjust priority
@@ -3763,20 +3767,7 @@ if (t.mode === "practice") {
   // workload: 0..20 (cap at 6h)
   const workload = clamp((dur / 6) * 20, 0, 20);
 
-  // difficulty: 0..10
-  const difficultyScore = clamp(((diff - 1) / 4) * 10, 0, 10);
-
-  const totalWeight =
-  weights.time + FIXED_PRIORITY_WEIGHT + weights.duration + weights.difficulty || 1;
-
-const weightedScore =
-  (timePressure * weights.time +
-    priorityScore * FIXED_PRIORITY_WEIGHT +
-    workload * weights.duration +
-    difficultyScore * weights.difficulty) /
-  totalWeight;
-
-return clamp(weightedScore, 0, 100);
+ return clamp((timePressure*weights.time + priorityScore*weights.priority + workload*weights.duration)/100,0,100);
 }
 
 function daysBetweenISODates(startISO: string, endISO: string) {
@@ -3786,278 +3777,8 @@ function daysBetweenISODates(startISO: string, endISO: string) {
   return Math.max(0, Math.floor((end - start) / DAY_MS));
 }
 
-function resolveAttentionEffort(task: Task) {
-  const explicitEffortLevel = task.effortLevel ?? null;
-  const legacyDurationHrs =
-    task.durationHrs == null || !Number.isFinite(task.durationHrs) ? null : task.durationHrs;
-  const legacyEffortLevel = explicitEffortLevel ? null : inferredEffortLevel(legacyDurationHrs);
-  const resolvedEffortLevel = explicitEffortLevel ?? legacyEffortLevel;
-  const effortSource = explicitEffortLevel ? "explicit" : legacyEffortLevel ? "legacy-duration" : "none";
-  const effortFactor = resolvedEffortLevel ? EFFORT_RUNWAY_FACTORS[resolvedEffortLevel] : 0;
-
-  return {
-    explicitEffortLevel,
-    resolvedEffortLevel,
-    effortSource,
-    legacyDurationHrs,
-    effortFactor,
-  };
-}
-
-function cadenceStatsForTask(task: Task, timeLogs: TimeLog[]) {
-  const today = todayISO();
-  const createdAtDate = Number.isFinite(task.createdAt) ? new Date(task.createdAt) : null;
-  const taskCreatedDate = createdAtDate
-    ? new Date(Date.UTC(
-        createdAtDate.getFullYear(),
-        createdAtDate.getMonth(),
-        createdAtDate.getDate()
-      )).toISOString().slice(0, 10)
-    : null;
-  const daysSinceTaskCreated = taskCreatedDate ? daysBetweenISODates(taskCreatedDate, today) : null;
-  const taskLogs = timeLogs.filter((log) => log.taskId === task.id && isValidISODate(log.date) && isClosedTimeLog(log));
-  const lastWorkedDate = taskLogs.reduce<string | null>(
-    (latest, log) => (!latest || log.date > latest ? log.date : latest),
-    null
-  );
-  const daysSinceLastWorked = lastWorkedDate ? daysBetweenISODates(lastWorkedDate, today) : null;
-
-  function hoursSince(days: number) {
-    const start = addDaysISO(today, -(days - 1));
-    return taskLogs
-      .filter((log) => log.date >= start && log.date <= today)
-      .reduce((sum, log) => sum + (log.hours ?? 0), 0);
-  }
-
-  const hoursLast7Days = hoursSince(7);
-  const hoursLast14Days = hoursSince(14);
-  const hoursLast30Days = hoursSince(30);
-  const hasFixedDeadline = Boolean(task.due);
-  const horizonCadenceDays =
-    task.deadlineMode === "vision"
-      ? task.visionHorizon === "short"
-        ? 5
-        : task.visionHorizon === "mid"
-          ? 10
-          : task.visionHorizon === "long"
-            ? 18
-            : 21
-      : hasFixedDeadline
-        ? 21
-        : 21;
-  const priorityCadenceMultiplier =
-    task.priority === "high" ? 0.65 : task.priority === "low" ? 1.45 : 1;
-  const expectedCadenceDays = horizonCadenceDays * priorityCadenceMultiplier;
-  const expectedHours14 =
-    (task.priority === "high" ? 6 : task.priority === "low" ? 1.5 : 3) +
-    (task.deadlineMode === "vision"
-      ? task.visionHorizon === "short"
-        ? 2
-        : task.visionHorizon === "mid"
-          ? 1
-          : task.visionHorizon === "long"
-            ? 0.5
-            : 0
-      : 0);
-  const recentCoverage = clamp(hoursLast14Days / expectedHours14, 0, 1);
-  const recentHoursMultiplier = 1 - recentCoverage * 0.65;
-  const neverWorkedInitialPressure =
-    (task.priority === "high" ? 12 : task.priority === "normal" ? 7 : 3) +
-    (task.deadlineMode === "vision"
-      ? task.visionHorizon === "short"
-        ? 5
-        : task.visionHorizon === "mid"
-          ? 3
-          : task.visionHorizon === "long"
-            ? 1
-            : 0
-      : 0);
-  const neverWorkedMaturityMax = task.priority === "high" ? 16 : task.priority === "normal" ? 12 : 6;
-  const neverWorkedMaturityPressure =
-    !lastWorkedDate && !hasFixedDeadline && daysSinceTaskCreated !== null
-      ? neverWorkedMaturityMax * (1 - Math.exp(-daysSinceTaskCreated / 28))
-      : 0;
-  const neverWorkedBasePressure = neverWorkedInitialPressure + neverWorkedMaturityPressure;
-  const neglectPressure = lastWorkedDate
-    ? 100 * (1 - Math.exp(-(daysSinceLastWorked ?? 0) / (expectedCadenceDays * 1.4)))
-    : clamp(neverWorkedBasePressure, 0, 35);
-  const fixedDeadlineDamping = hasFixedDeadline ? 0.45 : 1;
-  const priorityCap = task.priority === "low" ? 45 : task.priority === "normal" ? 75 : 90;
-  const cadencePressureBeforeActivity = clamp(
-    neglectPressure * recentHoursMultiplier * fixedDeadlineDamping,
-    0,
-    priorityCap
-  );
-  const activityCadenceMultiplier =
-    task.activityType === "correspondence"
-      ? task.priority === "high" || task.visionHorizon === "short"
-        ? 0.65
-        : 0.35
-      : task.activityType === "activity"
-        ? 1
-        : task.activityType === "uni_work"
-          ? 0.9
-          : 1;
-  const cadencePressure = clamp(
-    cadencePressureBeforeActivity * activityCadenceMultiplier,
-    0,
-    priorityCap
-  );
-
-  return {
-    taskCreatedDate,
-    daysSinceTaskCreated,
-    lastWorkedDate,
-    daysSinceLastWorked,
-    hoursLast7Days,
-    hoursLast14Days,
-    hoursLast30Days,
-    hasEverBeenWorked: taskLogs.length > 0,
-    neverWorkedMaturityPressure,
-    neverWorkedBasePressure: lastWorkedDate ? 0 : clamp(neverWorkedBasePressure, 0, 35),
-    activityCadenceMultiplier,
-    cadencePressureBeforeActivity,
-    cadencePressure,
-  };
-}
-
-function attentionScoreV2(task: Task, timeLogs: TimeLog[] = []) {
-  const days = daysUntil(task.due);
-  const hasFixedDeadline = days !== null;
-  const effectiveDays = days === null ? null : Math.max(0, days);
-  const deadlinePressure = hasFixedDeadline
-    ? effectiveDays === 0
-      ? 100
-      : 100 / (1 + Math.pow(effectiveDays / 24, 1.65))
-    : 0;
-  const deadlineContribution = deadlinePressure * 0.5;
-  const intrinsicImportance =
-    task.priority === "high" ? 24 : task.priority === "normal" ? 16 : 6;
-  const effort = resolveAttentionEffort(task);
-  const startPressure =
-    hasFixedDeadline && effort.effortFactor > 0
-      ? clamp(
-          (effort.effortFactor / (Math.pow(Math.max(effectiveDays ?? 0, 0.5), 0.85) + effort.effortFactor)) * 100,
-          0,
-          100
-        )
-      : 0;
-  const startContribution = startPressure * 0.3;
-  const horizonPressure = hasFixedDeadline
-    ? 0
-    : task.deadlineMode === "vision"
-      ? task.visionHorizon === "short"
-        ? 12
-        : task.visionHorizon === "mid"
-          ? 7
-          : task.visionHorizon === "long"
-            ? 3
-            : 0
-      : 0;
-  const contextModifier = 0;
-  const cadence = cadenceStatsForTask(task, timeLogs);
-  const cadenceContribution = cadence.cadencePressure * 0.22;
-  const rawScore = clamp(
-    deadlineContribution +
-      intrinsicImportance +
-      startContribution +
-      horizonPressure +
-      contextModifier +
-      cadenceContribution,
-    0,
-    100
-  );
-
-  return {
-    currentDaysUntilDeadline: days,
-    deadlinePressure,
-    deadlineContribution,
-    intrinsicImportance,
-    ...effort,
-    startPressure,
-    startContribution,
-    horizonPressure,
-    contextModifier,
-    ...cadence,
-    cadenceContribution,
-    rawScore,
-    displayedScore: Math.round(rawScore),
-  };
-}
-
-type AttentionV2Result = ReturnType<typeof attentionScoreV2>;
-
-function deadlineAttentionReason(days: number | null) {
-  if (days === null) return null;
-  if (days < 0) return "Deadline overdue";
-  if (days <= 1) return "Deadline imminent";
-  if (days <= 14) return "Deadline approaching";
-  if (days <= 60) return "Deadline pressure building";
-  return "Deadline still distant";
-}
-
-function horizonAttentionReason(task: Task) {
-  if (task.deadlineMode !== "vision") return null;
-  if (task.visionHorizon === "short") return "Short-term focus";
-  if (task.visionHorizon === "mid") return "Mid-term focus";
-  if (task.visionHorizon === "long") return "Long-term background goal";
-  return null;
-}
-
-function getAttentionReasons(task: Task, v2: AttentionV2Result) {
-  const candidates: { text: string; weight: number }[] = [];
-  const deadlineReason = deadlineAttentionReason(v2.currentDaysUntilDeadline);
-
-  if (task.priority === "high") {
-    candidates.push({ text: "High priority", weight: 95 });
-  }
-
-  if (deadlineReason && v2.deadlineContribution > 0) {
-    const deadlineWeight =
-      v2.currentDaysUntilDeadline !== null && v2.currentDaysUntilDeadline <= 14
-        ? 90
-        : v2.currentDaysUntilDeadline !== null && v2.currentDaysUntilDeadline <= 60
-          ? 82
-          : 45;
-    candidates.push({ text: deadlineReason, weight: deadlineWeight });
-  }
-
-  if (v2.startContribution >= 2.5 && v2.resolvedEffortLevel === "extensive") {
-    candidates.push({ text: "Extensive work needs runway", weight: 78 });
-  } else if (v2.startContribution >= 2) {
-    candidates.push({ text: "Larger task needs an earlier start", weight: 70 });
-  }
-
-  if (v2.cadenceContribution >= 8 && v2.daysSinceLastWorked !== null) {
-    candidates.push({ text: `Not worked on for ${v2.daysSinceLastWorked} days`, weight: 88 });
-  } else if (v2.cadenceContribution >= 5 && v2.daysSinceLastWorked !== null) {
-    candidates.push({ text: "Attention overdue", weight: 74 });
-  } else if (v2.cadenceContribution >= 3 && v2.daysSinceLastWorked !== null) {
-    candidates.push({ text: "Consistency slipping", weight: 58 });
-  }
-
-  if (!v2.hasEverBeenWorked && v2.neverWorkedBasePressure >= 12) {
-    candidates.push({ text: "Not started yet", weight: 50 });
-  }
-
-  const horizonReason = horizonAttentionReason(task);
-  if (horizonReason && v2.horizonPressure > 0) {
-    const horizonWeight =
-      task.visionHorizon === "short" ? 76 : task.visionHorizon === "mid" ? 62 : 46;
-    candidates.push({ text: horizonReason, weight: horizonWeight });
-  }
-
-  if (v2.hoursLast7Days >= 3) {
-    candidates.push({ text: "Well covered recently", weight: 35 });
-  } else if (v2.hoursLast14Days >= 3 && v2.cadenceContribution < 5) {
-    candidates.push({ text: "Worked on recently", weight: 32 });
-  }
-
-  return candidates
-    .sort((a, b) => b.weight - a.weight)
-    .map((candidate) => candidate.text)
-    .filter((reason, index, reasons) => reasons.indexOf(reason) === index)
-    .slice(0, 2);
+function attentionReasons(task: Task) {
+ return [task.due ? "Deadline pressure" : task.deadlineMode === "vision" ? "Relative deadline" : null, task.priority === "high" ? "High priority" : null, task.durationHrs && task.durationHrs > 0 ? "Estimated duration" : null].filter(Boolean).slice(0,2) as string[];
 }
 
 function urgencyColour(score: number) {
@@ -4220,7 +3941,7 @@ function categoryHeaderColourClass(colour?: string | null) {
   return CATEGORY_COLOURS.find((option) => option.id === colour)?.swatch ?? CATEGORY_COLOURS[0].swatch;
 }
 
-function CategoryIdentity({ category, compact = false }: { category: Category; compact?: boolean }) {
+function CategoryIdentity({ category, compact = false, wrap = false, iconOnly = false }: { category: Category; compact?: boolean; wrap?: boolean; iconOnly?: boolean }) {
   const Icon = CATEGORY_EMOJI_ICON_MAP[categoryHeaderEmoji(category)] ?? Shapes;
 
   return (
@@ -4233,7 +3954,7 @@ function CategoryIdentity({ category, compact = false }: { category: Category; c
       >
         <Icon className={`${compact ? "h-3 w-3" : "h-3.5 w-3.5"} text-white`} aria-hidden />
       </span>
-      <span className="truncate">{categoryHeaderName(category)}</span>
+      {!iconOnly ? <span className={wrap ? "whitespace-normal break-words text-left [overflow-wrap:anywhere]" : "truncate"}>{categoryHeaderName(category)}</span> : null}
     </span>
   );
 }
@@ -4346,6 +4067,184 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       {children}
     </div>
   );
+}
+
+function taskTimeLabel(hours: number) {
+  const minutes = Math.round(Math.max(0, hours) * 60);
+  return `${Math.floor(minutes / 60) ? `${Math.floor(minutes / 60)}h ` : ""}${minutes % 60 || !minutes ? `${minutes % 60}m` : ""}`.trim();
+}
+
+function TaskEstimateInputs({ value, onChange }: { value?: number | null; onChange: (value: number | null) => void }) {
+  const total = value != null && Number.isFinite(value) && value > 0 ? Math.round(value * 60) : 0;
+  return <Field label="Estimated duration">
+    <div className="flex items-center gap-2">
+      <label className="min-w-0 text-xs text-slate-500">Hours<input aria-label="Estimated hours" type="number" min="0" step="1" value={total ? Math.floor(total / 60) : ""} onChange={(e) => { const h = Number(e.target.value); if (Number.isInteger(h) && h >= 0) onChange(h || total % 60 ? h + (total % 60) / 60 : null); }} className="mt-1 h-9 w-full rounded-xl border border-slate-200 px-3 text-sm" /></label>
+      <label className="min-w-0 text-xs text-slate-500">Minutes<input aria-label="Estimated minutes" type="number" min="0" max="59" step="1" value={total ? total % 60 : ""} onChange={(e) => { const m = Number(e.target.value); if (Number.isInteger(m) && m >= 0 && m < 60) onChange(Math.floor(total / 60) || m ? Math.floor(total / 60) + m / 60 : null); }} className="mt-1 h-9 w-full rounded-xl border border-slate-200 px-3 text-sm" /></label>
+      <button type="button" onClick={() => onChange(null)} className="self-end px-2 py-2 text-xs text-slate-500">Clear</button>
+    </div>
+  </Field>;
+}
+
+function TaskEditorFields({ task, categories, onChange, logged, checklistReady, disabled }: { task: Partial<Task>; categories: Category[]; onChange: (changes: Partial<Task>) => void; logged: number; checklistReady: boolean; disabled: boolean }) {
+  const items = task.checklist ?? [];
+  const updateItem = (id: string, changes: Partial<NonNullable<Task["checklist"]>[number]>) => onChange({ checklist: items.map(item => item.id === id ? {...item,...changes} : item) });
+  const move = (index: number, direction: number) => { const next=[...items]; [next[index],next[index+direction]]=[next[index+direction],next[index]]; onChange({checklist:next}); };
+  const pills = (field: "status" | "priority" | "activityType", options: {id: string; label: string}[]) => <div className="flex flex-wrap gap-1.5">{options.map(option => <button type="button" key={option.id} aria-pressed={task[field] === option.id} onClick={() => onChange({[field]:option.id})} className={`rounded-lg px-3 py-2 text-xs ${task[field] === option.id ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600"}`}>{option.label}</button>)}</div>;
+  return <fieldset disabled={disabled} className="grid min-w-0 gap-3">
+    <Field label="Category"><div className="flex max-w-full flex-wrap gap-2 pb-1">{categories.map(category => <button type="button" key={category.id} aria-pressed={task.courseId === category.id} onClick={() => onChange({courseId:category.id})} className={`max-w-full rounded-full border px-3 py-2 text-xs ${task.courseId === category.id ? "border-slate-900 bg-slate-100" : "border-transparent bg-slate-50"}`}><CategoryIdentity category={category} compact wrap /></button>)}</div></Field>
+    <Field label="Task name"><input value={task.title ?? ""} onChange={e=>onChange({title:e.target.value})} className="h-10 w-full rounded-xl border border-slate-200 px-3 text-sm" /></Field>
+    <Field label="Status">{pills("status",[{id:"to_do",label:"To do"},{id:"in_progress",label:"Doing"},{id:"completed",label:"Done"},...(task.status === "frozen" ? [{id:"frozen",label:"Frozen"}] : [])])}</Field>
+    <TaskEstimateInputs value={task.durationHrs} onChange={durationHrs=>onChange({durationHrs})} />
+    <TaskProgress estimate={task.durationHrs} logged={logged} />
+    <Field label="Priority">{pills("priority",PRIORITIES)}</Field>
+    <DeadlineField due={task.due} deadlineMode={task.deadlineMode} visionHorizon={task.visionHorizon ?? null} onDateChange={due=>onChange({due:due||null,deadlineMode:due?"date":undefined,visionHorizon:null})} onVisionChange={visionHorizon=>onChange({due:null,deadlineMode:"vision",visionHorizon})} />
+    <Field label="Activity type">{pills("activityType",[{id:"correspondence",label:"Correspondence"},{id:"activity",label:"Activity"},{id:"uni_work",label:"Uni work"}])}</Field>
+    <Field label="Notes"><textarea value={task.notes ?? ""} onChange={e=>onChange({notes:e.target.value})} className="min-h-[64px] w-full rounded-xl border border-slate-200 p-3 text-sm" /></Field>
+    <Field label="Checklist">
+      {!checklistReady ? <p className="text-xs text-slate-400">Currently unavailable</p> : null}
+      <div className="grid gap-1">{items.map((item,index)=><div key={item.id} className="flex min-w-0 items-center gap-1">
+        <input aria-label="Complete checklist item" type="checkbox" checked={item.completed} disabled={!checklistReady} onChange={e=>updateItem(item.id,{completed:e.target.checked})} />
+        <input aria-label="Checklist item" value={item.text} disabled={!checklistReady} onChange={e=>updateItem(item.id,{text:e.target.value})} className="h-9 min-w-0 flex-1 rounded-lg border border-slate-100 px-2 text-xs" />
+        <button type="button" title="Move up" aria-label="Move up" disabled={!checklistReady||index===0} onClick={()=>move(index,-1)}><ArrowUp className="h-4 w-4" /></button>
+        <button type="button" title="Move down" aria-label="Move down" disabled={!checklistReady||index===items.length-1} onClick={()=>move(index,1)}><ArrowDown className="h-4 w-4" /></button>
+        <button type="button" disabled={!checklistReady} onClick={()=>onChange({checklist:items.filter(i=>i.id!==item.id)})} className="px-1 text-xs text-rose-600">Delete</button>
+      </div>)}</div>
+      <button type="button" disabled={!checklistReady} onClick={()=>onChange({checklist:[...items,{id:crypto.randomUUID(),text:"",completed:false}]})} className="justify-self-start py-1 text-xs text-slate-600 disabled:opacity-50">+ Add item</button>
+    </Field>
+  </fieldset>;
+}
+
+function LoggerTaskSelector({ tasks, categories, taskId, onChange, disabled }: { tasks: Task[]; categories: Category[]; taskId: string; onChange: (id: string) => void; disabled: boolean }) {
+  const selected = tasks.find(task => task.id === taskId);
+  const [categoryId, setCategoryId] = useState(selected?.courseId ?? "");
+  useEffect(() => { if (selected) setCategoryId(selected.courseId); }, [taskId, selected?.courseId]);
+  const visibleTasks = tasks.filter(task => task.courseId === categoryId);
+  return <fieldset disabled={disabled} className="grid min-w-0 gap-3">
+    <Field label="Category"><div className="flex flex-wrap gap-2">{categories.filter(category => !category.archived || category.id === categoryId || category.id === selected?.courseId).map(category => <button key={category.id} type="button" aria-pressed={categoryId === category.id} onClick={() => { setCategoryId(category.id); if (selected?.courseId !== category.id) onChange(""); }} className={`max-w-full rounded-xl border px-3 py-2 text-xs ${categoryId === category.id ? "border-slate-900 bg-slate-100" : "border-slate-100 bg-slate-50"}`}><CategoryIdentity category={category} compact wrap /></button>)}</div></Field>
+    <Field label="Task / project"><div className="grid max-h-52 min-w-0 gap-1.5 overflow-y-auto">
+      {visibleTasks.map(task => <button type="button" key={task.id} aria-pressed={taskId === task.id} onClick={() => onChange(task.id)} className={`min-w-0 rounded-lg border px-3 py-2 text-left text-sm whitespace-normal break-words ${taskId === task.id ? "border-slate-900 bg-slate-100 text-slate-900" : "border-slate-100 bg-white text-slate-600"}`}>{task.title}</button>)}
+      {!visibleTasks.length ? <p className="py-2 text-xs text-slate-400">{categoryId ? "No tasks available in this category." : "Select a category to choose a task."}</p> : null}
+    </div></Field>
+  </fieldset>;
+}
+
+function loggerHourlySegments(logs: TimeLog[], day: string, lanePaddingMinutes = 48) {
+  const dayMs = Date.parse(`${day}T00:00:00Z`);
+  const segments = logs.flatMap(log => {
+    if (!isClosedTimeLog(log) || !isTimeLogISODate(log.date)) return [];
+    const startMinute = timeLogTimeToMinutes(log.startTime), endMinute = timeLogTimeToMinutes(log.endTime);
+    const endDate = log.endDate || log.date;
+    if (startMinute === null || endMinute === null || !isTimeLogISODate(endDate)) return [];
+    const start = Date.parse(`${log.date}T00:00:00Z`) + startMinute * 60000;
+    const end = Date.parse(`${endDate}T00:00:00Z`) + endMinute * 60000;
+    if (end <= start || start >= dayMs + DAY_MS || end <= dayMs) return [];
+    const from = Math.max(0, (start - dayMs) / 60000), to = Math.min(1440, (end - dayMs) / 60000);
+    return [{ log, from, to, visualEnd: Math.max(to, from + lanePaddingMinutes), lane: 0, lanes: 1 }];
+  }).sort((a,b)=>a.from-b.from || a.to-b.to || a.log.id.localeCompare(b.log.id));
+  let group: typeof segments = [], ends: number[] = [], groupEnd = -1;
+  const finish = () => { group.forEach(segment=>{segment.lanes=ends.length;}); group=[]; ends=[]; };
+  for (const segment of segments) {
+    if (segment.from >= groupEnd) { finish(); groupEnd=-1; }
+    let lane=ends.findIndex(end=>end<=segment.from);
+    if (lane<0) lane=ends.length;
+    segment.lane=lane; ends[lane]=segment.visualEnd;
+    groupEnd=Math.max(groupEnd,segment.visualEnd); group.push(segment);
+  }
+  finish();
+  return segments;
+}
+
+function LoggerHourlyCalendar({ days, logs, tasks, categories, today, onEdit }: { days: string[]; logs: TimeLog[]; tasks: Record<string,Task>; categories: Record<string,Category>; today: string; onEdit: (log: TimeLog)=>void }) {
+  const layouts=days.map(day=>loggerHourlySegments(logs,day));
+  const segments=layouts.flat();
+  const first=segments.length ? Math.max(0,Math.floor(Math.min(...segments.map(s=>s.from))/60)-1) : 8;
+  const last=segments.length ? Math.min(24,Math.ceil(Math.max(...segments.map(s=>s.visualEnd))/60)+1) : 18;
+  const height=(last-first)*40 + 32;
+  return <section className="order-2 mt-3 min-w-0 border-t border-slate-100 bg-white pt-3">
+    <div className="max-w-full overflow-x-auto overscroll-x-contain"><div style={{minWidth:days.length>1?800:280}}>
+      <div className="grid" style={{gridTemplateColumns:`56px repeat(${days.length},minmax(0,1fr))`}}><div />{days.map(day=><div key={day} className={`border-b border-slate-100 py-2 text-center text-xs ${day===today?"font-semibold text-slate-950":"text-slate-500"}`}><span className={day===today?"inline-block rounded-full bg-slate-900 px-2 py-1 text-white":""}>{formatLoggerWeekday(day)} {Number(day.slice(8))}</span></div>)}</div>
+      <div className="grid" style={{gridTemplateColumns:`56px repeat(${days.length},minmax(0,1fr))`}}>
+        <div className="relative" style={{height}}>{Array.from({length:last-first},(_,i)=><span key={i} className="absolute left-1 pr-2 text-[10px] tabular-nums text-slate-400" style={{top:i*40}}>{String(first+i).padStart(2,"0")}:00</span>)}</div>
+        {days.map((day,index)=><div key={day} className="relative border-l border-slate-100 bg-white" style={{height,backgroundImage:"repeating-linear-gradient(to bottom, transparent 0, transparent 39px, #f3f4f6 39px, #f3f4f6 40px)"}}>{layouts[index].map(segment=>{
+          const task=tasks[segment.log.taskId],category=task?categories[task.courseId]:null,tone=loggerCategoryTone(category?.colour);
+          const label=`${task?.title ?? "Unlinked / archived task"} · ${segment.log.startTime}–${segment.log.endTime} · ${formatLoggedTime(segment.log.hours ?? 0)}`;
+          const blockHeight=(segment.visualEnd-segment.from)/60*40;
+          return <button type="button" key={segment.log.id} title={label} aria-label={label} onClick={()=>onEdit(segment.log)} className={`absolute overflow-hidden rounded-xl border px-2 text-left ${tone.border} bg-white text-slate-900`} style={{containerType:"inline-size",top:(segment.from/60-first)*40,height:blockHeight,left:`calc(${segment.lane/segment.lanes*100}% + 1px)`,width:`calc(${100/segment.lanes}% - 2px)`}}><span aria-hidden="true" className={`pointer-events-none absolute inset-0 opacity-25 ${tone.accent}`} /><span className="relative flex min-w-0 items-center gap-1.5">{category ? <span className="hidden shrink-0 @[96px]:inline-flex"><CategoryIdentity category={category} compact iconOnly /></span> : null}<span className={`min-w-0 truncate text-xs font-semibold ${blockHeight<44?"leading-4":""}`}>{task?.title ?? "Unlinked / archived task"}</span></span>{blockHeight>=44?<span className="relative block truncate text-[10px] tabular-nums text-slate-500">{segment.log.startTime}–{segment.log.endTime} · {formatLoggedTime(segment.log.hours ?? 0)}</span>:null}</button>;
+        })}</div>)}
+      </div>
+    </div></div>
+  </section>;
+}
+
+function LoggerWeeklyTimeline({ days, logs, tasks, categories, today, onEdit }: { days: string[]; logs: TimeLog[]; tasks: Record<string,Task>; categories: Record<string,Category>; today: string; onEdit: (log: TimeLog)=>void }) {
+  const scroll = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(960);
+  const weekKey = days.join(",");
+  useEffect(() => {
+    if (!scroll.current) return;
+    const update = () => setWidth(Math.max(960, (scroll.current!.clientWidth - 72) * 24 / 18));
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(scroll.current);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => { if (scroll.current) scroll.current.scrollLeft = width * 6 / 24; }, [weekKey, width]);
+  return <section className="order-2 mt-3 min-w-0 bg-white pt-3">
+    <div ref={scroll} className="max-w-full overflow-x-auto overscroll-x-contain" tabIndex={0} aria-label="Weekly work timeline; scroll horizontally for all 24 hours">
+      <div style={{width:width+104,paddingInline:16}}>
+        <div className="flex border-b border-slate-100">
+          <div className="sticky left-0 z-20 w-[72px] shrink-0 bg-white" />
+          <div className="relative h-7" style={{width}}>{Array.from({length:25},(_,hour)=><span key={hour} className="absolute text-[10px] tabular-nums text-slate-400" style={{left:hour/24*width,transform:hour===24?"translateX(-100%)":undefined}}>{String(hour).padStart(2,"0")}:00</span>)}</div>
+        </div>
+        {days.map(day=>{
+          const segments=loggerHourlySegments(logs,day,0);
+          const laneCount=Math.max(1,...segments.map(segment=>segment.lane+1));
+          const height=Math.max(48,laneCount*34+12);
+          return <div key={day} className="flex border-b border-slate-100" style={{height}}>
+            <div className={`sticky left-0 z-20 flex w-[72px] shrink-0 flex-col justify-center border-r border-slate-100 bg-white px-2 text-xs ${day===today?"font-semibold text-slate-950":"text-slate-500"}`}><span>{formatLoggerWeekday(day)}</span><span className={`mt-1 w-fit text-[10px] tabular-nums ${day===today?"rounded-full bg-slate-900 px-1.5 py-0.5 text-white":"text-slate-400"}`}>{day.slice(8)} / {day.slice(5,7)}</span></div>
+            <div className="relative bg-white" style={{width,height,backgroundImage:`repeating-linear-gradient(to right, #e9edf2 0, #e9edf2 1px, transparent 1px, transparent ${width/8}px), repeating-linear-gradient(to right, #f6f7f9 0, #f6f7f9 1px, transparent 1px, transparent ${width/24}px)`}}>
+              {segments.map(segment=>{
+                const task=tasks[segment.log.taskId],category=task?categories[task.courseId]:null,tone=loggerCategoryTone(category?.colour);
+                const barWidth=(segment.to-segment.from)/1440*width;
+                const label=`${task?.title ?? "Unlinked / archived task"} · ${segment.log.date} ${segment.log.startTime}–${segment.log.endDate || segment.log.date} ${segment.log.endTime} · ${formatLoggedTime(segment.log.hours ?? 0)}`;
+                return <button key={segment.log.id} type="button" title={label} aria-label={label} onClick={()=>onEdit(segment.log)} className={`absolute overflow-hidden rounded-full border bg-white text-left focus:z-10 focus:outline focus:outline-2 focus:outline-slate-600 ${tone.border}`} style={{left:segment.from/1440*width,top:6+segment.lane*34,width:barWidth,height:28}}><span className={`pointer-events-none absolute inset-0 opacity-35 ${tone.accent}`} aria-hidden="true" />{barWidth>=72?<span className="relative flex min-w-0 items-center gap-1.5 px-2.5 text-[11px] font-medium text-slate-900">{category && barWidth>=96 ? <span className="shrink-0"><CategoryIdentity category={category} compact iconOnly /></span> : null}<span className="min-w-0 truncate">{task?.title ?? "Unlinked / archived task"}</span></span>:null}</button>;
+              })}
+            </div>
+          </div>;
+        })}
+      </div>
+    </div>
+  </section>;
+}
+
+function AttentionWeightsPopover({ weights, onChange }: { weights: AttentionWeights; onChange: (weights: AttentionWeights) => void }) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const outside = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") { event.stopPropagation(); setOpen(false); trigger.current?.focus(); } };
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", escape, true);
+    return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", escape, true); };
+  }, [open]);
+  return <div ref={root} className="relative" onBlur={event=>{if (!event.currentTarget.contains(event.relatedTarget as Node)) setOpen(false);}}>
+    <button ref={trigger} type="button" title="Attention weights" aria-label="Attention weights" aria-expanded={open} onClick={()=>setOpen(value=>!value)} className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100"><SlidersHorizontal className="h-4 w-4" /></button>
+    {open ? <div role="group" aria-label="Attention weights" className="absolute right-0 top-full z-40 mt-1 grid w-60 max-w-[calc(100vw-2rem)] gap-3 rounded-xl border border-slate-200 bg-white p-4 text-xs text-slate-600 shadow-lg">
+      {(["time","priority","duration"] as const).map(key=><label key={key} className="grid gap-1"><span className="flex justify-between capitalize">{key}<span className="tabular-nums">{weights[key]}%</span></span><input type="range" aria-label={`${key} weight`} min="0" max="100" value={weights[key]} onChange={event=>onChange(redistributeAttentionWeight(weights,key,Number(event.target.value)))} /></label>)}
+      <button type="button" onClick={()=>onChange({...DEFAULT_ATTENTION_WEIGHTS})} className="justify-self-end text-slate-400">Reset</button>
+    </div> : null}
+  </div>;
+}
+
+function TaskProgress({ estimate, logged }: { estimate?: number | null; logged: number }) {
+  const valid = typeof estimate === "number" && Number.isFinite(estimate) && estimate > 0;
+  const percent = valid ? logged / estimate * 100 : 0;
+  return <div className="mt-2 min-w-0 text-[11px] font-normal text-slate-500">
+    <div className="flex flex-wrap justify-between gap-x-3"><span>{taskTimeLabel(logged)} logged · {valid ? `${taskTimeLabel(estimate)} estimated` : "No estimate"}</span>{valid ? <span>{Number(percent.toFixed(1))}%</span> : null}</div>
+    {valid ? <><div className="my-1 h-1 overflow-hidden rounded bg-slate-100"><div className={logged > estimate ? "h-full bg-amber-500" : "h-full bg-slate-500"} style={{ width: `${Math.min(100, percent)}%` }} /></div><span>{logged > estimate ? `Over estimate by ${taskTimeLabel(logged - estimate)}` : `${taskTimeLabel(Math.max(0, estimate - logged))} remaining`}</span></> : null}
+  </div>;
 }
 
 type PushSubscriptionStatus =
@@ -4864,11 +4763,10 @@ const [weights, setWeights] = useState(() => {
     return DEFAULT_ATTENTION_WEIGHTS;
   }
 
-  const saved = localStorage.getItem("attentionWeights");
-
-  return saved
-    ? normalizeAttentionWeights(JSON.parse(saved))
-    : DEFAULT_ATTENTION_WEIGHTS;
+  try {
+    const saved = localStorage.getItem("attentionWeights");
+    return saved ? normalizeAttentionWeights(JSON.parse(saved)) : DEFAULT_ATTENTION_WEIGHTS;
+  } catch { return { ...DEFAULT_ATTENTION_WEIGHTS }; }
 });
 
 useEffect(() => {
@@ -5003,6 +4901,10 @@ async function unsubscribeFromPushNotifications() {
 
   const [query, setQuery] = useState("");
   const [courseFilter, setCourseFilter] = useState<string>("all");
+  const [dashboardTaskFilter, setDashboardTaskFilter] = useState<DashboardTaskFilter | null>(null);
+  const [dashboardCompletionSaving, setDashboardCompletionSaving] = useState<string | null>(null);
+  const [dashboardCompletionError, setDashboardCompletionError] = useState<string | null>(null);
+  const [dashboardSettingsOpen, setDashboardSettingsOpen] = useState(false);
   const [categories, setCategories] = useState<Category[]>(fallbackCategories);
   const [categoryModalOpen, setCategoryModalOpen] = useState(false);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
@@ -5018,12 +4920,26 @@ async function unsubscribeFromPushNotifications() {
   const [newStatus, setNewStatus] = useState<Status>("to_do");
   const [newPriority, setNewPriority] = useState<Priority>("normal");
   const [newDue, setNewDue] = useState<string>("");
-  const [newDeadlineMode, setNewDeadlineMode] = useState<DeadlineMode | undefined>(undefined);
-  const [newVisionHorizon, setNewVisionHorizon] = useState<VisionHorizon | null>(null);
-  const [newActivityType, setNewActivityType] = useState<ActivityType | undefined>(undefined);
+  const [newDeadlineMode, setNewDeadlineMode] = useState<DeadlineMode | undefined>("vision");
+  const [newVisionHorizon, setNewVisionHorizon] = useState<VisionHorizon | null>("mid");
+  const [newActivityType, setNewActivityType] = useState<ActivityType | undefined>("activity");
   const [newEffortLevel, setNewEffortLevel] = useState<EffortLevel>("moderate");
   const [newDifficulty, setNewDifficulty] = useState<string>("3");
   const [newNotes, setNewNotes] = useState<string>("");
+  const [newChecklist, setNewChecklist] = useState<NonNullable<Task["checklist"]>>([]);
+  const [checklistReady, setChecklistReady] = useState(isDemoMode);
+  useEffect(() => { let cancelled=false; if (!isDemoMode) void taskChecklistAvailable().then(ready=>{if (!cancelled) setChecklistReady(ready);}); return ()=>{cancelled=true;}; }, []);
+  const [newEstimate, setNewEstimate] = useState<number | null>(null);
+  const loggedHoursByTask = useMemo(() => {
+    const totals: Record<string, number> = {};
+    const seen = new Set<string>();
+    for (const log of timeLogs) {
+      if (seen.has(log.id) || !log.taskId || !isClosedTimeLog(log)) continue;
+      seen.add(log.id);
+      totals[log.taskId] = (totals[log.taskId] ?? 0) + log.hours;
+    }
+    return totals;
+  }, [timeLogs]);
 
   // Time log modal state
   const [logOpen, setLogOpen] = useState(false);
@@ -5036,6 +4952,8 @@ async function unsubscribeFromPushNotifications() {
   const [logHoursInput, setLogHoursInput] = useState<string>("");
   const [logNote, setLogNote] = useState<string>("");
   const [logSaving, setLogSaving] = useState(false);
+  const logSubmitLock = useRef(false);
+  const pendingLogId = useRef<string | null>(null);
   const [endingOpenLogId, setEndingOpenLogId] = useState<string | null>(null);
   const [deletingTimeLogId, setDeletingTimeLogId] = useState<string | null>(null);
   const [loggerActionError, setLoggerActionError] = useState<string | null>(null);
@@ -5431,9 +5349,11 @@ useEffect(() => {
       }
 
       if (e.key === "Escape") {
+        if (taskSubmitLock.current || logSubmitLock.current) return;
         setNewOpen(false);
         setEditOpen(false);
         setEditingPlannerTaskDeadline(false);
+        pendingLogId.current = null;
         setLogOpen(false);
         setCategoryModalOpen(false);
         setEditingLogId(null);
@@ -5501,6 +5421,7 @@ useEffect(() => {
   }, [activeTasks, query, courseFilter]);
 
   const completedRows = useMemo(() => {
+    if (dashboardTaskFilter) return [];
     const q = query.trim().toLowerCase();
     return activeTasks
       .filter((t) => {
@@ -5523,7 +5444,7 @@ useEffect(() => {
         if (ad !== bd) return bd.localeCompare(ad);
         return (b.createdAt ?? 0) - (a.createdAt ?? 0);
       });
-  }, [activeTasks, clientNowMs, courseFilter, difficultyFilters, priorityFilters, query, statusFilters, timeLeftFilter]);
+  }, [dashboardTaskFilter, activeTasks, clientNowMs, courseFilter, difficultyFilters, priorityFilters, query, statusFilters, timeLeftFilter]);
 
   const recentlyDeletedTasks = useMemo(() => {
     return tasks
@@ -5540,6 +5461,7 @@ useEffect(() => {
 
   const listRows = useMemo(() => {
     const rows = filtered.filter((task) => {
+      if (dashboardTaskFilter && !matchesDashboardTaskFilter(task, dashboardTaskFilter, clientToday || todayISO())) return false;
       if (statusFilters.length > 0 && !statusFilters.includes(task.status)) return false;
       if (priorityFilters.length > 0 && !priorityFilters.includes(task.priority)) return false;
       if (difficultyFilters.length > 0 && !difficultyFilters.includes(String(task.difficulty ?? ""))) return false;
@@ -5583,14 +5505,14 @@ useEffect(() => {
     });
 
     return rows;
-  }, [difficultyFilters, filtered, listSortKey, listSortDir, priorityFilters, statusFilters, timeLeftFilter]);
+  }, [dashboardTaskFilter, clientToday, difficultyFilters, filtered, listSortKey, listSortDir, priorityFilters, statusFilters, timeLeftFilter]);
 
   const activeTaskFilterCount =
     (courseFilter === "all" ? 0 : 1) +
     statusFilters.length +
     priorityFilters.length +
     difficultyFilters.length +
-    (timeLeftFilter ? 1 : 0);
+    (timeLeftFilter ? 1 : 0) + (dashboardTaskFilter ? 1 : 0);
 
   const closedTimeLogs = useMemo(() => timeLogs.filter(isClosedTimeLog), [timeLogs]);
   const feelingDefinitionsEntry = useMemo(
@@ -6513,11 +6435,11 @@ useEffect(() => {
       .filter((task) => task.status !== "frozen")
       .filter((task) => attentionIncludedCategoryIdSet.has(task.courseId))
       .map((task) => {
-        const v2 = attentionScoreV2(task, closedTimeLogs);
+const score = urgencyScore(task, weights);
         return {
           task,
-          total: v2.rawScore,
-          reasons: getAttentionReasons(task, v2),
+total: score,
+reasons: attentionReasons(task),
         };
       });
 
@@ -6536,70 +6458,8 @@ useEffect(() => {
       ...item,
       ...visualScores[index],
     }));
-  }, [attentionIncludedCategoryIdSet, attentionIncludedCategoryIds.length, closedTimeLogs, filtered]);
+  }, [attentionIncludedCategoryIdSet, attentionIncludedCategoryIds.length, filtered, weights]);
 
-  useEffect(() => {
-    const target = window as typeof window & {
-      yasmineCompareAttentionV2?: () => Array<Record<string, string | number | null>>;
-    };
-
-    target.yasmineCompareAttentionV2 = () => {
-      const rows = scoredTasks
-        .map(({ task, total, relativePosition, visualAttentionScore, visualLevel }) => {
-          const v2 = attentionScoreV2(task, closedTimeLogs);
-          const reasons = getAttentionReasons(task, v2);
-          return {
-            task: task.title,
-            category: courseLabel(task.courseId),
-            status: task.status,
-            priority: task.priority,
-            deadline: task.due ?? task.visionHorizon ?? "none",
-            activityType: task.activityType ?? "none",
-            currentScore: Math.round(total),
-            v2RawScore: Number(v2.rawScore.toFixed(2)),
-            v2DisplayedScore: v2.displayedScore,
-            relativePosition: Number(relativePosition.toFixed(3)),
-            visualAttentionScore: Number(visualAttentionScore.toFixed(2)),
-            visualLevel,
-            deadlinePressure: Number(v2.deadlinePressure.toFixed(2)),
-            deadlineContribution: Number(v2.deadlineContribution.toFixed(2)),
-            intrinsicImportance: v2.intrinsicImportance,
-            explicitEffortLevel: v2.explicitEffortLevel ?? "none",
-            resolvedEffortLevel: v2.resolvedEffortLevel ?? "none",
-            effortSource: v2.effortSource,
-            legacyDurationHrs: v2.legacyDurationHrs,
-            effortFactor: Number(v2.effortFactor.toFixed(2)),
-            startPressure: Number(v2.startPressure.toFixed(2)),
-            startContribution: Number(v2.startContribution.toFixed(2)),
-            horizonPressure: v2.horizonPressure,
-            contextModifier: v2.contextModifier,
-            taskCreatedDate: v2.taskCreatedDate ?? "unknown",
-            daysSinceTaskCreated: v2.daysSinceTaskCreated,
-            lastWorkedDate: v2.lastWorkedDate ?? "never",
-            daysSinceLastWorked: v2.daysSinceLastWorked,
-            hoursLast7Days: Number(v2.hoursLast7Days.toFixed(2)),
-            hoursLast14Days: Number(v2.hoursLast14Days.toFixed(2)),
-            hoursLast30Days: Number(v2.hoursLast30Days.toFixed(2)),
-            hasEverBeenWorked: v2.hasEverBeenWorked ? "yes" : "no",
-            neverWorkedMaturityPressure: Number(v2.neverWorkedMaturityPressure.toFixed(2)),
-            neverWorkedBasePressure: Number(v2.neverWorkedBasePressure.toFixed(2)),
-            activityCadenceMultiplier: Number(v2.activityCadenceMultiplier.toFixed(2)),
-            cadencePressureBeforeActivity: Number(v2.cadencePressureBeforeActivity.toFixed(2)),
-            cadencePressure: Number(v2.cadencePressure.toFixed(2)),
-            cadenceContribution: Number(v2.cadenceContribution.toFixed(2)),
-            reasons: reasons.join(" · "),
-          };
-        })
-        .sort((a, b) => Number(b.v2RawScore) - Number(a.v2RawScore));
-
-      console.table(rows);
-      return rows;
-    };
-
-    return () => {
-      delete target.yasmineCompareAttentionV2;
-    };
-  }, [closedTimeLogs, courseLabel, scoredTasks]);
 
   const plannerAnchor = isValidISODate(plannerAnchorDate)
     ? plannerAnchorDate
@@ -7085,14 +6945,14 @@ useEffect(() => {
       .filter((task) => task.status !== "completed")
       .slice()
       .sort((a, b) => a.title.localeCompare(b.title));
-    const selectedTask = logTaskId ? activeTasks.find((task) => task.id === logTaskId) : null;
+    const selectedTask = logTaskId ? tasks.find((task) => task.id === logTaskId) : null;
 
     if (selectedTask && !options.some((task) => task.id === selectedTask.id)) {
       return [selectedTask, ...options];
     }
 
     return options;
-  }, [activeTasks, logTaskId]);
+  }, [activeTasks, tasks, logTaskId]);
 
   const temporalLogRows = useMemo(() => {
     return logsInRange
@@ -7517,7 +7377,38 @@ useEffect(() => {
     );
   }
 
-  function submitNewTask() {
+  const taskSubmitLock = useRef(false);
+  const newTaskSaveId = useRef<string | null>(null);
+  const [taskFormSaving, setTaskFormSaving] = useState(false);
+  const [taskFormError, setTaskFormError] = useState<string | null>(null);
+
+  async function confirmTaskSave(task: Task) {
+    if (taskSubmitLock.current) return false;
+    taskSubmitLock.current = true;
+    setTaskFormSaving(true);
+    setTaskFormError(null);
+    try {
+      const store = taskStoreRef.current ?? (await getTaskStore());
+      const records = isDemoMode
+        ? [...tasks.filter((item) => item.id !== task.id), task]
+        : [task];
+      const saved = await store.saveTasks(records, {
+        syncCode: SYNC_CODE,
+        timeLogs: timeLogsRef.current,
+      });
+      if (!saved) throw new Error("Task save failed");
+      return true;
+    } catch {
+      setTaskFormError("Could not save task. Your inputs were kept. Press Save to retry.");
+      return false;
+    } finally {
+      taskSubmitLock.current = false;
+      setTaskFormSaving(false);
+    }
+  }
+
+  async function submitNewTask() {
+    if (taskSubmitLock.current) return;
     const title = newTitle.trim();
     if (!title) return;
 
@@ -7525,7 +7416,7 @@ useEffect(() => {
     const deadlineMode = newDue ? "date" : newVisionHorizon ? "vision" : undefined;
 
     const t: Task = {
-      id: uid(),
+      id: newTaskSaveId.current ?? (newTaskSaveId.current = uid()),
       title,
       courseId: newCourseId || firstCategoryId,
       status: newStatus,
@@ -7536,25 +7427,30 @@ useEffect(() => {
       activityType: newActivityType,
       effortLevel: newEffortLevel,
       notes: newNotes.trim() || undefined,
-      durationHrs: null,
+      checklist: newChecklist,
+      durationHrs: newEstimate,
       difficulty: diff,
       completedAt: newStatus === "completed" ? new Date().toISOString() : null,
       createdAt: Date.now(),
     };
 
-    setTasks((prev) => [t, ...prev]);
+    if (!(await confirmTaskSave(t))) return;
+    setTasks((prev) => [t, ...prev.filter((item) => item.id !== t.id)]);
+    newTaskSaveId.current = null;
 
     // reset
     setNewTitle("");
     setNewStatus("to_do");
     setNewPriority("normal");
     setNewDue("");
-    setNewDeadlineMode(undefined);
-    setNewVisionHorizon(null);
-    setNewActivityType(undefined);
+    setNewDeadlineMode("vision");
+    setNewVisionHorizon("mid");
+    setNewActivityType("activity");
     setNewEffortLevel("moderate");
     setNewDifficulty("3");
     setNewNotes("");
+    setNewChecklist([]);
+    setNewEstimate(null);
     setNewCourseId(firstCategoryId);
 
     setNewOpen(false);
@@ -8133,6 +8029,7 @@ useEffect(() => {
   }
 
   function openEdit(t: Task) {
+    setTaskFormError(null);
     setEditingPlannerTaskDeadline(false);
     setDraft(t);
     setEditOpen(true);
@@ -8145,6 +8042,7 @@ useEffect(() => {
   }
 
   function closeTaskEdit() {
+    if (taskSubmitLock.current) return;
     setEditOpen(false);
     setDraft(null);
     setEditingPlannerTaskDeadline(false);
@@ -8161,7 +8059,14 @@ useEffect(() => {
     closeTaskEdit();
   }
 
-  function saveEdit(next: Task) {
+  async function saveEdit(next: Task) {
+    if (taskSubmitLock.current) return;
+    const current = tasks.find((task) => task.id === next.id);
+    const savedTask = applyTaskStatus(
+      { ...next, completedAt: next.completedAt ?? current?.completedAt ?? null },
+      next.status
+    );
+    if (!(await confirmTaskSave(savedTask))) return;
     setTasks((prev) =>
       prev.map((t) =>
         t.id === next.id
@@ -8176,6 +8081,8 @@ useEffect(() => {
   }
 
   function openLogTime(taskId?: string, date = clientToday || todayISO(), log?: TimeLog) {
+    pendingLogId.current = null;
+    setLoggerActionError(null);
     const selectedTaskId = taskId ?? loggerTasks[0]?.id ?? logTaskOptions[0]?.id ?? "";
     const existing = log ?? null;
     const existingHoursInput = existing && isClosedTimeLog(existing) ? formatHourInput(existing.hours) : "";
@@ -8255,6 +8162,7 @@ useEffect(() => {
       return;
     }
 
+    pendingLogId.current = null;
     setPlannerLogSourceEventId(event.id);
     setEditingLogId(null);
     setLogTaskId(log.taskId);
@@ -8306,24 +8214,32 @@ useEffect(() => {
   }
 
   async function persistTimeLogDraft(next: TimeLog, existing: TimeLog | null, sourcePlannerEvent: CalendarEvent | null) {
-    const saved = await saveSupabaseTimeLog(SYNC_CODE, next);
+    let saved = false;
+    try {
+      saved = await saveSupabaseTimeLog(SYNC_CODE, next);
+    } catch {
+      saved = false;
+    }
 
     if (!saved) {
       console.warn("Unexpected Supabase time log save failure:", {
         operation: existing ? "edit" : "create",
         id: next.id,
       });
-      if (sourcePlannerEvent) return false;
+      setLoggerActionError("Could not save time log. Your inputs were kept. Press Save to retry.");
+      return false;
     }
 
     if (sourcePlannerEvent) {
       const savedResolution = await savePlannerWorkResolution(sourcePlannerEvent, "logged", next.id);
       if (!savedResolution) {
         await deleteSupabaseTimeLog(SYNC_CODE, next.id);
+        setLoggerActionError("Could not save linked work resolution. Your inputs were kept. Press Save to retry.");
         return false;
       }
     }
 
+    setLoggerActionError(null);
     setTimeLogs((prev) => {
       if (!existing) return [next, ...prev];
       return prev.map((entry) => (entry.id === existing.id ? next : entry));
@@ -8331,22 +8247,23 @@ useEffect(() => {
 
     setEditingLogId(null);
     setPlannerLogSourceEventId(null);
+    pendingLogId.current = null;
     setLogOpen(false);
     return true;
   }
 
   async function submitTimeLog() {
-    if (logSaving) return;
+    if (logSubmitLock.current) return;
     const closingOpenSession = editingTimeLog ? isOpenTimeLog(editingTimeLog) : false;
     const hours = closingOpenSession
       ? calculatedLogHours
       : resolveClosedTimeLogHours(logHoursInput, calculatedLogHours, logStartTime, logEndTime);
-    if (!logTaskId || hours === null) return;
+    if ((!logTaskId && !editingTimeLog) || hours === null) return;
 
     const date = logDate || clientToday || todayISO();
     const existing = editingTimeLog;
     const next: TimeLog = {
-      id: existing?.id ?? createTimeLogId(),
+      id: existing?.id ?? pendingLogId.current ?? (pendingLogId.current = createTimeLogId()),
       taskId: logTaskId,
       date,
       startTime: logStartTime || undefined,
@@ -8359,22 +8276,24 @@ useEffect(() => {
     const sourcePlannerEvent = plannerLogSourceEventId
       ? calendarEvents.find((event) => event.id === plannerLogSourceEventId)
       : null;
+    logSubmitLock.current = true;
     setLogSaving(true);
     try {
       await persistTimeLogDraft(next, existing, sourcePlannerEvent);
     } finally {
+      logSubmitLock.current = false;
       setLogSaving(false);
     }
   }
 
   async function startOpenTimeLog() {
-    if (logSaving) return;
+    if (logSubmitLock.current) return;
     const date = logDate || clientToday || todayISO();
     if (!logTaskId || !isTimeLogISODate(date) || timeLogTimeToMinutes(logStartTime) === null) return;
 
     const existing = editingTimeLog;
     const next: TimeLog = {
-      id: existing?.id ?? createTimeLogId(),
+      id: existing?.id ?? pendingLogId.current ?? (pendingLogId.current = createTimeLogId()),
       taskId: logTaskId,
       date,
       startTime: logStartTime,
@@ -8386,10 +8305,12 @@ useEffect(() => {
 
     if (!isOpenTimeLog(next)) return;
 
+    logSubmitLock.current = true;
     setLogSaving(true);
     try {
       await persistTimeLogDraft(next, existing, null);
     } finally {
+      logSubmitLock.current = false;
       setLogSaving(false);
     }
   }
@@ -8449,6 +8370,7 @@ useEffect(() => {
 
     setTimeLogs((prev) => prev.filter((log) => log.id !== id));
     if (editingLogId === id) {
+      pendingLogId.current = null;
       setEditingLogId(null);
       setLogOpen(false);
     }
@@ -8903,7 +8825,132 @@ useEffect(() => {
     );
   }
 
+  function renderSettingsUtilities() {
+    return (
+<div className="grid gap-3 text-sm text-slate-600">
+          <details className="group/utility border-b border-slate-100"><summary className="flex cursor-pointer list-none items-center gap-2 py-2 text-xs font-medium [&::-webkit-details-marker]:hidden"><ChevronRight className="h-3.5 w-3.5 text-slate-400 transition-transform group-open/utility:rotate-90" aria-hidden="true" />Keyboard</summary><p className="py-2 text-xs">Search: / · New task: N</p></details>
+          <details className="group/utility border-b border-slate-100"><summary className="flex cursor-pointer list-none items-center gap-2 py-2 text-xs font-medium [&::-webkit-details-marker]:hidden"><ChevronRight className="h-3.5 w-3.5 text-slate-400 transition-transform group-open/utility:rotate-90" aria-hidden="true" />Backups</summary><p className="mb-3 text-xs text-slate-400">Last backup: {hasMounted ? backupStatus.label : "—"} · {hasMounted ? backupStatus.count : "—"} retained</p>            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={exportBackup}
+                className="rounded-full border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+              >
+                Export backup
+              </button>
+              <button
+                type="button"
+                onClick={() => importInputRef.current?.click()}
+                className="rounded-full border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+              >
+                Import backup
+              </button>
+              <input
+                ref={importInputRef}
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) importBackup(file);
+                  e.currentTarget.value = "";
+                }}
+              />
+            </div></details>
+          <details className="group/utility border-b border-slate-100"><summary className="flex cursor-pointer list-none items-center gap-2 py-2 text-xs font-medium [&::-webkit-details-marker]:hidden"><ChevronRight className="h-3.5 w-3.5 text-slate-400 transition-transform group-open/utility:rotate-90" aria-hidden="true" />Notifications</summary>              <div className="mt-3 rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2 text-xs text-slate-500">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <div className="font-medium text-slate-700">Notifications</div>
+                    <div className="mt-0.5">
+                      {notificationSupported
+                        ? `Permission: ${notificationPermission}`
+                        : "Not supported in this browser. On iPhone, open Pineapple from the Home Screen."}
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-slate-400">
+                      Service worker: {serviceWorkerStatus}
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-slate-400">
+                      Push:{" "}
+                      {pushSubscriptionStatus === "not_supported"
+                        ? "not supported"
+                        : pushSubscriptionStatus === "permission_required"
+                          ? "permission required"
+                          : pushSubscriptionStatus === "ready"
+                            ? "ready to subscribe"
+                            : pushSubscriptionStatus === "subscribed"
+                              ? "subscribed"
+                              : pushSubscriptionStatus === "error"
+                                ? "error"
+                                : "checking"}
+                    </div>
+                    {pushSubscriptionError ? (
+                      <div className="mt-1 text-[11px] text-rose-600">{pushSubscriptionError}</div>
+                    ) : null}
+                  </div>
+                  <div className="flex flex-wrap gap-2 sm:justify-end">
+                    <button
+                      type="button"
+                      onClick={requestNotificationPermission}
+                      disabled={!notificationSupported || notificationPermission === "granted"}
+                      className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {notificationPermission === "granted" ? "Allowed" : "Allow notifications"}
+                    </button>
+                    {pushSubscriptionStatus === "subscribed" ? (
+                      <button
+                        type="button"
+                        onClick={unsubscribeFromPushNotifications}
+                        disabled={pushSubscriptionBusy}
+                        className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {pushSubscriptionBusy ? "Saving..." : "Disable push"}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={subscribeToPushNotifications}
+                        disabled={
+                          !notificationSupported ||
+                          notificationPermission !== "granted" ||
+                          serviceWorkerStatus !== "registered" ||
+                          pushSubscriptionBusy
+                        }
+                        className="rounded-full bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                      >
+                        {pushSubscriptionBusy ? "Saving..." : "Subscribe device"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div></details>
+        </div>
+    );
+  }
+
   const pageTitle = modeLabel(mode);
+  function openDashboardTasks(filter: DashboardTaskFilter | null = null, category = "all") {
+    setDashboardTaskFilter(filter);
+    setCourseFilter(category);
+    setQuery("");
+    setStatusFilters([]);
+    setPriorityFilters([]);
+    setDifficultyFilters([]);
+    setTimeLeftFilter(null);
+    setMode("list");
+  }
+
+  async function completeDashboardTask(task: Task) {
+    if (dashboardCompletionSaving || taskSubmitLock.current) return;
+    setDashboardCompletionSaving(task.id);
+    setDashboardCompletionError(null);
+    const next = applyTaskStatus(task, "completed");
+    try {
+      if (!(await confirmTaskSave(next))) {
+        setDashboardCompletionError("Could not complete task. Please try again.");
+        return;
+      }
+      setTasks(prev => prev.map(item => item.id === next.id ? next : item));
+    } finally { setDashboardCompletionSaving(null); }
+  }
   const pageSubtitle = modeSubtitle(mode);
   const plannerMobileHours = Array.from(
     { length: PLANNER_MOBILE_END_HOUR - PLANNER_MOBILE_START_HOUR + 1 },
@@ -9593,12 +9640,13 @@ useEffect(() => {
         <div className="mx-auto max-w-[1440px] px-4 pb-5 pt-[calc(env(safe-area-inset-top)+1rem)] sm:px-6 sm:py-5 lg:px-8">
           {mode === "meds" ? null : (
           <div className="border-b border-slate-200/70 pb-4">
-            <div className="space-y-1">
-              <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400">
+            <div className={mode === "board" ? "flex flex-wrap items-center justify-between gap-3" : "space-y-1"}>
+              <div className={`text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400 ${mode === "board" ? "hidden" : ""}`}>
                 {isDemoMode ? "Task Tracker Playground" : "Yasmine's Tracker"}
               </div>
               <h1 className="text-xl font-semibold tracking-tight text-slate-950">{pageTitle}</h1>
-              <p className={`max-w-xl text-sm text-slate-500 ${mode === "planner" ? "hidden md:block" : ""}`}>{pageSubtitle}</p>
+              <p className={`max-w-xl text-sm text-slate-500 ${mode === "board" || mode === "logger" ? "hidden" : mode === "planner" ? "hidden md:block" : ""}`}>{pageSubtitle}</p>
+{mode === "board" ? <div className="flex items-center gap-2"><button type="button" onClick={()=>setDashboardSettingsOpen(true)} title="Settings" aria-label="Settings" className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100"><Settings className="h-4 w-4" /></button><button type="button" onClick={()=>setNewOpen(true)} className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2 text-xs font-medium text-white"><Plus className="h-3.5 w-3.5" />New task</button></div> : null}
             </div>
         </div>
           )}
@@ -10141,6 +10189,7 @@ useEffect(() => {
           </div>
         ) : mode === "list" ? (
           <>
+            {dashboardTaskFilter ? <div className="mt-3 flex items-center justify-between gap-2 text-xs text-slate-500"><span>{dashboardTaskFilter === "correspondence" ? "Correspondence" : dashboardTaskFilter === "due7" ? "Due in 7 days · includes overdue" : "Due in 30 days · includes overdue"}</span><button type="button" onClick={()=>setDashboardTaskFilter(null)} className="px-2 py-1">Clear filter</button></div> : null}
             <div className="mt-5 hidden items-center justify-end gap-2 rounded-[18px] border border-slate-200/70 bg-white p-2 md:flex md:flex-wrap">
               {renderCategoryFilter()}
 
@@ -10281,6 +10330,7 @@ useEffect(() => {
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0 flex-1">
                             <div className={`truncate text-sm font-medium ${frozenTitleClass(t)}`}>{t.title}</div>
+                            <TaskProgress estimate={t.durationHrs} logged={loggedHoursByTask[t.id] ?? 0} />
                             <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
                               <span className="min-w-0">{renderCategoryIdentity(t.courseId)}</span>
                               <span className="text-slate-300">·</span>
@@ -10393,7 +10443,7 @@ useEffect(() => {
                         }`}
                         onClick={() => openEdit(t)}
                       >
-                        <td className={`max-w-[420px] truncate px-3 py-2.5 font-medium text-slate-900 ${frozenTitleClass(t)}`}>{t.title}</td>
+                        <td className={`max-w-[420px] truncate px-3 py-2.5 font-medium text-slate-900 ${frozenTitleClass(t)}`}>{t.title}<TaskProgress estimate={t.durationHrs} logged={loggedHoursByTask[t.id] ?? 0} /></td>
                         <td className={`px-3 py-2.5 ${t.status === "frozen" ? "text-slate-400" : "text-slate-500"}`}>
                           {renderCategoryIdentity(t.courseId)}
                         </td>
@@ -10455,8 +10505,8 @@ useEffect(() => {
             </div>
 
             {completedRows.length ? (
-              <section className="mt-5 rounded-[18px] border border-slate-200/70 bg-white p-4">
-                <div className="text-sm font-semibold text-slate-700">Completed</div>
+              <details className="group/task-section mt-4 border-t border-slate-100 bg-white px-3 py-3">
+                <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium text-slate-700 [&::-webkit-details-marker]:hidden"><ChevronRight className="h-4 w-4 text-slate-400 transition-transform group-open/task-section:rotate-90" aria-hidden="true" />Completed</summary>
                 <div className="mt-1 text-xs text-slate-400">
                   Recoverable for {COMPLETED_RECOVERY_DAYS} days, then hidden from this list.
                 </div>
@@ -10484,12 +10534,12 @@ useEffect(() => {
                     </div>
                   ))}
                 </div>
-              </section>
+              </details>
             ) : null}
 
             {recentlyDeletedTasks.length ? (
-              <section className="mt-5 rounded-[18px] border border-slate-200/70 bg-white p-4">
-                <div className="text-sm font-semibold text-slate-700">Recently Deleted</div>
+              <details className="group/task-section mt-4 border-t border-slate-100 bg-white px-3 py-3">
+                <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium text-slate-700 [&::-webkit-details-marker]:hidden"><ChevronRight className="h-4 w-4 text-slate-400 transition-transform group-open/task-section:rotate-90" aria-hidden="true" />Recently Deleted</summary>
                 <div className="mt-1 text-xs text-slate-400">Recoverable here for 30 days.</div>
                 <div className="mt-3 divide-y divide-slate-100">
                   {recentlyDeletedTasks.map((task) => (
@@ -10513,7 +10563,7 @@ useEffect(() => {
                     </div>
                   ))}
                 </div>
-              </section>
+              </details>
             ) : null}
           </>
         ) : mode === "planner" ? (
@@ -11496,6 +11546,7 @@ useEffect(() => {
                 >
                   Log time
                 </button>
+                <button type="button" onClick={()=>setDashboardSettingsOpen(true)} title="Settings" aria-label="Logger settings" className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100"><Settings className="h-4 w-4" /></button>
 
                 <div className="col-span-2 inline-flex h-9 w-full rounded-xl border border-slate-200 bg-white p-1 md:col-span-1 md:w-auto">
                   <button
@@ -11569,41 +11620,11 @@ useEffect(() => {
 
             </div>
 
-            <div className="order-5 mt-3 rounded-2xl border border-slate-200/70 bg-white px-3 py-2.5 text-sm text-slate-600 md:order-5">
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                <span className="font-semibold tabular-nums text-slate-900">
-                  {formatLoggedTime(loggerRangeSummary.totalHours)} worked
-                </span>
-                <span className="text-slate-300">·</span>
-                <span>
-                  {loggerRangeSummary.activeDayCount
-                    ? formatLoggedTime(loggerRangeSummary.averageHoursPerActiveDay)
-                    : "0m"}{" "}
-                  / active day
-                </span>
-                <span className="text-slate-300">·</span>
-                <span>
-                  {loggerRangeSummary.activeDayCount} active day
-                  {loggerRangeSummary.activeDayCount === 1 ? "" : "s"}
-                </span>
-              </div>
-              <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-500">
-                <span>
-                  Top task:{" "}
-                  <span className="text-slate-700">
-                    {loggerRangeSummary.mostWorkedTask?.title ?? "—"}
-                  </span>
-                </span>
-                <span>
-                  Top category:{" "}
-                  <span className="text-slate-700">
-                    {loggerRangeSummary.mostWorkedCategory?.id && loggerRangeSummary.mostWorkedCategory.id !== "archived"
-                      ? renderCategoryIdentity(loggerRangeSummary.mostWorkedCategory.id)
-                      : loggerRangeSummary.mostWorkedCategory?.label ?? "—"}
-                  </span>
-                </span>
-              </div>
-            </div>
+            <section className="order-5 mt-3 grid grid-cols-3 gap-3 border-t border-slate-100 py-4">
+              <div><div className="text-lg font-semibold tabular-nums text-slate-900">{formatLoggedTime(loggerRangeSummary.totalHours)}</div><div className="mt-1 text-[11px] text-slate-400">Total worked</div></div>
+              <div><div className="text-lg font-semibold tabular-nums text-slate-900">{formatLoggedTime(loggerRangeSummary.averageHoursPerActiveDay)}</div><div className="mt-1 text-[11px] text-slate-400">Per active day</div></div>
+              <div><div className="text-lg font-semibold tabular-nums text-slate-900">{loggerRangeSummary.activeDayCount}</div><div className="mt-1 text-[11px] text-slate-400">Active days</div></div>
+            </section>
 
             {loggerActionError ? (
               <div className="order-2 mt-3 rounded-xl border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700 md:order-2">
@@ -11666,496 +11687,9 @@ useEffect(() => {
               </div>
             ) : null}
 
-            {loggerRangeMode === "day" ? (
-              <section className="order-2 mt-3 rounded-[18px] border border-slate-200/70 bg-white p-3 sm:p-4 md:order-2">
-                <div className="flex items-baseline justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-semibold text-slate-900">Temporal map</div>
-                    <div className="mt-0.5 text-xs text-slate-400">
-                      Work logged chronologically by time of day.
-                    </div>
-                  </div>
-                  <div className="text-xs font-medium text-slate-500">{formatLoggerDate(loggerDateRange.start)}</div>
-                </div>
+            {loggerRangeMode === "day" ? <LoggerHourlyCalendar days={[loggerDateRange.start]} logs={closedTimeLogs.filter(log=>loggerTaskFilter === "all" || log.taskId === loggerTaskFilter)} tasks={taskById} categories={categoryById} today={clientToday} onEdit={log=>openLogTime(log.taskId,log.date,log)} /> : loggerRangeMode === "week" ? <LoggerWeeklyTimeline days={loggerDays} logs={closedTimeLogs.filter(log=>loggerTaskFilter === "all" || log.taskId === loggerTaskFilter)} tasks={taskById} categories={categoryById} today={clientToday} onEdit={log=>openLogTime(log.taskId,log.date,log)} /> : null}
 
-                <div className="mt-4 grid gap-3">
-                  <div
-                    className="grid grid-cols-[92px_1fr] gap-2 sm:grid-cols-[104px_1fr]"
-                    style={{ height: `${LOGGER_DAY_TIMELINE_HEIGHT}px` }}
-                  >
-                    <div className="relative">
-                      {LOGGER_TIME_OF_DAY_BUCKETS.map((bucket) => {
-                        const bucketStart =
-                          bucket.id === "morning" ? 5 * 60 : bucket.id === "afternoon" ? 12 * 60 : bucket.id === "evening" ? 17 * 60 : 22 * 60;
-                        const top = ((bucketStart - LOGGER_DAY_TIMELINE_START_MINUTES) / 60) * LOGGER_DAY_TIMELINE_PX_PER_HOUR;
-                        return (
-                          <div key={`day-temporal-label-${bucket.id}`} className="absolute left-0" style={{ top: `${top}px` }}>
-                            <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400 sm:text-xs">
-                              {bucket.label}
-                            </div>
-                            <div className="mt-0.5 text-[9px] tabular-nums text-slate-300 sm:text-[10px]">{bucket.timeLabel}</div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    <div
-                      className="relative border-l border-slate-100 pl-2"
-                      style={{
-                        backgroundImage: "repeating-linear-gradient(to bottom, transparent 0, transparent 29px, rgba(226,232,240,0.55) 30px)",
-                      }}
-                    >
-                      {dayTemporalRows.timed.map((row) => renderTemporalLogButton(row, "timeline"))}
-                    </div>
-                  </div>
-
-                  {dayTemporalRows.unscheduled.length ? (
-                    <div className="grid gap-2 border-t border-slate-100 pt-4 sm:grid-cols-[92px_1fr]">
-                      <div className="pt-1 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
-                        Unscheduled
-                      </div>
-                      <div className="grid gap-2">
-                        {dayTemporalRows.unscheduled.map((row) => renderTemporalLogButton(row))}
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {!temporalLogRows.some((row) => row.log.date === loggerDateRange.start) ? (
-                    <div className="rounded-2xl border border-dashed border-slate-200 px-3 py-6 text-center text-sm text-slate-400">
-                      No closed time logs for this day.
-                    </div>
-                  ) : null}
-                </div>
-              </section>
-            ) : null}
-
-            {loggerRangeMode === "week" ? (
-              <section className="order-2 mt-3 rounded-[18px] border border-slate-200/70 bg-white p-3 sm:p-4 md:order-2">
-                <div className="flex items-baseline justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-semibold text-slate-900">Temporal map</div>
-                    <div className="mt-0.5 text-xs text-slate-400">
-                      Work grouped by weekday and time of day.
-                    </div>
-                  </div>
-                  <div className="text-xs font-medium text-slate-500">{loggerPeriodLabel}</div>
-                </div>
-
-                <div className="mt-4 grid gap-3 md:hidden">
-                  {weekTemporalRows.days.map((day) => {
-                    const hasLogs =
-                      LOGGER_TIME_OF_DAY_BUCKETS.some((bucket) =>
-                        Boolean(weekTemporalRows.exactByBucketAndDay[bucket.id]?.[day]?.length)
-                      ) || Boolean(weekTemporalRows.unscheduledByDay[day]?.length);
-                    return (
-                      <div key={`week-temporal-mobile-${day}`} className="rounded-2xl border border-slate-100 bg-slate-50/60 p-2">
-                        <div className="mb-2 flex items-center justify-between gap-3 px-1">
-                          <div className="text-xs font-semibold text-slate-700">
-                            {formatLoggerWeekday(day)} {new Date(day + "T00:00:00").getDate()}
-                          </div>
-                          {day === clientToday ? (
-                            <div className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] font-semibold text-white">
-                              Today
-                            </div>
-                          ) : null}
-                        </div>
-                        {hasLogs ? (
-                          <div className="grid gap-2">
-                            {LOGGER_TIME_OF_DAY_BUCKETS.map((bucket) => {
-                              const rows = weekTemporalRows.exactByBucketAndDay[bucket.id]?.[day] ?? [];
-                              if (!rows.length) return null;
-                              return (
-                                <div key={`${day}-${bucket.id}-mobile`} className="grid gap-1.5">
-                                  <div className="px-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">
-                                    {bucket.label}
-                                  </div>
-                                  {rows.map((row) => renderTemporalLogButton(row))}
-                                </div>
-                              );
-                            })}
-                            {(weekTemporalRows.unscheduledByDay[day] ?? []).length ? (
-                              <div className="grid gap-1.5">
-                                <div className="px-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">
-                                  Unscheduled
-                                </div>
-                                {(weekTemporalRows.unscheduledByDay[day] ?? []).map((row) => renderTemporalLogButton(row))}
-                              </div>
-                            ) : null}
-                          </div>
-                        ) : (
-                          <div className="px-1 py-3 text-sm text-slate-300">No logged work</div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-
-                <div className="mt-4 hidden overflow-x-auto pb-1 md:block">
-                  <div className="min-w-[920px]">
-                    <div className="grid grid-cols-[96px_repeat(7,minmax(108px,1fr))] gap-1">
-                      <div />
-                      {weekTemporalRows.days.map((day) => (
-                        <div
-                          key={`week-temporal-heading-${day}`}
-                          className={`rounded-xl px-2 py-2 text-center ${
-                            day === clientToday ? "bg-slate-100 text-slate-900" : "bg-slate-50 text-slate-500"
-                          }`}
-                        >
-                          <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">
-                            {formatLoggerWeekday(day)}
-                          </div>
-                          <div className="mt-0.5 text-sm font-semibold tabular-nums">
-                            {new Date(day + "T00:00:00").getDate()}
-                          </div>
-                        </div>
-                      ))}
-
-                      {LOGGER_TIME_OF_DAY_BUCKETS.map((bucket) => (
-                        <React.Fragment key={`week-temporal-${bucket.id}`}>
-                          <div className="px-1 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
-                            {bucket.label}
-                          </div>
-                          {weekTemporalRows.days.map((day) => {
-                            const rows = weekTemporalRows.exactByBucketAndDay[bucket.id]?.[day] ?? [];
-                            return (
-                              <div
-                                key={`${bucket.id}-${day}`}
-                                className={`min-h-[84px] rounded-2xl p-1.5 ${
-                                  rows.length
-                                    ? "bg-slate-50/60"
-                                    : "border border-dashed border-slate-100/70 bg-transparent"
-                                }`}
-                              >
-                                <div className="grid gap-1.5">
-                                  {rows.map((row) => renderTemporalLogButton(row, "week"))}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </React.Fragment>
-                      ))}
-
-                      <div className="px-1 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
-                        Unscheduled
-                      </div>
-                      {weekTemporalRows.days.map((day) => {
-                        const rows = weekTemporalRows.unscheduledByDay[day] ?? [];
-                        return (
-                          <div
-                            key={`unscheduled-${day}`}
-                            className={`min-h-[70px] rounded-2xl p-1.5 ${
-                              rows.length
-                                ? "bg-slate-50/60"
-                                : "border border-dashed border-slate-100/70 bg-transparent"
-                            }`}
-                          >
-                            <div className="grid gap-1.5">
-                              {rows.map((row) => renderTemporalLogButton(row, "week"))}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
-              </section>
-            ) : null}
-
-            <section className="order-6 mt-3 overflow-hidden rounded-[18px] border border-slate-200/70 bg-white md:order-6">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-3 py-2.5">
-                <button
-                  type="button"
-                  onClick={() => setLoggerDetailsOpen((open) => !open)}
-                  className="flex items-center gap-2 text-sm font-semibold text-slate-800 hover:text-slate-950"
-                  aria-expanded={loggerDetailsOpen}
-                >
-                  <ChevronRight
-                    className={`h-4 w-4 text-slate-400 transition-transform ${
-                      loggerDetailsOpen ? "rotate-90" : ""
-                    }`}
-                    aria-hidden="true"
-                  />
-                  Detailed logs
-                </button>
-                <div className="inline-flex rounded-xl border border-slate-200 bg-white p-1">
-                  {[
-                    { id: "hours", label: "Hours" },
-                    { id: "times", label: "Times" },
-                  ].map((option) => (
-                    <button
-                      key={option.id}
-                      type="button"
-                      onClick={() => setLoggerValueMode(option.id as LoggerValueMode)}
-                      className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
-                        loggerValueMode === option.id
-                          ? "bg-slate-900 text-white"
-                          : "text-slate-500 hover:bg-slate-50"
-                      }`}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {loggerDetailsOpen ? (
-                loggerRangeMode === "year" ? (
-                  <div className="px-4 py-8 text-center text-sm text-slate-400">
-                    Detailed daily view is available in Week, Month or Custom.
-                  </div>
-                ) : (
-              <>
-              <div className="mt-3 md:hidden">
-                <div className="overflow-x-auto pb-2">
-                  <div className="flex w-max gap-1">
-                    {loggerDays.map((day) => {
-                      const isSelected = day === loggerMobileDate;
-                      const isToday = day === clientToday;
-                      return (
-                        <button
-                          key={`logger-mobile-day-${day}`}
-                          type="button"
-                          onClick={() => setLoggerMobileSelectedDate(day)}
-                          className={`w-14 rounded-2xl border px-2 py-2 text-center transition-colors ${
-                            isSelected
-                              ? "border-slate-900 bg-white text-slate-950"
-                              : "border-slate-200/80 bg-white/70 text-slate-500 hover:bg-white"
-                          }`}
-                        >
-                          <div className="text-[9px] font-semibold uppercase tracking-[0.1em] text-slate-400">
-                            {formatLoggerWeekday(day).slice(0, 3)}
-                          </div>
-                          <div
-                            className={`mx-auto mt-1 flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold tabular-nums ${
-                              isToday ? "bg-slate-900 text-white" : ""
-                            }`}
-                          >
-                            {new Date(day + "T00:00:00").getDate()}
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <div className="mt-2 divide-y divide-slate-100 rounded-[18px] border border-slate-200/70 bg-white">
-                  <div className="px-3 py-2 text-xs font-medium text-slate-500">
-                    {formatLoggerDate(loggerMobileDate)}
-                  </div>
-                  {loggerRows.length ? (
-                    loggerRows.map(({ task }) => {
-                      const cellLogs = logsByTaskDate[`${task.id}:${loggerMobileDate}`] ?? [];
-                      const openCellLogs = openLogsByTaskDate[`${task.id}:${loggerMobileDate}`] ?? [];
-                      const hours = cellLogs.reduce((sum, log) => sum + (log.hours ?? 0), 0);
-                      const count = cellLogs.length;
-                      const hasValue = loggerValueMode === "hours" ? hours > 0 : count > 0;
-
-                      return (
-                        <button
-                          key={`logger-mobile-row-${task.id}`}
-                          type="button"
-                          onClick={() => openLogTime(task.id, loggerMobileDate, cellLogs[0] ?? openCellLogs[0])}
-                          className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left hover:bg-slate-50/70"
-                        >
-                          <span className="min-w-0">
-                            <span className="block truncate text-sm font-medium text-slate-800">{task.title}</span>
-                            <span className="mt-0.5 inline-flex min-w-0 text-xs text-slate-400">
-                              {renderCategoryIdentity(task.courseId)}
-                            </span>
-                          </span>
-                          <span className="shrink-0 text-sm font-semibold tabular-nums text-slate-700">
-                            {hasValue
-                              ? loggerValueMode === "hours"
-                                ? formatGridHours(hours)
-                                : count
-                              : openCellLogs.length
-                                ? <Clock3 className="h-4 w-4 text-cyan-600" aria-hidden="true" />
-                                : ""}
-                          </span>
-                        </button>
-                      );
-                    })
-                  ) : (
-                    <div className="px-3 py-8 text-center text-sm text-slate-400">
-                      No tasks have time logs in this view.
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div
-                ref={loggerGridScrollRef}
-                className="mt-3 hidden max-w-full overflow-x-auto p-2 md:block"
-              >
-                <table
-                  className={`min-w-max border-separate text-sm ${
-                    useCompactLoggerGrid
-                      ? "border-spacing-x-0 border-spacing-y-0.5"
-                      : "border-spacing-x-0.5 border-spacing-y-0.5"
-                  }`}
-                >
-                  <thead className="text-xs text-slate-500">
-                    <tr>
-                      <th
-                        className={`sticky left-0 z-40 bg-white text-left font-medium shadow-[1px_0_0_rgba(148,163,184,0.18)] ${
-                          useCompactLoggerGrid
-                            ? "w-[232px] min-w-[232px] max-w-[232px] rounded-lg px-3 py-1.5"
-                            : "w-64 rounded-xl px-3 py-2"
-                        }`}
-                      >
-                        Task
-                      </th>
-                      <th
-                        className={`sticky z-40 bg-white text-left font-medium text-slate-400 shadow-[1px_0_0_rgba(148,163,184,0.14)] ${
-                          useCompactLoggerGrid
-                            ? "left-[232px] w-[156px] min-w-[156px] max-w-[156px] rounded-lg px-3 py-1.5"
-                            : "left-64 w-44 rounded-xl px-3 py-2"
-                        }`}
-                      >
-                        Category
-                      </th>
-                      {loggerDays.map((day) => (
-                        <th
-                          key={day}
-                          className={`text-center font-medium ${
-                            useCompactLoggerGrid
-                              ? "w-12 min-w-12 px-0.5 py-0.5"
-                              : "w-16 min-w-16 px-1 py-1"
-                          }`}
-                        >
-                          <div
-                            className={`${
-                              useCompactLoggerGrid ? "rounded-lg px-1 py-1.5" : "rounded-xl px-2 py-2"
-                            } ${
-                              day === clientToday ? "bg-slate-100 text-slate-800" : "bg-white text-slate-500"
-                            }`}
-                          >
-                            <div className="text-[10px] uppercase tracking-[0.12em] text-slate-400">
-                              {formatLoggerWeekday(day).slice(0, 3)}
-                            </div>
-                            <div className="mt-0.5 text-sm font-semibold tabular-nums text-slate-700">
-                              {new Date(day + "T00:00:00").getDate()}
-                            </div>
-                          </div>
-                        </th>
-                      ))}
-                      <th
-                        className={`sticky right-0 z-40 bg-white text-right font-medium shadow-[-1px_0_0_rgba(148,163,184,0.18)] ${
-                          useCompactLoggerGrid
-                            ? "w-20 min-w-20 rounded-lg px-2 py-1.5"
-                            : "w-24 rounded-xl px-3 py-2"
-                        }`}
-                      >
-                        Total
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {loggerRows.length ? (
-                      loggerRows.map(({ task, total }) => (
-                        <tr key={task.id}>
-                          <td
-                            className={`sticky left-0 z-30 bg-white shadow-[1px_0_0_rgba(148,163,184,0.14)] ${
-                              useCompactLoggerGrid
-                                ? "w-[232px] min-w-[232px] max-w-[232px] rounded-lg px-3 py-1.5"
-                                : "w-64 rounded-xl px-3 py-2"
-                            }`}
-                          >
-                            <button
-                              type="button"
-                              onClick={() => openLogTime(task.id)}
-                              className={`block truncate text-left font-medium text-slate-800 hover:text-slate-950 ${
-                                useCompactLoggerGrid ? "max-w-[208px]" : "max-w-56"
-                              }`}
-                            >
-                              {task.title}
-                            </button>
-                          </td>
-                          <td
-                            className={`sticky z-30 bg-white text-xs text-slate-500 shadow-[1px_0_0_rgba(148,163,184,0.1)] ${
-                              useCompactLoggerGrid
-                                ? "left-[232px] w-[156px] min-w-[156px] max-w-[156px] rounded-lg px-3 py-1.5"
-                                : "left-64 w-44 rounded-xl px-3 py-2"
-                            }`}
-                          >
-                            <span className="block min-w-0">{renderCategoryIdentity(task.courseId)}</span>
-                          </td>
-                          {loggerDays.map((day) => {
-                            const cellLogs = logsByTaskDate[`${task.id}:${day}`] ?? [];
-                            const openCellLogs = openLogsByTaskDate[`${task.id}:${day}`] ?? [];
-                            const hours = cellLogs.reduce((sum, log) => sum + (log.hours ?? 0), 0);
-                            const count = cellLogs.length;
-                            const hasValue = loggerValueMode === "hours" ? hours > 0 : count > 0;
-                            const title = `${task.title} • ${day} • ${
-                              loggerValueMode === "hours" ? formatDuration(hours) : `${count} logs`
-                            }${openCellLogs.length ? " • Open session" : ""}`;
-
-                            return (
-                              <td
-                                key={`${task.id}-${day}`}
-                                className={`text-center text-xs font-medium tabular-nums ${
-                                  useCompactLoggerGrid
-                                    ? "h-10 w-12 min-w-12 px-0.5 py-0.5"
-                                    : "h-11 w-16 min-w-16 px-1 py-1"
-                                }`}
-                                title={title}
-                              >
-                                <button
-                                  type="button"
-                                  onClick={() => openLogTime(task.id, day, cellLogs[0] ?? openCellLogs[0])}
-                                  className={`flex items-center justify-center transition-colors ${
-                                    useCompactLoggerGrid ? "h-9 w-11 rounded-lg" : "h-10 w-14 rounded-xl"
-                                  } ${
-                                    loggerValueMode === "hours"
-                                      ? loggerCellTone(hours)
-                                      : loggerCountCellTone(count)
-                                  } ${hasValue ? "hover:ring-1 hover:ring-violet-200" : "hover:bg-slate-50"}`}
-                                  aria-label={title}
-                                >
-                                  {loggerValueMode === "hours" ? (
-                                    formatGridHours(hours) || (openCellLogs.length ? <Clock3 className="h-3.5 w-3.5 text-cyan-600" aria-hidden="true" /> : "")
-                                  ) : (
-                                    count || (openCellLogs.length ? <Clock3 className="h-3.5 w-3.5 text-cyan-600" aria-hidden="true" /> : "")
-                                  )}
-                                </button>
-                              </td>
-                            );
-                          })}
-                          <td
-                            className={`sticky right-0 z-30 bg-white text-right text-xs font-semibold tabular-nums text-slate-800 shadow-[-1px_0_0_rgba(148,163,184,0.14)] ${
-                              useCompactLoggerGrid
-                                ? "w-20 min-w-20 rounded-lg px-2 py-1.5"
-                                : "w-24 rounded-xl px-3 py-2"
-                            }`}
-                          >
-                            {loggerValueMode === "hours"
-                              ? total > 0
-                                ? formatLoggedTime(total)
-                                : ""
-                              : closedTimeLogs.filter((log) => log.taskId === task.id && loggerDays.includes(log.date)).length || ""}
-                          </td>
-                        </tr>
-                      ))
-                    ) : (
-                      <tr>
-                        <td
-                          colSpan={loggerDays.length + 3}
-                          className="px-4 py-8 text-center text-sm text-slate-400"
-                        >
-                          No tasks have time logs in this view.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-              </>
-                )
-              ) : (
-                <div className="px-3 py-3 text-xs text-slate-400">
-                  Expand to inspect task-by-day logs and edit individual entries.
-                </div>
-              )}
-            </section>
+            <details className="order-6 mt-3 border-t border-slate-100 py-3"><summary className="cursor-pointer text-sm font-medium text-slate-700">All logs</summary><div className="mt-2 divide-y divide-slate-100">{closedTimeLogs.filter(log=>loggerTaskFilter === "all" || log.taskId === loggerTaskFilter).slice().sort((a,b)=>b.date.localeCompare(a.date)||(b.startTime??"").localeCompare(a.startTime??"")).map(log=><div key={log.id} className="flex items-center justify-between gap-3 py-2 text-xs"><div className="min-w-0"><div className="break-words font-medium text-slate-700">{taskById[log.taskId]?.title ?? "Unlinked / archived task"}</div><div className="mt-1 text-[11px] tabular-nums text-slate-400">{formatLoggerDate(log.date)} {log.startTime ?? ""}{log.endTime ? `–${log.endDate && log.endDate !== log.date ? log.endDate + " " : ""}${log.endTime}` : ""} · {formatLoggedTime(log.hours ?? 0)}</div></div><button type="button" onClick={()=>openLogTime(log.taskId,log.date,log)} className="shrink-0 rounded-lg border border-slate-200 px-3 py-2 text-xs text-slate-600">Edit</button></div>)}{!closedTimeLogs.length ? <p className="py-3 text-xs text-slate-400">No logs yet.</p>:null}</div></details>
 
             <div className="order-4 space-y-4 border-t border-slate-100 px-0 py-3 md:order-4 md:px-4 md:py-4">
               {loggerRangeMode !== "day" && loggerRangeMode !== "week" ? (
@@ -12211,9 +11745,9 @@ useEffect(() => {
                       ref={loggerMonthActivityScrollRef}
                       className="max-w-full overflow-x-auto overscroll-x-contain pb-1"
                     >
-                      <div className="grid w-max grid-cols-[28px_auto] gap-x-2 md:min-w-full">
+                      <div className="mx-auto grid w-max grid-cols-[28px_auto] gap-x-2">
                         <div />
-                        <div className="flex h-3.5 gap-0.5 text-[9px] text-slate-400 md:h-4 md:justify-between md:text-[10px]">
+                        <div className="flex h-3.5 gap-0.5 text-[9px] text-slate-400 md:h-4 md:text-[10px]">
                           {activityMap.weeks.map((week, index) => {
                             const month = new Date(`${week.weekStart}T00:00:00`).getMonth();
                             const previousMonth = index > 0
@@ -12231,19 +11765,19 @@ useEffect(() => {
                           })}
                         </div>
 
-                        <div className="grid grid-rows-7 gap-0.5 pt-0.5 text-[9px] leading-3 text-slate-400 md:leading-4">
-                          {["", "Mon", "", "Wed", "", "Fri", ""].map((label, index) => (
+                        <div className="grid grid-rows-7 gap-0.5 text-[9px] leading-3 text-slate-400 md:leading-4">
+                          {["Mon", "", "Wed", "", "Fri", "", ""].map((label, index) => (
                             <div key={`${label}-${index}`} className="h-3 md:h-4">{label}</div>
                           ))}
                         </div>
-                        <div className="flex gap-0.5 md:justify-between">
+                        <div className="flex gap-0.5">
                           {activityMap.weeks.map((week) => (
                             <div key={week.weekStart} className="grid grid-rows-7 gap-0.5">
                               {week.days.map((day) => {
                                 const isInRange = day.date >= activityMap.rawStart && day.date <= activityMap.end;
                                 const level = isInRange ? loggerActivityLevel(day.hours, activityMap.thresholds) : 0;
                                 return (
-                                  <span
+                                  <button type="button" disabled={!isInRange} onClick={() => { setLoggerAnchor(day.date); setLoggerRangeMode("week"); }}
                                     key={day.date}
                                     className={`h-3 w-3 rounded-[3px] border md:h-4 md:w-4 md:rounded-[4px] ${
                                       isInRange
@@ -12271,6 +11805,7 @@ useEffect(() => {
                         <div
                           className="grid h-4 text-[10px] text-slate-400"
                           style={{
+                            columnGap: activityMap.compact ? "3px" : "4px",
                             gridTemplateColumns: `repeat(${activityMap.weeks.length}, ${
                               activityMap.compact ? "12px" : "minmax(0, 1fr)"
                             })`,
@@ -12299,9 +11834,9 @@ useEffect(() => {
                         <div
                           className={`grid grid-rows-7 ${
                             activityMap.compact ? "gap-[3px]" : "gap-1"
-                          } pt-[3px] text-[10px] leading-3 text-slate-400`}
+                          } text-[10px] leading-3 text-slate-400`}
                         >
-                          {["", "Mon", "", "Wed", "", "Fri", ""].map((label, index) => (
+                          {["Mon", "", "Wed", "", "Fri", "", ""].map((label, index) => (
                             <div key={`${label}-${index}`} className={activityMap.compact ? "h-3" : "h-5"}>
                               {label}
                             </div>
@@ -12317,7 +11852,7 @@ useEffect(() => {
                                 const isInRange = day.date >= activityMap.rawStart && day.date <= activityMap.end;
                                 const level = isInRange ? loggerActivityLevel(day.hours, activityMap.thresholds) : 0;
                                 return (
-                                  <span
+                                  <button type="button" disabled={!isInRange} onClick={() => { setLoggerAnchor(day.date); setLoggerRangeMode("week"); }}
                                     key={day.date}
                                     className={`border ${
                                       activityMap.compact ? "h-3 w-3 rounded-[3px]" : "h-5 w-full rounded-md"
@@ -12385,9 +11920,11 @@ useEffect(() => {
                                 <div className="truncate font-medium text-slate-800">
                                   {loggerBreakdownMode === "categories" && row.categoryId
                                     ? renderCategoryIdentity(row.categoryId)
-                                    : row.title}
+                                    : loggerBreakdownMode === "tasks" && taskById[row.id]
+                                      ? <button type="button" onClick={()=>openEdit(taskById[row.id])} title="Edit task" className="text-left hover:underline">{row.title}</button>
+                                      : row.title}
                                 </div>
-                                <div className="truncate text-[11px] text-slate-500">
+                                <div className="truncate text-[11px] text-slate-400">
                                   {loggerBreakdownMode === "tasks" && row.categoryId
                                     ? renderCategoryIdentity(row.categoryId)
                                     : row.subtitle}
@@ -12431,133 +11968,34 @@ useEffect(() => {
             </div>
           </div>
         ) : (
-          <div className="mt-6 grid gap-8">
-            {/* Attention */}
-            <section className="order-1">
-              <div className="border-b border-slate-200/70 pb-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-semibold tracking-tight text-slate-900">Attention score</div>
-                    <div className="text-xs text-slate-500">{scoredTasks.length} tasks</div>
-                  </div>
-                  <div className="relative" onClick={(e) => e.stopPropagation()}>
-                    <button
-                      type="button"
-                      className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setAttentionCategoryMenuOpen((open) => !open);
-                      }}
-                    >
-                      Categories
-                      {attentionIncludedCategoryIds.length !== activeCategories.length ? (
-                        <span className="text-slate-400"> · {attentionIncludedCategoryIds.length}</span>
-                      ) : null}
-                    </button>
-                    {attentionCategoryMenuOpen ? (
-                      <div className="absolute right-0 top-full z-[1000] mt-2 w-56 rounded-xl border border-slate-200 bg-white p-2 text-xs shadow-xl ring-1 ring-slate-900/5">
-                        <div className="px-2 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">
-                          Categories
-                        </div>
-                        <div className="mt-1 max-h-56 overflow-auto">
-                          {activeCategories.map((category) => {
-                            const selected = !attentionCategoryExcludedIds.includes(category.id);
-                            return (
-                              <button
-                                key={category.id}
-                                type="button"
-                                className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-slate-600 hover:bg-slate-50"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setAttentionCategoryExcludedIds((ids) =>
-                                    selected
-                                      ? Array.from(new Set([...ids, category.id]))
-                                      : ids.filter((id) => id !== category.id)
-                                  );
-                                }}
-                              >
-                                <span className="flex h-4 w-4 items-center justify-center text-slate-700">
-                                  {selected ? <Check className="h-3 w-3" /> : null}
-                                </span>
-                                <span className="min-w-0 truncate"><CategoryIdentity category={category} compact /></span>
-                              </button>
-                            );
-                          })}
-                        </div>
-                        <button
-                          type="button"
-                          className="mt-1 w-full rounded-lg px-2 py-1.5 text-left text-[11px] text-slate-500 hover:bg-slate-50 hover:text-slate-700"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setAttentionCategoryExcludedIds([]);
-                          }}
-                        >
-                          Select all
-                        </button>
-                      </div>
-                    ) : null}
-                  </div>
+          <div className="mt-5 grid min-w-0 gap-7">
+            <div className="grid grid-cols-3 gap-2 sm:gap-4">
+              {([{id:"correspondence",label:"Correspondence"},{id:"due7",label:"Due in 7 days"},{id:"due30",label:"Due in 30 days"}] as const).map(metric => <button type="button" key={metric.id} onClick={()=>openDashboardTasks(metric.id)} className="min-w-0 rounded-lg border border-slate-200/70 bg-white p-3 text-left transition-colors hover:bg-slate-50 sm:p-4">
+<div className="flex min-h-8 flex-wrap items-center gap-1.5 whitespace-normal text-xs font-medium leading-4 text-slate-500 sm:min-h-0">{metric.id === "correspondence" ? <Mail className="h-3.5 w-3.5 shrink-0" /> : metric.id === "due7" ? <CalendarClock className="h-3.5 w-3.5 shrink-0" /> : <CalendarDays className="h-3.5 w-3.5 shrink-0" />}{metric.label}</div>
+                <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{activeTasks.filter(task=>matchesDashboardTaskFilter(task,metric.id,clientToday||todayISO())).length}</div>
+              </button>)}
+            </div>
+            <section>
+              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-3">
+<h2 className="text-sm font-semibold text-slate-900">Attention</h2>
+                <div className="flex items-start gap-4">
+                  <AttentionWeightsPopover weights={weights} onChange={setWeights} />
+                  <button type="button" onClick={()=>openDashboardTasks()} className="text-xs text-slate-500 hover:text-slate-900">View all</button>
                 </div>
               </div>
-
-              <div className="mt-3">
-                <div className="grid overflow-hidden rounded-[18px] border border-slate-200/70 bg-white sm:grid-cols-2 xl:grid-cols-3">
-                  {attentionIncludedCategoryIds.length === 0 ? (
-                    <div className="px-3 py-6 text-center text-sm text-slate-400 sm:col-span-2 xl:col-span-3">
-                      No categories selected
-                    </div>
-                  ) : null}
-                  {attentionIncludedCategoryIds.length > 0 ? scoredTasks.map(({ task, total: score, reasons, visualAttentionScore }, index) => {
-                    return (
-                      <div
-                        key={task.id}
-                        className="cursor-pointer border-b border-slate-100/80 p-3 transition-colors hover:bg-slate-50/70 sm:border-r xl:[&:nth-child(3n)]:border-r-0 sm:[&:nth-child(2n)]:border-r-0 xl:[&:nth-child(2n)]:border-r"
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => openEdit(task)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") openEdit(task);
-                        }}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="grid min-w-0 grid-cols-[1.5rem_1fr] gap-2">
-                            <div className="pt-0.5 text-xs tabular-nums text-slate-300">{index + 1}</div>
-                            <div className="min-w-0">
-                            <div className="line-clamp-2 text-sm font-medium leading-snug text-slate-900">{task.title}</div>
-                            <div className="mt-1 inline-flex min-w-0 text-[11px] text-slate-500">
-                              {renderCategoryIdentity(task.courseId)}
-                            </div>
-                            {reasons.length ? (
-                              <div className="mt-1 line-clamp-2 text-[11px] leading-snug text-slate-400">
-                                {reasons.join(" · ")}
-                              </div>
-                            ) : null}
-                            </div>
-                          </div>
-
-                          <div className="shrink-0 text-xs font-semibold tabular-nums text-slate-700">{Math.round(score)}</div>
-                        </div>
-
-                        <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-slate-100">
-                          <div
-                            className={`h-2 rounded-full transition-all duration-500 ${urgencyColour(visualAttentionScore)}`}
-                            style={{ width: `${visualAttentionScore}%` }}
-                          />
-                        </div>
-                      </div>
-                    );
-                  }) : null}
-                </div>
-              </div>
+              {dashboardCompletionError ? <p role="alert" className="py-2 text-xs text-rose-600">{dashboardCompletionError}</p> : null}
+              <div className="grid overflow-hidden rounded-[18px] border border-slate-200/70 bg-white lg:grid-cols-3">{scoredTasks.map(({task,total,visualAttentionScore},index)=><button type="button" key={task.id} onClick={()=>openEdit(task)} className="min-w-0 border-b border-slate-100 p-3 text-left transition-colors hover:bg-slate-50/70 lg:border-r">
+                <div className="flex items-start justify-between gap-3"><div className="flex min-w-0 gap-2"><span className="pt-0.5 text-xs tabular-nums text-slate-300">{index+1}</span><span className="min-w-0"><span className="block break-words text-sm font-medium text-slate-900">{task.title}</span><span className="mt-1 block text-[11px] text-slate-500">{renderCategoryIdentity(task.courseId)}</span></span></div><span className="shrink-0 text-xs font-semibold tabular-nums text-slate-700">{Math.round(total)}</span></div>
+                <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-slate-100"><div className={`h-2 rounded-full transition-all duration-500 ${urgencyColour(visualAttentionScore)}`} style={{width:`${visualAttentionScore}%`}} /></div>
+              </button>)}</div>
+              {!scoredTasks.length ? <p className="py-5 text-sm text-slate-400">No tasks to show.</p> : null}
             </section>
-
             {/* Category columns */}
-            <div className="order-2 grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+            <div className="order-2 grid gap-4 lg:grid-cols-3">
               {activeCategories.map((c) => {
                 const categoryTasks = byCourse[c.id] ?? [];
                 const isExpanded = expandedDashboardCategoryIds.includes(c.id);
                 const visibleTasks = isExpanded ? categoryTasks : categoryTasks.slice(0, 4);
-                const remainingTasks = Math.max(0, categoryTasks.length - visibleTasks.length);
 
                 return (
                 <div key={c.id} className="self-start rounded-[18px] border border-slate-200/70 bg-white">
@@ -12597,7 +12035,8 @@ useEffect(() => {
                           >
                             <div className="flex items-start justify-between gap-3">
                               <div className="min-w-0">
-                                <div className={`truncate text-sm font-medium ${frozenTitleClass(t)}`}>{t.title}</div>
+                                <div className={`break-words text-sm font-medium ${frozenTitleClass(t)}`}>{t.title}</div>
+                                <TaskProgress estimate={t.durationHrs} logged={loggedHoursByTask[t.id] ?? 0} />
                                 <div className="mt-2 flex flex-wrap gap-1.5">
                                   {deadlineLabel ? (
                                     <TaskMetaPill className={`${deadlinePillTone(t)} bg-opacity-60`}>
@@ -12618,7 +12057,7 @@ useEffect(() => {
                                 className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-700"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  completeTask(t.id);
+                                  void completeDashboardTask(t);
                                 }}
                                 aria-label="Mark completed"
                               >
@@ -12644,14 +12083,14 @@ useEffect(() => {
                     {categoryTasks.length > 4 ? (
                       <button
                         type="button"
-                        onClick={() =>
-                          setExpandedDashboardCategoryIds((ids) =>
-                            isExpanded ? ids.filter((id) => id !== c.id) : [...ids, c.id]
-                          )
-                        }
-                        className="w-full rounded-xl px-3 py-2 text-left text-xs font-medium text-slate-400 hover:bg-slate-50 hover:text-slate-600"
+                        aria-expanded={isExpanded}
+                        onClick={() => setExpandedDashboardCategoryIds(ids =>
+                          ids.includes(c.id) ? ids.filter(id => id !== c.id) : [...ids, c.id]
+                        )}
+                        className="inline-flex items-center gap-1 py-1 text-xs text-slate-400 hover:text-slate-700"
                       >
-                        {isExpanded ? "Show less" : `Show ${remainingTasks} more`}
+                        {isExpanded ? "Show less" : `Show all (${categoryTasks.length})`}
+                        <ChevronRight className={`h-3 w-3 transition-transform ${isExpanded ? "-rotate-90" : "rotate-90"}`} aria-hidden="true" />
                       </button>
                     ) : null}
                   </div>
@@ -12705,7 +12144,7 @@ useEffect(() => {
           </div>
         )}
 
-        {/* Keyboard reminder */}
+        {(mode === "board" || mode === "logger") ? <Modal open={dashboardSettingsOpen} title="Settings" onClose={()=>setDashboardSettingsOpen(false)}>{renderSettingsUtilities()}<button type="button" onClick={()=>setDashboardSettingsOpen(false)} className="mt-3 rounded-lg border border-slate-200 px-3 py-2 text-xs">Close</button></Modal> : mode === "list" ? <details className="group/task-settings mt-4 border-t border-slate-100 bg-white px-3 py-3"><summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium text-slate-700 [&::-webkit-details-marker]:hidden"><ChevronRight className="h-4 w-4 text-slate-400 transition-transform group-open/task-settings:rotate-90" aria-hidden="true" />Settings &amp; Utilities</summary><div className="pt-2">{renderSettingsUtilities()}</div></details> : <>        {/* Keyboard reminder */}
         {mode !== "meds" ? (
         <div className="mt-10 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-600">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -12816,7 +12255,7 @@ useEffect(() => {
             </div>
           </div>
         </div>
-        ) : null}
+        ) : null}</>}
         </div>
       </main>
 
@@ -14575,120 +14014,38 @@ useEffect(() => {
       <Modal
         open={newOpen}
         title="New task"
-        onClose={() => setNewOpen(false)}
+        onClose={() => { if (!taskSubmitLock.current) setNewOpen(false); }}
       >
         <div className="grid gap-3">
-          <Field label="Title">
-            <input
-              value={newTitle}
-              onChange={(e) => setNewTitle(e.target.value)}
-              placeholder="Task title (brief)"
-              className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  submitNewTask();
-                }
-              }}
-            />
-          </Field>
+          <TaskEditorFields task={{ title:newTitle, courseId:newCourseId, status:newStatus, durationHrs:newEstimate, priority:newPriority, due:newDue, deadlineMode:newDeadlineMode, visionHorizon:newVisionHorizon, activityType:newActivityType, notes:newNotes, checklist:newChecklist }} categories={activeCategories} logged={0} checklistReady={checklistReady} disabled={taskFormSaving} onChange={changes=>{
+            if ('title' in changes) setNewTitle(changes.title ?? '');
+            if ('courseId' in changes) setNewCourseId(changes.courseId!);
+            if ('status' in changes) setNewStatus(changes.status!);
+            if ('durationHrs' in changes) setNewEstimate(changes.durationHrs ?? null);
+            if ('priority' in changes) setNewPriority(changes.priority!);
+            if ('due' in changes) setNewDue(changes.due ?? '');
+            if ('deadlineMode' in changes) setNewDeadlineMode(changes.deadlineMode);
+            if ('visionHorizon' in changes) setNewVisionHorizon(changes.visionHorizon ?? null);
+            if ('activityType' in changes) setNewActivityType(changes.activityType);
+            if ('notes' in changes) setNewNotes(changes.notes ?? '');
+            if ('checklist' in changes) setNewChecklist(changes.checklist ?? []);
+          }} />
 
-          <SectionHeading>Organisation</SectionHeading>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Status">
-              <IconSelectBox<Status>
-                value={newStatus}
-                onChange={setNewStatus}
-                options={STATUSES}
-                renderIcon={(status) => <StatusIcon status={status} />}
-              />
-            </Field>
 
-            <Field label="Category">
-              <select
-                value={newCourseId}
-                onChange={(e) => setNewCourseId(e.target.value)}
-                className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-              >
-                {activeCategories.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {categoryDisplayLabel(c)}
-                  </option>
-                ))}
-              </select>
-            </Field>
-          </div>
-
-          <SectionHeading>Planning</SectionHeading>
-          <div className="grid gap-3 sm:grid-cols-[1.4fr_0.8fr_1.8fr]">
-            <Field label="Priority">
-              <IconSelectBox<Priority>
-                value={newPriority}
-                onChange={setNewPriority}
-                options={PRIORITIES}
-                renderIcon={(priority) => <PriorityIcon priority={priority} />}
-              />
-            </Field>
-
-            <Field label="Difficulty (1–5)">
-              <select
-                value={newDifficulty}
-                onChange={(e) => setNewDifficulty(e.target.value)}
-                className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-              >
-                {["1", "2", "3", "4", "5"].map((x) => (
-                  <option key={x} value={x}>
-                    {x}
-                  </option>
-                ))}
-              </select>
-            </Field>
-
-            <EffortLevelField value={newEffortLevel} onChange={setNewEffortLevel} />
-          </div>
-
-          <DeadlineField
-            due={newDue}
-            deadlineMode={newDeadlineMode}
-            visionHorizon={newVisionHorizon}
-            onDateChange={(due) => {
-              setNewDue(due);
-              setNewDeadlineMode(due ? "date" : undefined);
-              setNewVisionHorizon(null);
-            }}
-            onVisionChange={(horizon) => {
-              setNewDue("");
-              setNewDeadlineMode("vision");
-              setNewVisionHorizon(horizon);
-            }}
-          />
-
-          <SectionHeading>Type</SectionHeading>
-          <ActivityTypeField value={newActivityType} onChange={setNewActivityType} />
-
-          <SectionHeading>Notes</SectionHeading>
-          <Field label="Notes">
-            <textarea
-              value={newNotes}
-              onChange={(e) => setNewNotes(e.target.value)}
-              placeholder="Any extra context"
-              className="min-h-[64px] w-full rounded-[18px] border border-slate-200 bg-white p-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-            />
-          </Field>
-
-          <SectionHeading>Actions</SectionHeading>
+          {taskFormError ? <div role="alert" className="text-xs text-rose-600">{taskFormError}</div> : null}
           <div className="flex items-center justify-end gap-2">
             <button
               className="rounded-full border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
-              onClick={() => setNewOpen(false)}
+              onClick={() => { if (!taskSubmitLock.current) setNewOpen(false); }}
             >
               Cancel
             </button>
             <button
               className="rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
               onClick={submitNewTask}
+              disabled={taskFormSaving}
             >
-              Create
+{taskFormSaving ? "Saving..." : taskFormError ? "Retry save" : "Save"}
             </button>
           </div>
         </div>
@@ -14774,6 +14131,7 @@ useEffect(() => {
             </div>
           </Field>
 
+          {loggerActionError ? <div role="alert" className="text-xs text-rose-600">{loggerActionError}</div> : null}
           <div className="flex items-center justify-between gap-2 pt-1">
             {editingCategory ? (
               <button
@@ -14818,26 +14176,16 @@ useEffect(() => {
         open={logOpen}
         title={logModalTitle}
         onClose={() => {
+          if (logSubmitLock.current) return;
+          pendingLogId.current = null;
           setEditingLogId(null);
           setPlannerLogSourceEventId(null);
           setLogOpen(false);
         }}
       >
         <div className="grid gap-3">
-          <Field label="Task / project">
-            <select
-              value={logTaskId}
-              onChange={(e) => setLogTaskId(e.target.value)}
-              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-            >
-              {!logTaskOptions.length ? <option value="">No tasks available</option> : null}
-              {logTaskOptions.map((task) => (
-                <option key={task.id} value={task.id}>
-                  {task.title}
-                </option>
-              ))}
-            </select>
-          </Field>
+          <LoggerTaskSelector key={editingLogId ?? "new-log"} tasks={logTaskOptions} categories={categories} taskId={logTaskId} onChange={setLogTaskId} disabled={logSaving} />
+          {editingTimeLog && !taskById[editingTimeLog.taskId] ? <p className="text-xs text-slate-400">Unlinked / archived task</p> : null}
 
           <div className="grid grid-cols-2 gap-3">
             <Field label="Date">
@@ -14942,6 +14290,7 @@ useEffect(() => {
             />
           </Field>
 
+          {loggerActionError ? <div role="alert" className="text-xs text-rose-600">{loggerActionError}</div> : null}
           <div className="flex items-center justify-between gap-2 pt-1">
             {editingLogId ? (
               <button
@@ -14974,6 +14323,8 @@ useEffect(() => {
               <button
                 className="rounded-full border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
                 onClick={() => {
+                  if (logSubmitLock.current) return;
+                  pendingLogId.current = null;
                   setEditingLogId(null);
                   setPlannerLogSourceEventId(null);
                   setLogOpen(false);
@@ -14986,7 +14337,7 @@ useEffect(() => {
                 onClick={submitTimeLog}
                 disabled={
                   logSaving ||
-                  !logTaskId ||
+                  (!logTaskId && !editingTimeLog) ||
                   (editingTimeLog && isOpenTimeLog(editingTimeLog)
                     ? calculatedLogHours === null
                     : resolveClosedTimeLogHours(logHoursInput, calculatedLogHours, logStartTime, logEndTime) === null)
@@ -15007,122 +14358,10 @@ useEffect(() => {
       >
         {!draft ? null : (
           <div className="grid gap-3">
-            <Field label="Title">
-              <input
-                value={draft.title}
-                onChange={(e) => setDraft({ ...draft, title: e.target.value })}
-                className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-              />
-            </Field>
+            <TaskEditorFields task={draft} categories={categories.filter(c=>!c.archived||c.id===draft.courseId)} logged={loggedHoursByTask[draft.id] ?? 0} checklistReady={checklistReady} disabled={taskFormSaving} onChange={changes=>setDraft(changes.status ? applyTaskStatus({...draft,...changes},changes.status) : {...draft,...changes})} />
 
-            <SectionHeading>Organisation</SectionHeading>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="Status">
-                <IconSelectBox<Status>
-                  value={draft.status}
-                  onChange={(status) => setDraft(applyTaskStatus(draft, status))}
-                  options={STATUSES}
-                  renderIcon={(status) => <StatusIcon status={status} />}
-                />
-              </Field>
 
-              <Field label="Category">
-                <select
-                  value={draft.courseId}
-                  onChange={(e) => setDraft({ ...draft, courseId: e.target.value })}
-                  className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                >
-                  {activeCategories.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {categoryDisplayLabel(c)}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-            </div>
-
-            <SectionHeading>Planning</SectionHeading>
-            <div className="grid gap-3 sm:grid-cols-[1.4fr_0.8fr_1.8fr]">
-              <Field label="Priority">
-                <IconSelectBox<Priority>
-                  value={draft.priority}
-                  onChange={(priority) => setDraft({ ...draft, priority })}
-                  options={PRIORITIES}
-                  renderIcon={(priority) => <PriorityIcon priority={priority} />}
-                />
-              </Field>
-
-              <Field label="Difficulty (1–5)">
-                <select
-                  value={draft.difficulty == null ? "3" : String(draft.difficulty)}
-                  onChange={(e) => setDraft({ ...draft, difficulty: Number(e.target.value) })}
-                  className="h-10 w-full rounded-[16px] border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                >
-                  {["1", "2", "3", "4", "5"].map((x) => (
-                    <option key={x} value={x}>
-                      {x}
-                    </option>
-                ))}
-              </select>
-              </Field>
-
-              <EffortLevelField
-                value={draft.effortLevel ?? null}
-                suggestedValue={draft.effortLevel ? null : inferredEffortLevel(draft.durationHrs)}
-                onChange={(effortLevel) => setDraft({ ...draft, effortLevel })}
-              />
-            </div>
-
-            <DeadlineField
-              due={draft.due}
-              deadlineMode={draft.deadlineMode ?? (draft.due ? "date" : undefined)}
-              visionHorizon={draft.visionHorizon ?? null}
-              onDateChange={(due) =>
-                setDraft({
-                  ...draft,
-                  due: due || undefined,
-                  deadlineMode: due ? "date" : undefined,
-                  visionHorizon: null,
-                })
-              }
-              onVisionChange={(horizon) =>
-                setDraft({
-                  ...draft,
-                  due: null,
-                  deadlineMode: "vision",
-                  visionHorizon: horizon,
-                })
-              }
-            />
-
-            <ReminderPreferenceControl
-              sourceType="task"
-              sourceId={draft.id}
-              kind={draft.deadlineMode === "date" || draft.due ? "task_due_date" : "no_due_date"}
-              preference={reminderPreferences[reminderPreferenceKey("task", draft.id)]}
-              loading={reminderLoadingKeys.includes(reminderPreferenceKey("task", draft.id))}
-              saving={reminderSavingKey === reminderPreferenceKey("task", draft.id)}
-              error={reminderErrorByKey[reminderPreferenceKey("task", draft.id)] ?? null}
-              onSave={saveReminderPreferenceLocal}
-              onReset={resetReminderPreferenceLocal}
-            />
-
-            <SectionHeading>Type</SectionHeading>
-            <ActivityTypeField
-              value={draft.activityType}
-              onChange={(activityType) => setDraft({ ...draft, activityType })}
-            />
-
-            <SectionHeading>Notes</SectionHeading>
-            <Field label="Notes">
-              <textarea
-                value={draft.notes ?? ""}
-                onChange={(e) => setDraft({ ...draft, notes: e.target.value })}
-                className="min-h-[64px] w-full rounded-[18px] border border-slate-200 bg-white p-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-              />
-            </Field>
-
-            <SectionHeading>Actions</SectionHeading>
+            {taskFormError ? <div role="alert" className="text-xs text-rose-600">{taskFormError}</div> : null}
             <div className="flex items-center justify-between">
               <button
                 className="rounded-full border border-slate-200 px-4 py-2 text-sm text-red-600 hover:bg-red-50"
@@ -15151,8 +14390,9 @@ useEffect(() => {
                     if (!draft.title.trim()) return;
                     saveEdit({ ...draft, title: draft.title.trim() });
                   }}
+                  disabled={taskFormSaving}
                 >
-                  Save
+                  {taskFormSaving ? "Saving..." : taskFormError ? "Retry save" : "Save"}
                 </button>
               </div>
             </div>

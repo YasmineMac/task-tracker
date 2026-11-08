@@ -48,6 +48,7 @@ export function normalizeTask(t: Record<string, unknown>): Task {
   return {
     id: String(t.id ?? uid()),
     title: String(t.title ?? "").trim(),
+    checklist: Array.isArray(t.checklist) ? t.checklist.filter((item): item is { id: string; text: string; completed: boolean } => Boolean(item && typeof item === "object" && typeof item.id === "string" && typeof item.text === "string" && typeof item.completed === "boolean")) : [],
     courseId: resolvedCourseId,
     status: (t.status ?? "to_do") as Status,
     priority: (t.priority ?? "normal") as Priority,

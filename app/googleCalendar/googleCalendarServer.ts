@@ -167,7 +167,10 @@ async function refreshGoogleAccessToken(refreshToken: string) {
   const token = (await response.json()) as GoogleTokenResponse;
 
   if (!response.ok || !token.access_token) {
-    throw new Error(token.error_description || token.error || "Google access token refresh failed.");
+    const oauthError = typeof token.error === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(token.error)
+      ? token.error
+      : "unknown_error";
+    throw new Error(`Google OAuth failure; stage: token refresh; HTTP ${response.status}; OAuth error: ${oauthError}`);
   }
 
   return token;

@@ -6,6 +6,7 @@ export type ActivityType = "correspondence" | "activity" | "uni_work";
 export type EffortLevel = "quick" | "moderate" | "extensive";
 
 export type Task = {
+  checklist?: { id: string; text: string; completed: boolean }[];
   id: string;
   title: string;
   courseId: string;
