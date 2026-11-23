@@ -12,6 +12,7 @@ import {
   Brain,
   BriefcaseBusiness,
   Check,
+  X,
   ChevronLeft,
   ChevronRight,
   Circle,
@@ -97,6 +98,8 @@ import {
   deleteTimeLog as deleteSupabaseTimeLog,
   loadTimeLogs,
   saveTimeLog as saveSupabaseTimeLog,
+  updateTimeLogIfUnchanged,
+  deleteTimeLogIfUnchanged,
 } from "./timeLogStore/supabaseTimeLogStore";
 import {
   deleteCalendarEvent,
@@ -205,6 +208,7 @@ import {
   isTimeLogISODate,
   timeLogTimeToMinutes,
 } from "./taskStore/taskTypes";
+import { calculateTimeLogWorkingDuration, isPausedTimeLog, normalizeTimeLogPause, toggleTimeLogPause } from "./timeLogStore/timeLogPause";
 import type {
   ActivityType,
   BackupSnapshot,
@@ -560,6 +564,13 @@ const MEDS_RANGE_CONFIG: Record<MedsLevelRange, { label: string; durationHours: 
 };
 const MEDS_CURRENT_WINDOW_FUTURE_HOURS = 6;
 const SIGNAL_COLOURS = { Vyvanse: "#99E1FF", Prozac: "#C29EFF", Creatine: "#2ACEC6", Coffee: "#FCB100" } as const;
+const SIGNAL_ICONS = { Vyvanse: PillIcon, Prozac: PillIcon, Creatine: Dumbbell, Coffee } as const;
+
+function signalIdentity(entry: MedicationEntry) {
+  const key = isVyvanseEntry(entry) ? "Vyvanse" : isProzacEntry(entry) ? "Prozac" : isCaffeineEntry(entry) ? "Coffee" :
+    entry.medication?.trim().toLowerCase() === "creatine" ? "Creatine" : null;
+  return key ? { colour: SIGNAL_COLOURS[key], Icon: SIGNAL_ICONS[key] } : null;
+}
 
 function signalColourMix(hex: string, white: number) {
   return `#${[1, 3, 5].map((index) => {
@@ -2520,8 +2531,9 @@ function normalizeTimeLogs(value: unknown): TimeLog[] {
     const endDate = typeof raw.endDate === "string" && isTimeLogISODate(raw.endDate) ? raw.endDate : null;
     const endTime = timeLogTimeToMinutes(raw.endTime) !== null ? raw.endTime : undefined;
     const hours = raw.hours === null ? null : Number(raw.hours ?? 0);
+    const pause = normalizeTimeLogPause(raw);
 
-    if (!taskId || taskId.startsWith("logger-") || !isTimeLogISODate(date)) {
+    if (!pause || !taskId || taskId.startsWith("logger-") || !isTimeLogISODate(date)) {
       continue;
     }
 
@@ -2534,6 +2546,7 @@ function normalizeTimeLogs(value: unknown): TimeLog[] {
       endTime,
       hours,
       note: typeof raw.note === "string" ? raw.note : "",
+      ...pause,
     };
 
     const hasAnyTime = Boolean(next.startTime || next.endTime);
@@ -2544,7 +2557,7 @@ function normalizeTimeLogs(value: unknown): TimeLog[] {
           Boolean(next.endTime) &&
           calculateTimeLogDurationHours(next.date, next.startTime ?? "", endDate ?? next.date, next.endTime ?? "") !== null));
 
-    if (isValidTimedClosedLog || isOpenTimeLog(next)) {
+    if ((!next.pausedAt || isOpenTimeLog(next)) && (isValidTimedClosedLog || isOpenTimeLog(next))) {
       logs.push(next);
     }
   }
@@ -2921,7 +2934,7 @@ function feelingLogsFromEntry(entry: MedicationEntry): FeelingLogSnapshot[] {
 
 function medicationLabel(entry: MedicationEntry) {
   if (entry.entryType === "input") {
-    return [entry.medication, entry.amount ? formatMedicationAmount(entry.amount) : "", entry.unit ?? ""]
+    return [isProzacEntry(entry) ? "Fluoxetine" : entry.medication, entry.amount ? formatMedicationAmount(entry.amount) : "", entry.unit ?? ""]
       .filter(Boolean)
       .join(" ");
   }
@@ -3156,15 +3169,25 @@ function MobileSignalSelection({ recentCoffeeIds, onSaved, loggedToday = [] }: {
       setSaving(false);
     }
   }
-  return <div className="min-w-0 sm:hidden">
-    {coffeeOpen ? <section className="grid gap-3" aria-label="Choose coffee">
-      <div className="flex items-center justify-between"><h2 className="text-sm font-semibold">Coffee</h2><button type="button" onClick={() => setCoffeeOpen(false)} className="min-h-11 px-2 text-xs text-slate-600">Cancel</button></div>
+  return <div className="min-w-0">
+    <Modal open={coffeeOpen} title="Choose coffee" ariaLabel="Choose coffee" keyboardSafe softBackdrop onClose={() => setCoffeeOpen(false)} footer={
+      <div className="flex flex-wrap justify-end gap-2">
+        {coffee ? <button type="button" onClick={() => { setCoffee(null); setCoffeeOpen(false); }} className="min-h-11 rounded-xl border border-slate-200 px-3 text-xs">Remove coffee</button> : null}
+        <button type="button" onClick={() => setCoffeeOpen(false)} className="min-h-11 rounded-xl border border-slate-200 px-3 text-xs">Cancel</button>
+        <button type="button" disabled={!draftDrink || !shotsValid || !mgValid} onClick={() => {
+          if (!draftDrink || !shotsValid || !mgValid) return;
+          setCoffee({ drinkId: draftDrink.id, mg: draftMg, shots: Number(draftShots) });
+          setCoffeeOpen(false);
+        }} className="min-h-11 rounded-xl bg-slate-900 px-4 text-sm text-white disabled:opacity-40">Confirm coffee</button>
+      </div>
+    }>
+    <section className="grid gap-3" aria-label="Coffee choices">
       <div className="text-xs text-slate-500">{libraryOpen ? "All coffees" : "Recent coffees"}</div>
       {!recentCoffeeIds.length ? <p className="text-xs text-slate-500">No recent coffees.</p> : null}
       <div className="grid grid-cols-2 gap-2">
         {(libraryOpen ? CAFFEINE_DRINK_DEFAULTS : CAFFEINE_DRINK_DEFAULTS.filter((drink) => recentCoffeeIds.includes(drink.id)).sort((a, b) => recentCoffeeIds.indexOf(a.id) - recentCoffeeIds.indexOf(b.id))).map((drink) => {
           const Icon = CAFFEINE_DRINK_ICONS[drink.id];
-          return <button key={drink.id} type="button" aria-pressed={draftDrinkId === drink.id} onClick={() => chooseDrink(drink.id)} className={`flex min-h-12 min-w-0 items-center gap-2 rounded-lg border px-3 py-2 text-left text-xs ${draftDrinkId === drink.id ? "border-slate-900 bg-slate-100" : "border-slate-200 bg-white"}`}><Icon className="h-4 w-4 shrink-0 text-amber-600" aria-hidden /><span>{drink.label}</span></button>;
+          return <button key={drink.id} type="button" aria-pressed={draftDrinkId === drink.id} onClick={() => chooseDrink(drink.id)} className={`flex min-h-14 min-w-0 items-center gap-2 rounded-xl border px-3 py-2 text-left text-xs ${draftDrinkId === drink.id ? "border-amber-300 bg-amber-50" : "border-transparent bg-slate-50"}`}><span className="shrink-0" style={{ color: SIGNAL_COLOURS.Coffee }}><Icon className="h-5 w-5" aria-hidden /></span><span className="min-w-0"><span className="block">{drink.label}</span><span className="mt-0.5 block text-[10px] text-slate-500">{drink.mg} mg per preset</span></span></button>;
         })}
       </div>
       <button type="button" aria-expanded={libraryOpen} onClick={() => setLibraryOpen((open) => !open)} className="min-h-11 text-left text-xs font-medium text-slate-700">{libraryOpen ? "Recent coffees only" : "Other coffees"}</button>
@@ -3175,18 +3198,14 @@ function MobileSignalSelection({ recentCoffeeIds, onSaved, loggedToday = [] }: {
           <button type="button" aria-label="Custom shot count" aria-pressed={customShots} onClick={() => setCustomShots(true)} className={`min-h-11 rounded-lg border px-1 text-xs font-medium ${customShots ? "border-slate-900 bg-slate-100" : "border-slate-200 bg-white"}`}>Custom</button>
         </div>
         {customShots ? <label className="grid gap-1 text-xs text-slate-600">Number of shots<input aria-label="Number of shots" type="number" inputMode="numeric" min="1" step="1" value={draftShots} onChange={(event) => setDraftShots(event.target.value)} className="h-11 w-full rounded-lg border border-slate-200 px-3 text-sm" /></label> : null}
+        <div className="text-xs tabular-nums text-slate-500">Estimated caffeine: {mgValid ? `${draftMg} mg` : "Choose a valid amount"}</div>
       </div> : null}
-      <div className="flex flex-wrap gap-2">
-        {coffee ? <button type="button" onClick={() => { setCoffee(null); setCoffeeOpen(false); }} className="min-h-11 rounded-lg border border-slate-200 px-3 text-xs">Remove coffee</button> : null}
-        <button type="button" disabled={!draftDrink || !shotsValid || !mgValid} onClick={() => {
-          if (!draftDrink || !shotsValid || !mgValid) return;
-          setCoffee({ drinkId: draftDrink.id, mg: draftMg, shots: Number(draftShots) });
-          setCoffeeOpen(false);
-        }} className="min-h-11 rounded-lg bg-slate-900 px-4 text-sm text-white disabled:opacity-40">Confirm coffee</button>
-      </div>
-    </section> : <>
+    </section>
+    </Modal>
+    <>
       <div className="grid grid-cols-4 gap-2" aria-label="Quick log choices">
-        {([{ id: "Vyvanse", label: "Vyvanse", Icon: PillIcon }, { id: "Prozac", label: "Fluoxetine", Icon: PillIcon }, { id: "Creatine", label: "Creatine", Icon: Dumbbell }, { id: "Coffee", label: "Coffee", Icon: Coffee }] as const).map(({ id, label, Icon }) => {
+        {([{ id: "Vyvanse", label: "Vyvanse" }, { id: "Prozac", label: "Fluoxetine" }, { id: "Creatine", label: "Creatine" }, { id: "Coffee", label: "Coffee" }] as const).map(({ id, label }) => {
+          const Icon = SIGNAL_ICONS[id];
           const colour = SIGNAL_COLOURS[id];
           const pale = signalColourMix(colour, 0.65);
           const active = id === "Coffee" ? Boolean(coffee) : selected.includes(id);
@@ -3195,9 +3214,10 @@ function MobileSignalSelection({ recentCoffeeIds, onSaved, loggedToday = [] }: {
             if (id === "Coffee") { openCoffee(); return; }
             setSelected((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id]);
             setMessage("");
-          }} style={{ borderColor: active ? colour : "transparent" }} className="grid h-[94px] min-w-0 content-center justify-items-center gap-2 rounded-[18px] border bg-white px-1 py-2 text-center text-[11px] font-medium text-slate-950 shadow-[0_5px_18px_rgba(25,40,65,0.045)] disabled:opacity-60">
-            <span data-logged-today={logged} className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-full border-[5px]" style={{ borderColor: logged ? signalColourMix(colour, -0.2) : pale, color: logged ? signalColourMix(colour, -0.2) : colour }}>
-              <Icon className={`h-[22px] w-[22px] ${logged ? "opacity-100" : "opacity-65"}`} aria-hidden />
+          }} style={{ borderColor: active ? colour : "transparent", backgroundColor: active ? pale : "white", boxShadow: active ? `0 0 0 1px ${colour}` : undefined }} className="relative grid h-[100px] min-w-0 content-center justify-items-center gap-2 rounded-[18px] border bg-white px-1 py-2 text-center text-[11px] font-medium text-slate-950 shadow-[0_5px_18px_rgba(25,40,65,0.045)] disabled:opacity-60 sm:h-28 sm:text-xs">
+            {active ? <Check className="absolute right-2 top-2 h-3 w-3 text-slate-800" aria-hidden /> : null}
+            <span data-logged-today={logged} className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-full border-[5px]" style={{ borderColor: logged ? signalColourMix(colour, -0.2) : colour, backgroundColor: signalColourMix(colour, 0.88), color: logged ? signalColourMix(colour, -0.2) : colour }}>
+              <Icon className="h-[22px] w-[22px]" aria-hidden />
             </span>
             <span className="max-w-full whitespace-nowrap leading-tight">{label}</span>
           </button>;
@@ -3210,7 +3230,7 @@ function MobileSignalSelection({ recentCoffeeIds, onSaved, loggedToday = [] }: {
         }} className="flex h-12 min-w-0 items-center justify-center gap-2 rounded-[22px] border border-[#b7c3d4] bg-white px-3 text-sm font-semibold text-[#0c2037] disabled:text-slate-400"><Clock3 className="h-[18px] w-[18px]" aria-hidden />Log time</button>
       </div>
       {coffee && chosenCoffee ? <div className="mt-2 text-xs text-slate-500">{chosenCoffee.label}{coffee.shots ? ` · ${coffee.shots} shot${coffee.shots === 1 ? "" : "s"}` : ""}</div> : null}
-    </>}
+    </>
     {batch ? <div className="mt-2 grid gap-1 text-xs text-slate-600" aria-live="polite">
       <div>{new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(new Date(batch.entries[0].entry.timestamp))}</div>
       {batch.entries.map(({ entry, status }) => <div key={entry.id} className="flex justify-between gap-2"><span>{entry.medication === "Prozac" ? "Fluoxetine" : entry.medication === "Coffee" ? String(entry.metadata?.drinkLabel ?? "Coffee") : entry.medication}</span><span>{status === "saved" ? "Saved" : status === "failed" ? "Not confirmed" : saving ? "Saving..." : "Pending"}</span></div>)}
@@ -3277,15 +3297,16 @@ function medicationTrackerIdentity(entry: MedicationEntry) {
   if (entry.entryType !== "input" || !entry.medication?.trim()) return null;
   if (isCaffeineEntry(entry)) return { key: "caffeine", label: "Caffeine" };
   if (isVyvanseEntry(entry)) return { key: "vyvanse", label: "Vyvanse" };
-  if (isProzacEntry(entry)) return { key: "prozac", label: "Prozac" };
+  if (isProzacEntry(entry)) return { key: "prozac", label: "Fluoxetine" };
   const label = entry.medication.trim();
   return { key: label.toLocaleLowerCase(), label };
 }
 
 function medicationTrackerColor(key: string) {
-  if (key === "vyvanse") return "#ff6b1a";
-  if (key === "caffeine") return "#f2aa12";
-  if (key === "prozac") return "#7045D8";
+  if (key === "vyvanse") return SIGNAL_COLOURS.Vyvanse;
+  if (key === "caffeine") return SIGNAL_COLOURS.Coffee;
+  if (key === "prozac") return SIGNAL_COLOURS.Prozac;
+  if (key === "creatine") return SIGNAL_COLOURS.Creatine;
   const hash = Array.from(key).reduce((value, character) => (value * 31 + character.charCodeAt(0)) >>> 0, 0);
   return MEDICATION_TRACKER_CUSTOM_COLORS[hash % MEDICATION_TRACKER_CUSTOM_COLORS.length];
 }
@@ -3731,32 +3752,29 @@ function deriveMobileSignalMetrics(entries: MedicationEntry[], nowMs: number, as
 
 function SignalEstimateSettings({ assumptions, onSave }: { assumptions: SignalEstimateAssumptions; onSave: (next: SignalEstimateAssumptions) => boolean }) {
   const [hours, setHours] = useState("");
-  const [threshold, setThreshold] = useState("");
   const [error, setError] = useState("");
-  useEffect(() => { setHours(assumptions.effectHours === null ? "" : String(assumptions.effectHours)); setThreshold(assumptions.caffeineThresholdMg === null ? "" : String(assumptions.caffeineThresholdMg)); }, [assumptions]);
-  return <details className="text-[11px] text-slate-500">
-    <summary className="w-fit cursor-pointer py-1">Personal estimate assumptions</summary>
-    <div className="grid grid-cols-2 gap-2 py-2">
+  useEffect(() => { setHours(assumptions.effectHours === null ? "" : String(assumptions.effectHours)); }, [assumptions]);
+  return <div className="text-xs text-slate-500">
+    <div className="grid gap-2 py-2">
       <label className="grid min-w-0 gap-1">Effect window (personal hours)<input aria-label="Personal effect window hours" type="number" inputMode="decimal" min="0.25" max="168" step="any" value={hours} onChange={(event) => setHours(event.target.value)} className="h-10 min-w-0 rounded-lg border border-slate-200 bg-white px-2 text-sm" /></label>
-      <label className="grid min-w-0 gap-1">Caffeine threshold (personal mg)<input aria-label="Personal caffeine wind-down threshold mg" type="number" inputMode="decimal" min="1" max="1000000" step="any" value={threshold} onChange={(event) => setThreshold(event.target.value)} className="h-10 min-w-0 rounded-lg border border-slate-200 bg-white px-2 text-sm" /></label>
     </div>
-    <p>Personal sensitivity estimates on this device, separate from elimination. Not a prediction of sleep onset. Based only on recorded recent intakes; no future doses assumed.</p>
+    <p>Your personal estimate, stored on this device. Separate from plasma elimination; leave blank if unknown.</p>
     <button type="button" onClick={() => {
-      const next = normalizeSignalAssumptions({ effectHours: hours.trim() ? Number(hours) : null, caffeineThresholdMg: threshold.trim() ? Number(threshold) : null });
-      if (!next) { setError("Use positive hours up to 168 and a threshold from 1 to 1,000,000 mg, or leave blank."); return; }
+      const next = normalizeSignalAssumptions({ ...assumptions, effectHours: hours.trim() ? Number(hours) : null });
+      if (!next) { setError("Use positive hours up to 168, or leave blank."); return; }
       setError(onSave(next) ? "" : "Could not save estimates on this device.");
     }} className="mt-2 min-h-9 rounded-lg bg-slate-100 px-3 font-medium text-slate-700">Apply estimates</button>
     {error ? <p role="alert" className="mt-1 text-rose-700">{error}</p> : null}
-  </details>;
+  </div>;
 }
 
 function MobileSignalMetricCards({ metrics, assumptions, onSave }: { metrics: ReturnType<typeof deriveMobileSignalMetrics>; assumptions: SignalEstimateAssumptions; onSave: (next: SignalEstimateAssumptions) => boolean }) {
+  const [effectSettingsOpen, setEffectSettingsOpen] = useState(false);
   const minutes = metrics.effectPhase === "peak" ? metrics.minutesUntilPeak : metrics.minutesUntilWearOff;
-  const windDown = metrics.windDownAt === null ? "Not enough data" : metrics.windDownAt <= metrics.referenceNowMs ? "Now" : new Intl.DateTimeFormat("en", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(metrics.windDownAt));
-  return <div className="space-y-2 sm:hidden">
+  return <div className="space-y-2">
   <div className="grid grid-cols-2 gap-3" aria-label="Live signal estimates">
     <section className="min-w-0 rounded-[18px] bg-white p-2.5 shadow-[0_5px_20px_rgba(25,40,65,0.045)]" title="Estimated peak from the model; effect window is your personal assumption, not plasma elimination">
-      <div className="flex items-center gap-2 text-xs font-semibold text-[#102038]"><span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: signalColourMix(SIGNAL_COLOURS.Vyvanse, 0.8), color: SIGNAL_COLOURS.Vyvanse }}><PillIcon className="h-3 w-3" aria-hidden /></span>Vyvanse</div>
+      <div className="flex items-center gap-2 text-xs font-semibold text-[#102038]"><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: signalColourMix(SIGNAL_COLOURS.Vyvanse, 0.65), color: SIGNAL_COLOURS.Vyvanse }}><PillIcon className="h-4 w-4" aria-hidden /></span>Vyvanse<button type="button" aria-label="Adjust effect window" title="Effect window" onClick={() => setEffectSettingsOpen(true)} className="ml-auto flex h-7 w-7 items-center justify-center rounded-full text-slate-400 hover:bg-slate-50"><Settings className="h-3 w-3" aria-hidden /></button></div>
       <div className="mt-1.5 min-h-8 text-[25px] font-semibold leading-8 tabular-nums text-[#102038]">{metrics.effectPhase === "ended" ? <span className="block text-[13px] leading-4">Estimated effect ended</span> : metrics.effectPhase === "unset" ? <span className="text-sm">Set estimate</span> : minutes === null ? "—" : <span className="whitespace-nowrap">{Math.floor(minutes / 60)}<span className="text-base font-medium">h </span>{minutes % 60}<span className="text-base font-medium">m</span></span>}</div>
       <div className="mt-0.5 text-[11px] leading-4 text-[#63768f]">{metrics.effectPhase === "empty" ? "No recent intake" : metrics.effectPhase === "peak" ? "until estimated peak" : metrics.effectPhase === "wearOff" ? "until estimated wear-off" : metrics.effectPhase === "ended" ? "personal effect window" : "effect window not set"}</div>
       <div className="mt-2 h-1.5 overflow-hidden rounded-full" style={{ backgroundColor: signalColourMix(SIGNAL_COLOURS.Vyvanse, 0.7) }} role="progressbar" aria-label="Estimated effect window elapsed" aria-valuemin={0} aria-valuemax={100} aria-valuenow={metrics.effectConfigured ? Math.round(metrics.effectProgress * 100) : undefined} aria-valuetext={metrics.effectConfigured ? undefined : "Personal effect window not set"}><div className="h-full rounded-full" style={{ width: `${metrics.effectProgress * 100}%`, backgroundColor: SIGNAL_COLOURS.Vyvanse }} /></div>
@@ -3768,8 +3786,9 @@ function MobileSignalMetricCards({ metrics, assumptions, onSave }: { metrics: Re
       <div className="mt-2 h-1.5 overflow-hidden rounded-full" style={{ backgroundColor: signalColourMix(SIGNAL_COLOURS.Coffee, 0.8) }} role="progressbar" aria-label="Estimated caffeine fraction remaining" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(metrics.caffeineProgress * 100)}><div className="h-full rounded-full" style={{ width: `${metrics.caffeineProgress * 100}%`, backgroundColor: SIGNAL_COLOURS.Coffee }} /></div>
     </section>
   </div>
-  <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1 px-1 text-[11px] text-slate-500" aria-label="Estimated wind-down"><span>Estimated wind-down</span><strong className="font-medium text-slate-700">{windDown}</strong></div>
-  <SignalEstimateSettings assumptions={assumptions} onSave={onSave} />
+  <Modal open={effectSettingsOpen} title="Effect window" ariaLabel="Effect window" onClose={() => setEffectSettingsOpen(false)}>
+    <SignalEstimateSettings assumptions={assumptions} onSave={(next) => { const saved = onSave(next); if (saved) setEffectSettingsOpen(false); return saved; }} />
+  </Modal>
   </div>;
 }
 
@@ -3970,10 +3989,10 @@ function MedsChartCard({
           </div>
           <div className="min-w-0">
             <div className="truncate text-sm font-semibold uppercase leading-tight tracking-[0.04em] text-slate-950">{title}</div>
-            <div className={`${mobileDashboard ? "hidden sm:block " : ""}mt-1 truncate font-mono text-[9px] uppercase tracking-[0.05em] text-slate-500`}>{subtitle}</div>
+            {!mobileDashboard ? <div className="mt-1 truncate font-mono text-[9px] uppercase tracking-[0.05em] text-slate-500">{subtitle}</div> : null}
           </div>
         </div>
-        <div className={`${mobileDashboard ? "hidden sm:block " : ""}shrink-0 pt-0.5 text-right font-mono text-[11px] font-semibold tabular-nums text-slate-600`}>{meta}</div>
+        {!mobileDashboard ? <div className="shrink-0 pt-0.5 text-right font-mono text-[11px] font-semibold tabular-nums text-slate-600">{meta}</div> : null}
       </div>
 
       <svg
@@ -4044,7 +4063,7 @@ function MedsChartCard({
         {dots.map((dot) => (
           <g key={dot.key}>
             <line x1={dot.x} y1={dot.y} x2={dot.x} y2="132" stroke="#cbd5e1" strokeDasharray="3 3" strokeOpacity="0.7" />
-            <circle className={mobileDashboard ? "max-sm:stroke-none" : undefined} cx={dot.x} cy={dot.y} r="5.5" fill={tone} stroke="#fff" strokeWidth="2" />
+            <circle cx={dot.x} cy={dot.y} r="5.5" fill={tone} stroke={mobileDashboard ? "none" : "#fff"} strokeWidth={mobileDashboard ? 0 : 2} />
           </g>
         ))}
       </svg>
@@ -4494,6 +4513,7 @@ function Modal({
   keyboardSafe = false,
   footer,
   ariaLabel,
+  softBackdrop = false,
 }: {
   open: boolean;
   title: string;
@@ -4502,8 +4522,24 @@ function Modal({
   keyboardSafe?: boolean;
   footer?: React.ReactNode;
   ariaLabel?: string;
+  softBackdrop?: boolean;
 }) {
+  const dialogRef = useRef<HTMLDivElement | null>(null);
   const [visibleViewport, setVisibleViewport] = useState<{ height: number; top: number } | null>(null);
+  useEffect(() => {
+    if (!open || !softBackdrop) return;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const focusable = () => Array.from(dialogRef.current?.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex="0"]') ?? []);
+    focusable()[0]?.focus();
+    const trapFocus = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const items = focusable(), first = items[0], last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    };
+    document.addEventListener("keydown", trapFocus);
+    return () => { document.removeEventListener("keydown", trapFocus); previousFocus?.focus(); };
+  }, [open, softBackdrop]);
   useEffect(() => {
     if (!open || !keyboardSafe || !window.visualViewport || !window.matchMedia("(max-width: 639px)").matches) {
       setVisibleViewport(null);
@@ -4535,13 +4571,14 @@ function Modal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto px-4 py-4" style={visibleViewport ? { top: visibleViewport.top, height: visibleViewport.height, bottom: "auto" } : undefined}>
       <div
-        className="absolute inset-0 bg-black/30"
+        className={`absolute inset-0 bg-black/30 ${softBackdrop ? "backdrop-blur-sm" : ""}`}
         onClick={onClose}
         aria-hidden="true"
       />
-      <div role={ariaLabel ? "dialog" : undefined} aria-modal={ariaLabel ? true : undefined} aria-label={ariaLabel} style={visibleViewport ? { maxHeight: Math.max(100, visibleViewport.height - 32) } : undefined} className={`relative flex ${keyboardSafe ? "max-h-[calc(100dvh-2rem)]" : "max-h-[calc(100vh-2rem)]"} w-full max-w-[560px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl`}>
-        <div className="shrink-0 border-b border-slate-100 px-5 py-4">
+      <div ref={dialogRef} role={ariaLabel ? "dialog" : undefined} aria-modal={ariaLabel ? true : undefined} aria-label={ariaLabel} style={visibleViewport ? { maxHeight: Math.max(100, visibleViewport.height - 32) } : undefined} className={`relative flex ${keyboardSafe ? "max-h-[calc(100dvh-2rem)]" : "max-h-[calc(100vh-2rem)]"} w-full max-w-[560px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl`}>
+        <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-5 py-4">
           <div className="text-sm font-semibold text-slate-900">{title}</div>
+          {softBackdrop ? <button type="button" aria-label="Close coffee choices" onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-full text-slate-500 hover:bg-slate-100"><X className="h-4 w-4" aria-hidden /></button> : null}
         </div>
         <div className={`${footer ? "min-h-0 " : ""}overflow-y-auto px-5 py-4`}>{children}</div>
         {footer ? <div className="shrink-0 border-t border-slate-100 px-5 py-3">{footer}</div> : null}
@@ -5224,7 +5261,7 @@ export default function MinimalTaskTracker() {
   const [signalAssumptions, setSignalAssumptions] = useState<SignalEstimateAssumptions>(EMPTY_SIGNAL_ASSUMPTIONS);
   const [signalMetricNowMs, setSignalMetricNowMs] = useState(0);
   useEffect(() => {
-    if (mode !== "meds" || medsView !== "today" || !signalsMobile) return;
+    if (mode !== "meds" || medsView !== "today") return;
     const refresh = () => setSignalMetricNowMs(Date.now());
     const visible = () => { if (document.visibilityState === "visible") refresh(); };
     refresh();
@@ -5468,6 +5505,7 @@ async function unsubscribeFromPushNotifications() {
   // Time log modal state
   const [logOpen, setLogOpen] = useState(false);
   const [editingLogId, setEditingLogId] = useState<string | null>(null);
+  const [editingLogSnapshot, setEditingLogSnapshot] = useState<TimeLog | null>(null);
   const [logTaskId, setLogTaskId] = useState<string>("");
   const [logDate, setLogDate] = useState<string>("");
   const [logStartTime, setLogStartTime] = useState<string>("");
@@ -5479,6 +5517,9 @@ async function unsubscribeFromPushNotifications() {
   const logSubmitLock = useRef(false);
   const pendingLogId = useRef<string | null>(null);
   const [endingOpenLogId, setEndingOpenLogId] = useState<string | null>(null);
+  const [pausingOpenLogId, setPausingOpenLogId] = useState<string | null>(null);
+  const [timeLogPauseSupported, setTimeLogPauseSupported] = useState(false);
+  const openSessionActionLock = useRef(false);
   const [deletingTimeLogId, setDeletingTimeLogId] = useState<string | null>(null);
   const [loggerActionError, setLoggerActionError] = useState<string | null>(null);
   const [loggerTaskFilter, setLoggerTaskFilter] = useState<string>("all");
@@ -5571,6 +5612,7 @@ useEffect(() => {
       const remoteLogs = await loadTimeLogs(SYNC_CODE);
 
       if (remoteLogs.ok) {
+        setTimeLogPauseSupported(remoteLogs.pauseSupported);
         timeLogsRef.current = remoteLogs.logs;
         skipNextTimeLogSaveRef.current = true;
         setTimeLogs(remoteLogs.logs);
@@ -7427,8 +7469,9 @@ reasons: attentionReasons(task),
   }, [timeLogs]);
 
   const calculatedLogHours = useMemo(() => {
-    return calculateTimeLogDurationHours(logDate, logStartTime, logEndDate || logDate, logEndTime);
-  }, [logDate, logEndDate, logEndTime, logStartTime]);
+    return calculateTimeLogWorkingDuration({ ...(editingLogSnapshot ?? {}), date: logDate, startTime: logStartTime } as TimeLog,
+      logEndDate || logDate, logEndTime)?.hours ?? null;
+  }, [editingLogSnapshot, logDate, logEndDate, logEndTime, logStartTime]);
   const isCalculatedLogDuration = calculatedLogHours !== null;
   const displayedLogHoursInput = isCalculatedLogDuration
     ? formatHourInput(calculatedLogHours)
@@ -7571,8 +7614,8 @@ reasons: attentionReasons(task),
   }, [openTimeLogs]);
 
   const editingTimeLog = useMemo(() => {
-    return editingLogId ? timeLogs.find((log) => log.id === editingLogId) ?? null : null;
-  }, [editingLogId, timeLogs]);
+    return editingLogId && editingLogSnapshot?.id === editingLogId ? editingLogSnapshot : null;
+  }, [editingLogId, editingLogSnapshot]);
   const logModalTitle = editingTimeLog && isOpenTimeLog(editingTimeLog)
     ? "Add end time"
     : editingLogId
@@ -8622,6 +8665,7 @@ reasons: attentionReasons(task),
     setLoggerActionError(null);
     const selectedTaskId = taskId ?? loggerTasks[0]?.id ?? logTaskOptions[0]?.id ?? "";
     const existing = log ?? null;
+    setEditingLogSnapshot(existing);
     const existingHoursInput = existing && isClosedTimeLog(existing) ? formatHourInput(existing.hours) : "";
     const startDate = existing?.date ?? date;
 
@@ -8700,6 +8744,7 @@ reasons: attentionReasons(task),
     }
 
     pendingLogId.current = null;
+    setEditingLogSnapshot(null);
     setPlannerLogSourceEventId(event.id);
     setEditingLogId(null);
     setLogTaskId(log.taskId);
@@ -8752,8 +8797,17 @@ reasons: attentionReasons(task),
 
   async function persistTimeLogDraft(next: TimeLog, existing: TimeLog | null, sourcePlannerEvent: CalendarEvent | null) {
     let saved = false;
+    let persisted = next;
     try {
-      saved = await saveSupabaseTimeLog(SYNC_CODE, next);
+      if (existing) {
+        const result = await updateTimeLogIfUnchanged(SYNC_CODE, existing, next);
+        if (result.ok === false && result.reason === "conflict") {
+          setLoggerActionError("This session changed on another device. Your inputs were kept. Reload and reopen it before saving.");
+          return false;
+        }
+        saved = result.ok;
+        if (result.ok) persisted = result.log;
+      } else saved = await saveSupabaseTimeLog(SYNC_CODE, next);
     } catch {
       saved = false;
     }
@@ -8778,11 +8832,12 @@ reasons: attentionReasons(task),
 
     setLoggerActionError(null);
     setTimeLogs((prev) => {
-      if (!existing) return [next, ...prev];
-      return prev.map((entry) => (entry.id === existing.id ? next : entry));
+      if (!existing) return [persisted, ...prev.filter((entry) => entry.id !== persisted.id)];
+      return prev.map((entry) => (entry.id === existing.id ? persisted : entry));
     });
 
     setEditingLogId(null);
+    setEditingLogSnapshot(null);
     setPlannerLogSourceEventId(null);
     pendingLogId.current = null;
     setLogOpen(false);
@@ -8790,7 +8845,7 @@ reasons: attentionReasons(task),
   }
 
   async function submitTimeLog() {
-    if (logSubmitLock.current) return;
+    if (logSubmitLock.current || openSessionActionLock.current) return;
     const closingOpenSession = editingTimeLog ? isOpenTimeLog(editingTimeLog) : false;
     const hours = closingOpenSession
       ? calculatedLogHours
@@ -8799,6 +8854,7 @@ reasons: attentionReasons(task),
 
     const date = logDate || clientToday || todayISO();
     const existing = editingTimeLog;
+    const working = calculateTimeLogWorkingDuration({ ...(existing ?? {}), date, startTime: logStartTime } as TimeLog, logEndDate || date, logEndTime);
     const next: TimeLog = {
       id: existing?.id ?? pendingLogId.current ?? (pendingLogId.current = createTimeLogId()),
       taskId: logTaskId,
@@ -8808,6 +8864,8 @@ reasons: attentionReasons(task),
       endTime: logEndTime || undefined,
       hours,
       note: logNote.trim(),
+      pausedAt: null,
+      pausedSeconds: working?.pausedSeconds ?? existing?.pausedSeconds ?? 0,
     };
 
     const sourcePlannerEvent = plannerLogSourceEventId
@@ -8824,7 +8882,7 @@ reasons: attentionReasons(task),
   }
 
   async function startOpenTimeLog() {
-    if (logSubmitLock.current) return;
+    if (logSubmitLock.current || openSessionActionLock.current) return;
     const date = logDate || clientToday || todayISO();
     if (!logTaskId || !isTimeLogISODate(date) || timeLogTimeToMinutes(logStartTime) === null) return;
 
@@ -8838,6 +8896,8 @@ reasons: attentionReasons(task),
       endTime: undefined,
       hours: null,
       note: logNote.trim(),
+      pausedAt: existing?.pausedAt ?? null,
+      pausedSeconds: existing?.pausedSeconds ?? 0,
     };
 
     if (!isOpenTimeLog(next)) return;
@@ -8853,14 +8913,14 @@ reasons: attentionReasons(task),
   }
 
   async function endOpenTimeLogNow(log: TimeLog) {
-    if (endingOpenLogId) return;
+    if (openSessionActionLock.current || logSubmitLock.current) return;
 
     const now = new Date();
     const endDate = localDateISO(now);
     const endTime = localTimeInput(now);
-    const hours = calculateTimeLogDurationHours(log.date, log.startTime ?? "", endDate, endTime);
+    const working = calculateTimeLogWorkingDuration(log, endDate, endTime);
 
-    if (hours === null) {
+    if (!working) {
       setLoggerActionError("Could not end this session safely. Use Adjust to enter the end time.");
       return;
     }
@@ -8869,39 +8929,68 @@ reasons: attentionReasons(task),
       ...log,
       endDate,
       endTime,
-      hours,
+      hours: working.hours,
+      pausedAt: null,
+      pausedSeconds: working.pausedSeconds,
     };
 
     setEndingOpenLogId(log.id);
+    openSessionActionLock.current = true;
     setLoggerActionError(null);
     try {
-      const saved = await saveSupabaseTimeLog(SYNC_CODE, next);
-      if (!saved) {
-        setLoggerActionError("Could not end session. The open session was kept.");
+      const result = await updateTimeLogIfUnchanged(SYNC_CODE, log, next);
+      if (result.ok === false) {
+        setLoggerActionError(result.reason === "conflict" ? "This session changed on another device. Reload before ending it." : "Could not end session. The open session was kept. Reload before retrying if the connection was interrupted.");
         return;
       }
-      setTimeLogs((prev) => prev.map((entry) => (entry.id === log.id ? next : entry)));
+      setTimeLogs((prev) => prev.map((entry) => (entry.id === log.id ? result.log : entry)));
     } finally {
+      openSessionActionLock.current = false;
       setEndingOpenLogId(null);
     }
   }
 
+  async function pauseOrResumeTimeLog(log: TimeLog) {
+    if (openSessionActionLock.current || logSubmitLock.current || !timeLogPauseSupported) return;
+    const next = toggleTimeLogPause(log, new Date());
+    if (!next) {
+      setLoggerActionError("Could not change pause state. Check the session start time and your device clock.");
+      return;
+    }
+    openSessionActionLock.current = true;
+    setPausingOpenLogId(log.id);
+    setLoggerActionError(null);
+    try {
+      const result = await updateTimeLogIfUnchanged(SYNC_CODE, log, next);
+      if (result.ok === false) {
+        setLoggerActionError(result.reason === "conflict" ? "This session changed on another device. Reload before pausing or resuming." : "Could not confirm pause state. Reload before retrying; the existing session was kept.");
+        return;
+      }
+      setTimeLogs((prev) => prev.map((entry) => entry.id === log.id ? result.log : entry));
+    } finally {
+      openSessionActionLock.current = false;
+      setPausingOpenLogId(null);
+    }
+  }
+
   async function deleteTimeLog(id: string) {
-    if (deletingTimeLogId) return;
-    const existing = timeLogs.find((log) => log.id === id);
+    if (openSessionActionLock.current || logSubmitLock.current) return;
+    const existing = editingTimeLog?.id === id ? editingTimeLog : timeLogs.find((log) => log.id === id);
     if (!existing) return;
 
     setDeletingTimeLogId(id);
+    openSessionActionLock.current = true;
     setLoggerActionError(null);
-    const deleted = await deleteSupabaseTimeLog(SYNC_CODE, id);
+    const result = await deleteTimeLogIfUnchanged(SYNC_CODE, existing);
+    openSessionActionLock.current = false;
     setDeletingTimeLogId(null);
 
-    if (!deleted) {
+    if (result.ok === false) {
       console.warn("Time log delete failed. Local state was left unchanged.", {
         operation: "delete",
         id,
       });
-      setLoggerActionError("Could not delete time log. Existing Logger history was kept.");
+      setLoggerActionError(result.reason === "conflict" ? "This session changed on another device. Reload before deleting it." : "Could not delete time log. Existing Logger history was kept.");
       return;
     }
 
@@ -10173,7 +10262,7 @@ reasons: attentionReasons(task),
         </div>
       </nav>
 
-      <main className={`min-h-screen pb-24 transition-[margin] duration-200 md:pb-8 ${mode === "meds" && medsView === "today" ? "max-sm:bg-[#f4f5f9]" : ""} ${sidebarCollapsed ? "md:ml-16" : "md:ml-60"}`}>
+      <main className={`min-h-screen pb-24 transition-[margin] duration-200 md:pb-8 ${mode === "meds" ? "bg-[#f4f5f9]" : ""} ${sidebarCollapsed ? "md:ml-16" : "md:ml-60"}`}>
         <div className={`mx-auto max-w-[1440px] px-4 pb-5 ${mode === "meds" && medsView === "today" ? "pt-[calc(env(safe-area-inset-top)+0.5rem)]" : "pt-[calc(env(safe-area-inset-top)+1rem)]"} sm:px-6 sm:py-5 lg:px-8`}>
           {mode === "meds" ? null : (
           <div className="border-b border-slate-200/70 pb-4">
@@ -10190,11 +10279,11 @@ reasons: attentionReasons(task),
 
         {/* Main */}
         {mode === "meds" ? (
-          <div data-signals-dashboard={medsView === "today" ? "" : undefined} className={`mx-auto w-full min-w-0 md:mt-2 ${medsView === "tracker" ? "max-w-[920px]" : "max-w-[430px]"}`}>
+          <div data-signals-dashboard={medsView === "today" ? "" : undefined} className={`mx-auto w-full min-w-0 md:mt-2 ${medsView === "tracker" ? "max-w-[920px]" : "max-w-[640px]"}`}>
             <div className={`flex items-start justify-between gap-4 ${medsView === "today" ? "pt-0 sm:pt-2" : "pt-2"}`}>
               <div>
-                <h1 className={medsView === "today" ? "text-[26px] font-semibold leading-tight tracking-normal text-[#0c2037] sm:text-[1.65rem] sm:tracking-tight sm:text-slate-950" : "text-[1.65rem] font-semibold leading-tight tracking-tight text-slate-950"}>Signals</h1>
-                <p className={`mt-1 ${medsView === "today" ? "text-[13px] leading-[18px] text-[#63768f] sm:text-sm sm:leading-5 sm:text-slate-500" : "text-sm text-slate-500"}`}>Personal telemetry and signals.</p>
+                <h1 className="text-[26px] font-semibold leading-tight tracking-normal text-[#0c2037]">Signals</h1>
+                <p className="mt-1 text-[13px] leading-[18px] text-[#63768f]">Personal telemetry and signals.</p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 <button
@@ -10258,8 +10347,8 @@ reasons: attentionReasons(task),
               </div>
             </div>
 
-            <div className={medsView === "today" ? "mt-3 sm:mt-5" : "mt-5"}>
-              <div className={medsView === "today" ? "grid grid-cols-3 sm:rounded-full sm:border sm:border-slate-200 sm:bg-white sm:p-1 sm:shadow-[0_8px_24px_rgba(15,23,42,0.035)]" : "grid grid-cols-3 rounded-full border border-slate-200 bg-white p-1 shadow-[0_8px_24px_rgba(15,23,42,0.035)]"}>
+            <div className="mt-4">
+              <div className="grid grid-cols-3">
                 {[
                   { id: "today", label: "Dashboard" },
                   { id: "history", label: "History" },
@@ -10269,11 +10358,7 @@ reasons: attentionReasons(task),
                     key={option.id}
                     type="button"
                     onClick={() => setMedsView(option.id as MedsView)}
-                    className={medsView === "today" ? `relative min-w-0 border-b-2 border-transparent px-1 py-2 text-sm font-semibold transition-colors after:absolute after:inset-x-4 after:bottom-0 after:h-0.5 after:rounded-full sm:rounded-full sm:border-b-0 sm:px-5 sm:py-2.5 sm:after:hidden ${medsView === option.id ? "text-[#10464b] after:bg-[#10464b] sm:bg-slate-900 sm:text-white sm:shadow-sm" : "text-[#a0aeb6] sm:text-slate-500 sm:hover:bg-slate-50 sm:hover:text-slate-800"}` : `rounded-full px-5 py-2.5 text-sm font-semibold transition-colors ${
-                      medsView === option.id
-                        ? "bg-slate-900 text-white shadow-sm"
-                        : "text-slate-500 hover:bg-slate-50 hover:text-slate-800"
-                    }`}
+                    className={`relative min-w-0 border-b-2 border-transparent px-1 py-2 text-sm font-semibold transition-colors after:absolute after:inset-x-4 after:bottom-0 after:h-0.5 after:rounded-full ${medsView === option.id ? "text-[#10464b] after:bg-[#10464b]" : "text-[#a0aeb6] hover:text-slate-700"}`}
                   >
                     {option.label}
                   </button>
@@ -10298,9 +10383,9 @@ reasons: attentionReasons(task),
                   ))}
                 </div>
                 <div className="mb-3 hidden flex-wrap items-center gap-x-2 gap-y-1 border-y border-slate-200/70 py-2 font-mono text-[10px] tabular-nums text-slate-500 sm:flex">
-                  <span><span className="text-slate-400">VYV</span> <strong className={medsTodayMode === "day" ? "text-orange-600" : "text-slate-700"}>{Math.round(liveSignalReadout.vyvanseLevel)}%</strong></span>
+                  <span><span className="text-slate-400">VYV</span> <strong style={{ color: SIGNAL_COLOURS.Vyvanse }}>{Math.round(liveSignalReadout.vyvanseLevel)}%</strong></span>
                   <span className="text-slate-300">·</span>
-                  <span><span className="text-slate-400">CAF</span> <strong className={medsTodayMode === "day" ? "text-amber-600" : "text-slate-700"}>{Math.round(liveSignalReadout.caffeineLevel)}%</strong></span>
+                  <span><span className="text-slate-400">CAF</span> <strong style={{ color: SIGNAL_COLOURS.Coffee }}>{Math.round(liveSignalReadout.caffeineLevel)}%</strong></span>
                   <span className="text-slate-300">·</span>
                   <span><span className="text-slate-400">BAC</span> <strong className={medsTodayMode === "night" ? "text-cyan-700" : "text-slate-700"}>{liveSignalReadout.bac.toFixed(2)}%</strong></span>
                   <span className="text-slate-300">·</span>
@@ -10308,40 +10393,9 @@ reasons: attentionReasons(task),
                   <span className="text-slate-300">·</span>
                   <span><span className="text-slate-400">UPDATED</span> <strong className="text-slate-700">{liveSignalReadout.updatedAt}</strong></span>
                 </div>
-                <div className="mb-2 mt-5 text-sm font-medium text-[#102038] sm:mb-1.5 sm:mt-0 sm:text-[11px] sm:font-semibold sm:text-slate-500">Quick log</div>
+                <div className="mb-2 mt-5 text-sm font-medium text-[#102038]">Quick log</div>
                 <MobileSignalSelection recentCoffeeIds={recentCoffeeIds} loggedToday={mobileSignalMetrics.loggedToday} onSaved={(entry) => setMedicationEntries((current) => [entry, ...current.filter((existing) => existing.id !== entry.id)])} />
-                <div className={medsTodayMode === "day" ? "hidden gap-2 pb-0.5 sm:flex sm:flex-wrap" : "hidden gap-2 overflow-x-auto pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:flex"}>
-                  {medsTodayMode === "day" ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => openRoutineMedicationModal("Vyvanse", 30)}
-                        className="flex min-h-14 min-w-0 items-center gap-2 rounded-xl border border-orange-200 bg-orange-50 px-3 py-3 text-sm font-semibold text-slate-800 sm:min-h-0 sm:rounded-full sm:py-2 sm:text-xs"
-                      >
-                        <PillIcon className="h-3.5 w-3.5 text-orange-500" aria-hidden />
-                        Vyvanse <span className="text-xs font-normal">30mg</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => openRoutineMedicationModal("Prozac", 20)}
-                        className="flex min-h-14 min-w-0 flex-wrap items-center gap-1.5 rounded-xl border border-violet-200 bg-violet-50 px-3 py-3 text-sm font-semibold text-slate-800 sm:min-h-0 sm:rounded-full sm:py-2 sm:text-xs"
-                      >
-                        <PillIcon className="h-3.5 w-3.5 text-violet-500" aria-hidden />
-                        Fluoxetine <span className="text-xs font-normal">20mg</span>
-                      </button>
-                      <button type="button" onClick={openCreatineModal} className="flex min-h-14 min-w-0 items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm font-semibold text-slate-800 sm:min-h-0 sm:rounded-full sm:py-2 sm:text-xs">
-                        <Plus className="h-3.5 w-3.5 shrink-0 text-slate-500" aria-hidden />Creatine
-                      </button>
-                      <button
-                        type="button"
-                        onClick={openCaffeineModal}
-                        className="flex min-h-14 min-w-0 items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm font-semibold text-slate-800 sm:min-h-0 sm:rounded-full sm:py-2 sm:text-xs"
-                      >
-                        <Coffee className="h-3.5 w-3.5 text-amber-500" aria-hidden />
-                        Coffee
-                      </button>
-                    </>
-                  ) : (
+                {medsTodayMode === "night" ? <div className="mt-2 hidden sm:block">
                     <button
                       type="button"
                       onClick={openAlcoholModal}
@@ -10350,8 +10404,7 @@ reasons: attentionReasons(task),
                       <Wine className="h-3.5 w-3.5 text-rose-500" aria-hidden />
                       Alcohol
                     </button>
-                  )}
-                </div>
+                </div> : null}
               </div>
             ) : null}
 
@@ -10384,51 +10437,20 @@ reasons: attentionReasons(task),
                       ))}
                     </div>
                   </div>
-                  <div className="mb-3 flex justify-end sm:hidden">
+                  <div className="mb-3 flex justify-end">
                     <div className="inline-flex max-w-full items-center overflow-hidden rounded-full border border-slate-200/70 bg-white/70 p-0.5" role="group" aria-label="Chart time navigation">
                       <button type="button" onClick={() => setMedsRangeOffset((value) => value + 1)} aria-label="Previous range" className="flex h-7 w-7 shrink-0 items-center justify-center text-slate-600"><ChevronLeft className="h-3.5 w-3.5" aria-hidden /></button>
                       <button type="button" onClick={() => setMedsRangeOffset(0)} aria-label="Current range" title="Return to today" className="h-7 min-w-14 px-2 text-[11px] font-medium text-slate-700">{signalRangeReferenceLabel(medsVisibleRange.startMs, medsVisibleRange.endMs, medsRangeOffset)}</button>
                       <button type="button" onClick={() => setMedsRangeOffset((value) => Math.max(0, value - 1))} disabled={medsRangeOffset === 0} aria-label="Next range" className="flex h-7 w-7 shrink-0 items-center justify-center text-slate-600 disabled:text-slate-300"><ChevronRight className="h-3.5 w-3.5" aria-hidden /></button>
                     </div>
                   </div>
-                  <div className="mb-2 hidden items-center justify-end gap-1 text-xs font-medium sm:flex">
-                    <button
-                      type="button"
-                      onClick={() => setMedsRangeOffset((value) => value + 1)}
-                      className="flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white text-base leading-none text-slate-600"
-                      aria-label="Previous range"
-                      title="Previous"
-                    >
-                      ‹
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setMedsRangeOffset(0)}
-                      className="flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white text-sm leading-none text-slate-600"
-                      aria-label="Current range"
-                      title="Current"
-                    >
-                      •
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setMedsRangeOffset((value) => Math.max(0, value - 1))}
-                      disabled={medsRangeOffset === 0}
-                      className="flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white text-base leading-none text-slate-600 disabled:opacity-40"
-                      aria-label="Next range"
-                      title="Next"
-                    >
-                      ›
-                    </button>
-                  </div>
-
-                  <div className="mb-3 flex gap-6 sm:hidden" role="tablist" aria-label="Estimated level graph">
+                  <div className="mb-3 flex gap-6" role="tablist" aria-label="Estimated level graph">
                     {([{ id: "vyvanse", label: "Vyvanse" }, { id: "caffeine", label: "Caffeine" }] as const).map((graph) => <button key={graph.id} id={`signals-${graph.id}-tab`} type="button" role="tab" aria-selected={mobileSignalGraph === graph.id} aria-controls={`signals-${graph.id}-graph`} onClick={() => setMobileSignalGraph(graph.id)} className={`border-b-2 pb-1.5 text-xs font-semibold ${mobileSignalGraph === graph.id ? "border-[#10464b] text-[#10464b]" : "border-transparent text-slate-400"}`}>{graph.label}</button>)}
                   </div>
                   <div className="sm:space-y-3">
                     {signalsDayView ? (
                       <>
-                        <div id="signals-vyvanse-graph" role={signalsMobile ? "tabpanel" : undefined} aria-labelledby="signals-vyvanse-tab" className={mobileSignalGraph === "vyvanse" ? "" : "hidden sm:block"}>
+                        <div id="signals-vyvanse-graph" role="tabpanel" aria-labelledby="signals-vyvanse-tab" className={mobileSignalGraph === "vyvanse" ? "" : "hidden"}>
                         <MedsChartCard
                           title="Vyvanse"
                           mobileDashboard
@@ -10440,8 +10462,8 @@ reasons: attentionReasons(task),
                               : "No intake in this window"
                           }
                           meta={latestVyvanseInRange ? `${formatMedicationAmount(latestVyvanseInRange.amount ?? 30)} ${latestVyvanseInRange.unit ?? "mg"}` : "ESTIMATED"}
-                          tone={signalsMobile ? SIGNAL_COLOURS.Vyvanse : "#ff6b1a"}
-                          softTone={signalsMobile ? signalColourMix(SIGNAL_COLOURS.Vyvanse, 0.85) : "#fff0e7"}
+                          tone={SIGNAL_COLOURS.Vyvanse}
+                          softTone={signalColourMix(SIGNAL_COLOURS.Vyvanse, 0.85)}
                           icon={<PillIcon className="h-4 w-4" aria-hidden />}
                           points={vyvanseChartSeries.points}
                           dots={vyvanseChartDots}
@@ -10457,7 +10479,7 @@ reasons: attentionReasons(task),
                         />
                         </div>
 
-                        <div id="signals-caffeine-graph" role={signalsMobile ? "tabpanel" : undefined} aria-labelledby="signals-caffeine-tab" className={mobileSignalGraph === "caffeine" ? "" : "hidden sm:block"}>
+                        <div id="signals-caffeine-graph" role="tabpanel" aria-labelledby="signals-caffeine-tab" className={mobileSignalGraph === "caffeine" ? "" : "hidden"}>
                         <MedsChartCard
                           title="Caffeine"
                           mobileDashboard
@@ -10465,8 +10487,8 @@ reasons: attentionReasons(task),
                           curveBreakXs={signalsMobile ? medicationCutoffXs(caffeineCurveEntries, CAFFEINE_VISUAL_MODEL.visibleHours, medsVisibleRange.startMs, medsVisibleRange.endMs) : []}
                           subtitle={latestCaffeineInRange ? `LEVEL ${Math.round(visibleSignalLevels.caffeine)}% · HALF-LIFE ~5H · LAST ${formatMedicationTime(latestCaffeineInRange.timestamp)}` : "No caffeine in this window"}
                           meta={caffeineTotalInRange > 0 ? `${Math.round(caffeineTotalInRange)} mg` : "ESTIMATED"}
-                          tone={signalsMobile ? SIGNAL_COLOURS.Coffee : "#f2aa12"}
-                          softTone={signalsMobile ? signalColourMix(SIGNAL_COLOURS.Coffee, 0.85) : "#fff7df"}
+                          tone={SIGNAL_COLOURS.Coffee}
+                          softTone={signalColourMix(SIGNAL_COLOURS.Coffee, 0.85)}
                           icon={<Coffee className="h-4 w-4" aria-hidden />}
                           points={caffeineChartSeries.points}
                           dots={caffeineChartDots}
@@ -10506,10 +10528,12 @@ reasons: attentionReasons(task),
                   <div className="divide-y divide-slate-200/70">
                     {todaysMedicationEntries.length ? todaysMedicationEntries.map((entry) => {
                       const isCaffeine = isCaffeineEntry(entry);
+                      const identity = signalIdentity(entry);
+                      const EntryIcon = identity?.Icon ?? PillIcon;
                       const feelingLogs = entry.entryType === "observation" ? feelingLogsFromEntry(entry) : [];
                       const primaryFeelingLog = feelingLogs[0];
                       const PrimaryFeelingIcon = primaryFeelingLog ? feelingIconComponent(primaryFeelingLog.icon) : HeartPulse;
-                      const title = entry.entryType === "observation" ? "Feeling" : isCaffeine ? caffeineDrinkLabel(entry) : entry.medication ?? "Dose";
+                      const title = entry.entryType === "observation" ? "Feeling" : isCaffeine ? caffeineDrinkLabel(entry) : isProzacEntry(entry) ? "Fluoxetine" : entry.medication ?? "Dose";
                       const detail =
                         entry.entryType === "observation"
                           ? ""
@@ -10524,13 +10548,11 @@ reasons: attentionReasons(task),
                         className="grid w-full grid-cols-[64px_42px_1fr_auto] items-center gap-3 py-3 text-left"
                       >
                         <div className="text-xs tabular-nums text-slate-400">{formatMedicationTime(entry.timestamp)}</div>
-                        <div className="grid h-10 w-10 place-items-center rounded-full bg-slate-100 text-slate-900">
+                        <div className="grid h-10 w-10 place-items-center rounded-full bg-slate-100 text-slate-900" style={identity ? { backgroundColor: signalColourMix(identity.colour, 0.82), color: identity.colour } : undefined}>
                           {entry.entryType === "observation" ? (
                             <PrimaryFeelingIcon className="h-5 w-5 text-emerald-600" aria-hidden />
-                          ) : isCaffeine ? (
-                            <Coffee className="h-5 w-5" aria-hidden />
                           ) : (
-                            <PillIcon className="h-5 w-5 text-orange-500" aria-hidden />
+                            <EntryIcon className="h-5 w-5" aria-hidden />
                           )}
                         </div>
                         <div className="min-w-0">
@@ -10574,7 +10596,7 @@ reasons: attentionReasons(task),
                     {[
                       { id: "all", label: "All" },
                       { id: "Vyvanse", label: "Vyvanse" },
-                      { id: "Prozac", label: "Prozac" },
+                      { id: "Prozac", label: "Fluoxetine" },
                       { id: "Coffee", label: "Coffee" },
                       { id: "alcohol", label: "Alcohol" },
                       { id: "feelings", label: "Feelings" },
@@ -10655,21 +10677,19 @@ reasons: attentionReasons(task),
 
                               const entry = item.entry;
                               const feelingLogs = entry.entryType === "observation" ? feelingLogsFromEntry(entry) : [];
+                              const identity = entry.entryType === "input" ? signalIdentity(entry) : null;
+                              const EntryIcon = identity?.Icon ?? PillIcon;
                               return (
                                 <button
                                   key={entry.id}
                                   type="button"
                                   onClick={() => openMedicationEntryEditor(entry)}
-                                  className="grid w-full grid-cols-[48px_1fr] items-center gap-3 rounded-lg px-1 py-2 text-left text-sm transition-colors hover:bg-slate-50/80"
+                                  className="grid w-full grid-cols-[48px_1fr] items-center gap-3 rounded-lg px-1 py-2.5 text-left text-sm transition-colors hover:bg-white/80"
                                 >
                                   <div className="tabular-nums text-[12px] text-slate-400">{formatMedicationTime(entry.timestamp)}</div>
                                   {entry.entryType === "input" ? (
-                                    <div className="flex min-w-0 items-center gap-2 text-cyan-800">
-                                      {entry.medication === "Coffee" ? (
-                                        <Coffee className="h-4 w-4 shrink-0 text-cyan-600" aria-hidden />
-                                      ) : (
-                                        <PillIcon className="h-4 w-4 shrink-0 text-cyan-600" aria-hidden />
-                                      )}
+                                    <div className="flex min-w-0 items-center gap-2.5 text-slate-800">
+                                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full" style={{ color: identity?.colour ?? "#64748b", backgroundColor: identity ? signalColourMix(identity.colour, 0.82) : "#f1f5f9" }}><EntryIcon className="h-4 w-4" aria-hidden /></span>
                                       <span className="truncate">{medicationLabel(entry)}</span>
                                     </div>
                                   ) : (
@@ -12206,22 +12226,32 @@ reasons: attentionReasons(task),
                             {taskNameById[log.taskId] ?? "Archived task"}
                           </div>
                           <div className="text-xs text-cyan-700">
-                            {formatOpenSessionStarted(log)} · Open
+                            {formatOpenSessionStarted(log)} · {isPausedTimeLog(log) ? "Paused" : "Open"}
                           </div>
                         </div>
                       </div>
-                      <div className="grid grid-cols-3 gap-1.5 sm:flex sm:items-center">
+                      <div className="grid grid-cols-4 gap-1.5 sm:flex sm:items-center">
+                        <button
+                          type="button"
+                          onClick={() => pauseOrResumeTimeLog(log)}
+                          disabled={!timeLogPauseSupported || Boolean(pausingOpenLogId || endingOpenLogId || deletingTimeLogId) || logSaving}
+                          title={!timeLogPauseSupported ? "Pause is unavailable until the pause-state migration is applied and this page is reloaded." : undefined}
+                          className="rounded-full border border-cyan-100 bg-white px-3 py-1.5 text-xs font-medium text-cyan-700 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {pausingOpenLogId === log.id ? "Saving" : isPausedTimeLog(log) ? "Resume" : "Pause"}
+                        </button>
                         <button
                           type="button"
                           onClick={() => endOpenTimeLogNow(log)}
-                          disabled={endingOpenLogId === log.id}
+                          disabled={Boolean(pausingOpenLogId || endingOpenLogId || deletingTimeLogId) || logSaving}
                           className="rounded-full bg-cyan-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-cyan-300"
                         >
-                          {endingOpenLogId === log.id ? "Ending" : "End now"}
+                          {endingOpenLogId === log.id ? "Stopping" : "Stop"}
                         </button>
                         <button
                           type="button"
                           onClick={() => openLogTime(log.taskId, log.date, log)}
+                          disabled={Boolean(pausingOpenLogId || endingOpenLogId || deletingTimeLogId) || logSaving}
                           className="rounded-full border border-cyan-100 bg-white px-3 py-1.5 text-xs font-medium text-cyan-700 hover:bg-cyan-50"
                         >
                           Adjust
@@ -12229,7 +12259,7 @@ reasons: attentionReasons(task),
                         <button
                           type="button"
                           onClick={() => deleteTimeLog(log.id)}
-                          disabled={deletingTimeLogId === log.id}
+                          disabled={Boolean(pausingOpenLogId || endingOpenLogId || deletingTimeLogId) || logSaving}
                           className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-400 hover:bg-slate-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           {deletingTimeLogId === log.id ? "Deleting" : "Delete"}
@@ -14777,7 +14807,7 @@ reasons: attentionReasons(task),
                 </span>
               </div>
               {isCalculatedLogDuration ? (
-                <p className="mt-1 text-[11px] text-slate-400">Calculated from start and end time</p>
+                <p className="mt-1 text-[11px] text-slate-400">{editingTimeLog?.pausedAt || editingTimeLog?.pausedSeconds ? "Calculated working time, excluding pauses" : "Calculated from start and end time"}</p>
               ) : null}
           </Field>
 

@@ -167,6 +167,7 @@ const functionNames = ["isValidISODate", "isoParts", "localDateISO", "timeInputF
 const definitions = ast.statements.filter((node) => ts.isFunctionDeclaration(node) && functionNames.includes(node.name?.text));
 const presets = ast.statements.find((node) => ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) => declaration.name.getText(ast) === "CAFFEINE_DRINK_DEFAULTS"));
 const palette = ast.statements.find((node) => ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) => declaration.name.getText(ast) === "SIGNAL_COLOURS"));
+const icons = ast.statements.find((node) => ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) => declaration.name.getText(ast) === "SIGNAL_ICONS"));
 
 function harness({ save = async () => true, storage = new Map(), onSaved = () => {}, loggedToday = [] } = {}) {
   const slots = [];
@@ -174,7 +175,7 @@ function harness({ save = async () => true, storage = new Map(), onSaved = () =>
   let effects = [];
   const context = {
     React: require("react"), Date, Intl, Error, ...batchApi,
-    SYNC_CODE: "TEST-SCOPE", PillIcon: "pill", Plus: "plus", Dumbbell: "dumbbell", Coffee: "coffee", Zap: "zap", Clock3: "clock", Delete: "backspace-icon", Field: "field", Modal: "modal",
+    SYNC_CODE: "TEST-SCOPE", PillIcon: "pill", Plus: "plus", Check: "check", Dumbbell: "dumbbell", Coffee: "coffee", Zap: "zap", Clock3: "clock", Delete: "backspace-icon", Field: "field", Modal: "modal",
     CAFFEINE_DRINK_ICONS: new Proxy({}, { get: () => "coffee" }),
     saveMedicationEntry: save,
     localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) },
@@ -191,7 +192,7 @@ function harness({ save = async () => true, storage = new Map(), onSaved = () =>
     },
   };
   vm.createContext(context);
-  vm.runInContext(ts.transpileModule([presets, palette, ...definitions].map((node) => node.getText(ast)).join("\n"), {
+  vm.runInContext(ts.transpileModule([presets, palette, icons, ...definitions].map((node) => node.getText(ast)).join("\n"), {
     compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2020 },
   }).outputText, context);
   let component = "MobileSignalSelection";
@@ -465,12 +466,12 @@ test("four rounded choices toggle independently and logging actions immediately 
     const choice = ui.button(label);
     assert(choice.props["aria-pressed"]);
     assert(choice.props.className.includes("rounded-[18px]"));
-    assert(choice.props.className.includes("h-[94px]"));
+    assert(choice.props.className.includes("h-[100px]"));
   }
   assert(!ui.text(ui.button("Vyvanse")).includes("30 mg"));
   assert(!ui.text(ui.button("Fluoxetine")).includes("20 mg"));
   assert(ui.nodes(ui.button("Creatine")).some((node) => node.type === "dumbbell"));
-  const main = ui.render().props.children[0];
+  const main = ui.render().props.children[1];
   const sections = main.props.children;
   assert(sections[0].props.className.includes("grid-cols-4"));
   assert(ui.text(sections[1]).includes("Log nowLog time"));
@@ -481,10 +482,59 @@ test("four rounded choices toggle independently and logging actions immediately 
 
 test("recent coffee choices retain ordering and Other coffees exposes the complete library", () => {
   const ui = harness(); ui.click("Coffee");
-  const recent = ui.nodes(ui.render()).filter((node) => node.type === "button").map(ui.text);
-  assert.deepEqual(recent.slice(1, 4), ["Iced latte", "Espresso", "Matcha latte"]);
+  const recent = ui.nodes(ui.render()).filter((node) => node.type === "button" && node.props["aria-pressed"] !== undefined).map(ui.text);
+  assert.deepEqual(recent.slice(0, 3), ["Iced latte120 mg per preset", "Espresso65 mg per preset", "Matcha latte70 mg per preset"]);
   ui.click("Other coffees");
   for (const label of ["Americano", "Iced Americano", "Cappuccino", "Cortado", "Homemade coffee", "Custom"]) assert(ui.button(label));
+});
+
+test("coffee popup keeps the Dashboard selectable beneath it and closing cannot save", async () => {
+  const writes = [];
+  const ui = harness({ save: async (entry) => { writes.push(entry); return true; } });
+  ui.click("Vyvanse");
+  ui.click("Coffee");
+  const popup = ui.nodes(ui.render()).find((node) => node.type === "modal" && node.props.title === "Choose coffee");
+  assert(popup.props.open);
+  assert(popup.props.softBackdrop);
+  assert(ui.button("Vyvanse").props["aria-pressed"]);
+  ui.click("Iced latte");
+  popup.props.onClose();
+  await tick();
+  assert.equal(writes.length, 0);
+  assert(!ui.button("Coffee").props["aria-pressed"]);
+  ui.click("Coffee"); ui.click("Cancel");
+  assert.equal(writes.length, 0);
+  ui.click("Coffee"); ui.click("Iced latte"); ui.click("Confirm coffee");
+  assert.equal(writes.length, 0);
+  assert(ui.button("Coffee").props["aria-pressed"]);
+  ui.click("Log now"); await tick();
+  assert.equal(writes.length, 2);
+  assert.equal(writes[0].timestamp, writes[1].timestamp);
+});
+
+test("History and Tracker reuse the canonical Dashboard colours and icons", () => {
+  const funcs = ["signalIdentity", "medicationTrackerColor", "isVyvanseEntry", "isProzacEntry", "isCaffeineEntry", "medicationMetadataValue"];
+  const code = [palette, icons, ...ast.statements.filter((node) => ts.isFunctionDeclaration(node) && funcs.includes(node.name?.text))].map((node) => node.getText(ast)).join("\n");
+  const context = { PillIcon: "pill", Dumbbell: "dumbbell", Coffee: "coffee" };
+  vm.createContext(context);
+  vm.runInContext(ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText, context);
+  for (const [medication, key, colour, Icon] of [["Vyvanse", "vyvanse", "#99E1FF", "pill"], ["Prozac", "prozac", "#C29EFF", "pill"], ["Creatine", "creatine", "#2ACEC6", "dumbbell"], ["Coffee", "caffeine", "#FCB100", "coffee"]]) {
+    const result = context.signalIdentity({ entryType: "input", medication });
+    assert.equal(result.colour, colour);
+    assert.equal(result.Icon, Icon);
+    assert.equal(context.medicationTrackerColor(key), colour);
+  }
+});
+
+test("metric cards omit wind-down and preserve saved effect settings without a hidden default", () => {
+  const cards = ast.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "MobileSignalMetricCards").getText(ast);
+  const settings = ast.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "SignalEstimateSettings").getText(ast);
+  assert(!cards.includes("Estimated wind-down"));
+  assert(!cards.includes("Not enough data"));
+  assert(!settings.includes("Personal estimate assumptions"));
+  assert(cards.includes("Adjust effect window"));
+  assert(settings.includes("...assumptions, effectHours:"));
+  assert(!cards.includes("sm:hidden"));
 });
 
 test("one, two and three shots derive caffeine using the selected preset and persist metadata", async () => {
@@ -567,7 +617,7 @@ test("375px and 393px mobile layout constraints keep four compact cards within t
     const shotButtonWidth = (available - 3 * 6) / 4;
     assert(shotButtonWidth >= 70);
   }
-  assert(ui.render().props.className.includes("sm:hidden"));
+  assert(!ui.render().props.className.includes("sm:hidden"));
 });
 
 test("mobile history hides alcohol without affecting desktop data or filters", () => {
@@ -694,7 +744,7 @@ test("retrospective Creatine and other signals share the selected time and retai
   assert(loaded.entries.every((entry) => entry.timestamp === ui.context.signalTimestampFromInputs("2026-08-25", "14:20")));
   assert.equal(loaded.entries.find((entry) => entry.medication === "Vyvanse").amount, 30);
   assert.equal(loaded.entries.find((entry) => entry.medication === "Prozac").amount, 20);
-  const labelFunctions = ast.statements.filter((node) => ts.isFunctionDeclaration(node) && ["medicationLabel", "formatMedicationAmount"].includes(node.name?.text));
+  const labelFunctions = ast.statements.filter((node) => ts.isFunctionDeclaration(node) && ["medicationLabel", "formatMedicationAmount", "isProzacEntry"].includes(node.name?.text));
   vm.runInContext(ts.transpileModule(labelFunctions.map((node) => node.getText(ast)).join("\n"), { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText, ui.context);
   assert.equal(ui.context.medicationLabel(creatine), "Creatine 3.4 g");
 });
@@ -752,7 +802,7 @@ test("compact navigation preserves previous/current/next behaviour and shows a h
   buttons[0].props.onClick(); context.render().props.children[1].props.onClick(); assert.equal(context.medsRangeOffset, 0);
 });
 
-test("dot coordinates, radii and colours stay unchanged; mobile removes the stroke via responsive CSS", () => {
+test("dot coordinates, radii and colours stay unchanged; Signals dots have no white strokes at any width", () => {
   const chart = ast.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "MedsChartCard");
   const React = require("react");
   const context = { React, useRef: () => ({ current: null }), medsCurvePath: () => "curve", medsAreaPath: () => "area" };
@@ -762,8 +812,9 @@ test("dot coordinates, radii and colours stay unchanged; mobile removes the stro
   function circles(node, result = []) { if (node && typeof node === "object") { if (node.type === "circle") result.push(node); [].concat(node.props?.children || []).flat(Infinity).forEach((child) => circles(child, result)); } return result; }
   const mobile = circles(context.MedsChartCard({ ...props, mobileDashboard: true }))[0];
   const original = circles(context.MedsChartCard(props))[0];
-  assert.equal(mobile.props.className, "max-sm:stroke-none");
-  assert.equal(original.props.className, undefined);
+  assert.equal(mobile.props.stroke, "none");
+  assert.equal(mobile.props.strokeWidth, 0);
+  assert.equal(original.props.stroke, "#fff");
   for (const key of ["cx", "cy", "r", "fill"]) assert.equal(mobile.props[key], original.props[key]);
   assert.equal(mobile.props.cx, 45); assert.equal(mobile.props.cy, 67); assert.equal(mobile.props.r, "5.5");
 });

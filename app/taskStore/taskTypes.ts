@@ -35,6 +35,8 @@ export type TimeLog = {
   endTime?: string;
   hours: number | null;
   note: string;
+  pausedAt?: string | null;
+  pausedSeconds?: number;
 };
 
 const ISO_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
