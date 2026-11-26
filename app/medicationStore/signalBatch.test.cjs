@@ -163,9 +163,11 @@ test("journal validation rejects malformed or mixed-timestamp batches", () => {
 // Shallow hook harness invokes the actual UI callbacks without a browser or production credentials.
 const uiSource = fs.readFileSync(path.join(__dirname, "../MinimalTaskTracker.tsx"), "utf8");
 const ast = ts.createSourceFile("signals.tsx", uiSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-const functionNames = ["isValidISODate", "isoParts", "localDateISO", "timeInputFromTimestamp", "timeToMinutes", "medicationTimestampFromInputs", "signalTimestampFromInputs", "SignalTimestampInput", "SignalTimeKeypad", "signalColourMix", "MobileSignalSelection"];
+const functionNames = ["isValidISODate", "isoParts", "localDateISO", "timeInputFromTimestamp", "timeToMinutes", "medicationTimestampFromInputs", "signalTimestampFromInputs", "SignalTimestampInput", "SignalTimeKeypad", "signalColourMix", "CoffeeDrinkIcon", "MobileSignalSelection"];
 const definitions = ast.statements.filter((node) => ts.isFunctionDeclaration(node) && functionNames.includes(node.name?.text));
 const presets = ast.statements.find((node) => ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) => declaration.name.getText(ast) === "CAFFEINE_DRINK_DEFAULTS"));
+const selectableDrinks = ast.statements.find((node) => ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) => declaration.name.getText(ast) === "SELECTABLE_CAFFEINE_DRINKS"));
+const coffeeIconPaths = ast.statements.find((node) => ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) => declaration.name.getText(ast) === "CAFFEINE_DRINK_ICON_PATHS"));
 const palette = ast.statements.find((node) => ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) => declaration.name.getText(ast) === "SIGNAL_COLOURS"));
 const icons = ast.statements.find((node) => ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) => declaration.name.getText(ast) === "SIGNAL_ICONS"));
 
@@ -176,7 +178,6 @@ function harness({ save = async () => true, storage = new Map(), onSaved = () =>
   const context = {
     React: require("react"), Date, Intl, Error, ...batchApi,
     SYNC_CODE: "TEST-SCOPE", PillIcon: "pill", Plus: "plus", ChevronLeft: "back", Check: "check", Dumbbell: "dumbbell", Coffee: "coffee", Zap: "zap", Clock3: "clock", Delete: "backspace-icon", Field: "field", Modal: "modal",
-    CAFFEINE_DRINK_ICONS: new Proxy({}, { get: () => "coffee" }),
     saveMedicationEntry: save,
     localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) },
     useState(initial) {
@@ -192,7 +193,7 @@ function harness({ save = async () => true, storage = new Map(), onSaved = () =>
     },
   };
   vm.createContext(context);
-  vm.runInContext(ts.transpileModule([presets, palette, icons, ...definitions].map((node) => node.getText(ast)).join("\n"), {
+  vm.runInContext(ts.transpileModule([presets, selectableDrinks, coffeeIconPaths, palette, icons, ...definitions].map((node) => node.getText(ast)).join("\n"), {
     compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2020 },
   }).outputText, context);
   let component = "MobileSignalSelection";
@@ -485,7 +486,8 @@ test("recent coffee choices retain ordering and Custom exposes the complete libr
   const recent = ui.nodes(ui.render()).filter((node) => node.type === "button" && node.props["aria-pressed"] !== undefined).map(ui.text);
   assert.deepEqual(recent.slice(0, 3), ["Iced latte", "Espresso", "Matcha latte"]);
   ui.click("Custom");
-  for (const label of ["Americano", "Iced Americano", "Cappuccino", "Cortado", "Homemade coffee", "Custom"]) assert(ui.button(label));
+  for (const label of ["Americano", "Cappuccino", "Cortado", "Homemade coffee", "Custom"]) assert(ui.button(label));
+  assert(!ui.nodes(ui.render()).some((node) => ui.text(node) === "Iced Americano"));
 });
 
 test("compact coffee chooser has three dynamic recent tiles and a fourth Custom tile", () => {
@@ -504,7 +506,7 @@ test("compact coffee chooser has three dynamic recent tiles and a fourth Custom 
     assert(!ui.text(ui.render()).includes("Other coffees"));
     assert(ui.button("Confirm coffee").props.disabled);
     if (recentCoffeeIds[0] === "cortado") assert.deepEqual(tiles.map(ui.text), ["Cortado", "Homemade coffee", "Flat white", "Custom"]);
-    if (recentCoffeeIds[0] === "matcha_latte") assert.deepEqual(tiles.map(ui.text), ["Matcha latte", "Iced Americano", "Espresso", "Custom"]);
+    if (recentCoffeeIds[0] === "matcha_latte") assert.deepEqual(tiles.map(ui.text), ["Matcha latte", "Espresso", "Americano", "Custom"]);
   }
 });
 
@@ -528,9 +530,33 @@ test("full coffee library returns to quick tiles without losing drink or custom 
   assert.equal(writes[0].metadata.shots, 4);
 });
 
-test("coffee chooser preserves the existing Cortado, Homemade, Flat white and Custom icons", () => {
-  const mapping = ast.statements.find((node) => ts.isVariableStatement(node) && node.declarationList.declarations.some((item) => item.name.getText(ast) === "CAFFEINE_DRINK_ICONS")).getText(ast);
-  for (const [id, Icon] of [["cortado", "GlassWater"], ["homemade_coffee", "House"], ["flat_white", "Coffee"], ["custom", "Plus"]]) assert(mapping.includes(`${id}: ${Icon}`));
+test("coffee chooser renders the approved drink paths with consistent stroke settings", () => {
+  const { context } = harness();
+  const paths = {
+    espresso: "M6 10H15V14A4 4 0 0 1 6 14ZM15 11H17A2 2 0 0 1 17 15H15M4 21H19",
+    americano: "M4 5H16V16A4 4 0 0 1 12 20H8A4 4 0 0 1 4 16ZM16 7H18A3 3 0 0 1 18 13H16",
+    cappuccino: "M12 21V6M12 8C3 3 8 0 12 5C16 0 21 3 12 8M12 14C3 12 3 6 6 9Q9 12 12 14Q15 12 18 9C21 6 21 12 12 14M12 20C0 17 2 11 5 14Q8 18 12 20Q16 18 19 14C22 11 24 17 12 20",
+    latte: "M12 3C10 7 5 12 5 15A7 7 0 0 0 19 15C19 12 14 7 12 3ZM8 15Q8 18 11 18",
+    iced_latte: "M12 2V22M3.34 7L20.66 17M3.34 17L20.66 7M9 4L12 7L15 4M9 20L12 17L15 20M3 10L7 9L6 5M18 19L17 15L21 14M3 14L7 15L6 19M18 5L17 9L21 10",
+    cortado: "M5 6H19L17 20H7ZM6 12H18",
+    flat_white: "M7 7H17L16 19H8ZM7.35 11H16.65",
+    homemade_coffee: "M8 4H16L19 18H5ZM3 18H21M9 4Q12 1 15 4",
+    matcha_latte: "M12 21V10M12 15Q2 15 3 4Q13 4 12 15M12 11Q12 2 21 3Q22 12 12 11",
+    espresso_martini: "M3 4H21L12 14ZM7 8H17M12 14V21M7 21H17",
+    custom: "M12 8V16M8 12H16M12 2A10 10 0 1 0 12 22A10 10 0 1 0 12 2",
+  };
+  for (const [drinkId, path] of Object.entries(paths)) {
+    const icon = context.CoffeeDrinkIcon({ drinkId, className: "h-7 w-7" });
+    assert.equal(icon.type, "svg");
+    assert.equal(icon.props.viewBox, "0 0 24 24");
+    assert.equal(icon.props.strokeWidth, 1.65);
+    assert.equal(icon.props.stroke, "currentColor");
+    assert.equal(icon.props.fill, "none");
+    assert.equal(icon.props.strokeLinecap, "round");
+    assert.equal(icon.props.strokeLinejoin, "round");
+    assert.equal(icon.props.children.props.d, path);
+  }
+  assert.equal(context.CoffeeDrinkIcon({ drinkId: "iced_americano" }), null);
 });
 
 test("coffee popup keeps the Dashboard selectable beneath it and closing cannot save", async () => {
