@@ -31,7 +31,6 @@ import {
   SlidersHorizontal,
   Settings,
   Coffee,
-  CupSoda,
   Eye,
   Flag,
   FileText,
@@ -39,14 +38,11 @@ import {
   Frown,
   Gauge,
   Gem,
-  GlassWater,
   GraduationCap,
   Heart,
   HeartPulse,
-  House,
   Laugh,
   Layers,
-  Leaf,
   LayoutDashboard,
   ListChecks,
   LoaderCircle,
@@ -54,7 +50,6 @@ import {
   Martini,
   MessageCircle,
   Meh,
-  Milk,
   Minus,
   Moon,
   PanelLeftClose,
@@ -627,20 +622,46 @@ const CAFFEINE_DRINK_DEFAULTS: {
   { id: "espresso_martini", label: "Espresso martini", mg: 65, shots: 1 },
   { id: "custom", label: "Custom", mg: 100 },
 ];
-const CAFFEINE_DRINK_ICONS: Record<CaffeineDrinkId, React.ComponentType<{ className?: string; "aria-hidden"?: boolean }>> = {
-  espresso: Coffee,
-  americano: Coffee,
-  iced_americano: CupSoda,
-  cappuccino: Coffee,
-  latte: Milk,
-  iced_latte: CupSoda,
-  cortado: GlassWater,
-  flat_white: Coffee,
-  homemade_coffee: House,
-  matcha_latte: Leaf,
-  espresso_martini: Martini,
-  custom: Plus,
+// Keep retired drinks in the defaults for existing entries and pending saves.
+const SELECTABLE_CAFFEINE_DRINKS = CAFFEINE_DRINK_DEFAULTS.filter((drink) => drink.id !== "iced_americano");
+
+const CAFFEINE_DRINK_ICON_PATHS: Record<Exclude<CaffeineDrinkId, "iced_americano">, string> = {
+  espresso: "M6 10H15V14A4 4 0 0 1 6 14ZM15 11H17A2 2 0 0 1 17 15H15M4 21H19",
+  americano: "M4 5H16V16A4 4 0 0 1 12 20H8A4 4 0 0 1 4 16ZM16 7H18A3 3 0 0 1 18 13H16",
+  cappuccino: "M12 21V6M12 8C3 3 8 0 12 5C16 0 21 3 12 8M12 14C3 12 3 6 6 9Q9 12 12 14Q15 12 18 9C21 6 21 12 12 14M12 20C0 17 2 11 5 14Q8 18 12 20Q16 18 19 14C22 11 24 17 12 20",
+  latte: "M12 3C10 7 5 12 5 15A7 7 0 0 0 19 15C19 12 14 7 12 3ZM8 15Q8 18 11 18",
+  iced_latte: "M12 2V22M3.34 7L20.66 17M3.34 17L20.66 7M9 4L12 7L15 4M9 20L12 17L15 20M3 10L7 9L6 5M18 19L17 15L21 14M3 14L7 15L6 19M18 5L17 9L21 10",
+  cortado: "M5 6H19L17 20H7ZM6 12H18",
+  flat_white: "M7 7H17L16 19H8ZM7.35 11H16.65",
+  homemade_coffee: "M8 4H16L19 18H5ZM3 18H21M9 4Q12 1 15 4",
+  matcha_latte: "M12 21V10M12 15Q2 15 3 4Q13 4 12 15M12 11Q12 2 21 3Q22 12 12 11",
+  espresso_martini: "M3 4H21L12 14ZM7 8H17M12 14V21M7 21H17",
+  custom: "M12 8V16M8 12H16M12 2A10 10 0 1 0 12 22A10 10 0 1 0 12 2",
 };
+
+function CoffeeDrinkIcon({ drinkId, className, color }: {
+  drinkId: CaffeineDrinkId;
+  className: string;
+  color?: string;
+}) {
+  if (drinkId === "iced_americano") return null;
+
+  return (
+    <svg
+      className={className}
+      style={color ? { color } : undefined}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.65}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d={CAFFEINE_DRINK_ICON_PATHS[drinkId]} />
+    </svg>
+  );
+}
 const ALCOHOL_DRINK_TYPES = [
   { id: "Wine", Icon: Wine },
   { id: "Beer", Icon: Beer },
@@ -3099,8 +3120,8 @@ function MobileSignalSelection({ recentCoffeeIds, onSaved, loggedToday = [] }: {
   const chosenCoffee = CAFFEINE_DRINK_DEFAULTS.find((drink) => drink.id === coffee?.drinkId);
   const quickDrinks = Array.from(new Set([
     ...recentCoffeeIds,
-    ...CAFFEINE_DRINK_DEFAULTS.map((drink) => drink.id),
-  ])).filter((id) => id !== "custom" && CAFFEINE_DRINK_DEFAULTS.some((drink) => drink.id === id))
+    ...SELECTABLE_CAFFEINE_DRINKS.map((drink) => drink.id),
+  ])).filter((id) => id !== "custom" && SELECTABLE_CAFFEINE_DRINKS.some((drink) => drink.id === id))
     .slice(0, 3).map((id) => CAFFEINE_DRINK_DEFAULTS.find((drink) => drink.id === id)!);
   function chooseDrink(id: CaffeineDrinkId) {
     const drink = CAFFEINE_DRINK_DEFAULTS.find((option) => option.id === id)!;
@@ -3190,11 +3211,11 @@ function MobileSignalSelection({ recentCoffeeIds, onSaved, loggedToday = [] }: {
     <section className="grid gap-3" aria-label="Coffee choices">
       {libraryOpen ? <button type="button" onClick={() => setLibraryOpen(false)} className="flex min-h-9 w-fit items-center gap-1 rounded-full px-1 text-xs font-medium text-slate-500"><ChevronLeft className="h-4 w-4" aria-hidden />Back to quick coffees</button> : null}
       <div className="grid grid-cols-2 gap-3" aria-label={libraryOpen ? "Coffee library" : "Quick coffee presets"}>
-        {(libraryOpen ? CAFFEINE_DRINK_DEFAULTS : quickDrinks).map((drink) => {
-          const Icon = CAFFEINE_DRINK_ICONS[drink.id];
-          return <button key={drink.id} type="button" aria-pressed={draftDrinkId === drink.id} onClick={() => chooseDrink(drink.id)} className={`grid min-w-0 content-center justify-items-center gap-3 rounded-[24px] px-3 py-3 text-center text-xs font-medium text-slate-800 ${libraryOpen ? "min-h-24" : "aspect-square"} ${draftDrinkId === drink.id ? "bg-amber-50 ring-1 ring-inset ring-amber-300" : "bg-slate-50"}`}><span className="shrink-0" style={{ color: SIGNAL_COLOURS.Coffee }}><Icon className={libraryOpen ? "h-7 w-7" : "h-10 w-10"} aria-hidden /></span><span className="max-w-full break-words">{drink.label}</span></button>;
+        {(libraryOpen ? SELECTABLE_CAFFEINE_DRINKS : quickDrinks).map((drink) => {
+
+          return <button key={drink.id} type="button" aria-pressed={draftDrinkId === drink.id} onClick={() => chooseDrink(drink.id)} className={`grid min-w-0 content-center justify-items-center gap-3 rounded-[24px] px-3 py-3 text-center text-xs font-medium text-slate-800 ${libraryOpen ? "min-h-24" : "aspect-square"} ${draftDrinkId === drink.id ? "bg-amber-50 ring-1 ring-inset ring-amber-300" : "bg-slate-50"}`}><span className="shrink-0" style={{ color: SIGNAL_COLOURS.Coffee }}><CoffeeDrinkIcon drinkId={drink.id} className={libraryOpen ? "h-7 w-7" : "h-10 w-10"} /></span><span className="max-w-full break-words">{drink.label}</span></button>;
         })}
-        {!libraryOpen ? <button type="button" aria-label="Custom coffees" aria-pressed={Boolean(draftDrink && !quickDrinks.some((drink) => drink.id === draftDrink.id))} onClick={() => setLibraryOpen(true)} className={`grid aspect-square min-w-0 content-center justify-items-center gap-3 rounded-[24px] px-3 py-3 text-center text-xs font-medium text-slate-800 ${draftDrink && !quickDrinks.some((drink) => drink.id === draftDrink.id) ? "bg-amber-50 ring-1 ring-inset ring-amber-300" : "bg-slate-50"}`}><Plus className="h-10 w-10" style={{ color: SIGNAL_COLOURS.Coffee }} aria-hidden /><span>Custom</span></button> : null}
+        {!libraryOpen ? <button type="button" aria-label="Custom coffees" aria-pressed={Boolean(draftDrink && !quickDrinks.some((drink) => drink.id === draftDrink.id))} onClick={() => setLibraryOpen(true)} className={`grid aspect-square min-w-0 content-center justify-items-center gap-3 rounded-[24px] px-3 py-3 text-center text-xs font-medium text-slate-800 ${draftDrink && !quickDrinks.some((drink) => drink.id === draftDrink.id) ? "bg-amber-50 ring-1 ring-inset ring-amber-300" : "bg-slate-50"}`}><CoffeeDrinkIcon drinkId="custom" className="h-10 w-10" color={SIGNAL_COLOURS.Coffee} /><span>Custom</span></button> : null}
       </div>
       {!libraryOpen && draftDrink && !quickDrinks.some((drink) => drink.id === draftDrink.id) ? <div className="text-center text-xs text-slate-500">{draftDrink.label}</div> : null}
       {libraryOpen && draftDrink ? <div className="grid gap-2">
@@ -6285,7 +6306,7 @@ useEffect(() => {
   const recentCoffeeIds = Array.from(new Set(sortedMedicationEntries
     .filter(isCaffeineEntry)
     .map((entry) => medicationMetadataValue(entry, "drinkType"))
-    .filter((id) => id !== "custom" && CAFFEINE_DRINK_DEFAULTS.some((drink) => drink.id === id))))
+    .filter((id) => id !== "custom" && SELECTABLE_CAFFEINE_DRINKS.some((drink) => drink.id === id))))
     .slice(0, 3);
   const medsHistoryItems = useMemo(() => {
     const medicationItems = medicationHistoryEntries.map((entry) => ({
@@ -13090,17 +13111,18 @@ reasons: attentionReasons(task),
           {doseMedicationKind === "Coffee" ? (
             <>
               <Field label="Drink type">
+                {caffeineDrinkId === "iced_americano" ? <div className="text-xs text-slate-500">Iced Americano</div> : null}
                 {recentCoffeeIds.length ? <div className="flex flex-wrap gap-2" aria-label="Recent coffee choices">
                   {recentCoffeeIds.map((id) => {
                     const drink = CAFFEINE_DRINK_DEFAULTS.find((option) => option.id === id)!;
-                    const Icon = CAFFEINE_DRINK_ICONS[drink.id];
-                    return <button key={id} type="button" onClick={() => applyCaffeineDrinkDefaults(drink.id)} aria-pressed={caffeineDrinkId === id} className={`flex min-h-11 items-center gap-2 rounded-xl border px-3 text-xs font-medium ${caffeineDrinkId === id ? "border-amber-300 bg-amber-50" : "border-slate-200 bg-slate-50"}`}><Icon className="h-4 w-4 text-amber-600" aria-hidden />{drink.label}</button>;
+
+                    return <button key={id} type="button" onClick={() => applyCaffeineDrinkDefaults(drink.id)} aria-pressed={caffeineDrinkId === id} className={`flex min-h-11 items-center gap-2 rounded-xl border px-3 text-xs font-medium ${caffeineDrinkId === id ? "border-amber-300 bg-amber-50" : "border-slate-200 bg-slate-50"}`}><CoffeeDrinkIcon drinkId={drink.id} className="h-4 w-4 text-amber-600" />{drink.label}</button>;
                   })}
                 </div> : null}
                 <div className="text-[11px] text-slate-500">All drinks</div>
                 <div className="grid grid-cols-3 gap-2">
-                  {CAFFEINE_DRINK_DEFAULTS.map((drink) => {
-                    const DrinkIcon = CAFFEINE_DRINK_ICONS[drink.id];
+                  {SELECTABLE_CAFFEINE_DRINKS.map((drink) => {
+
                     return (
                       <button
                         key={drink.id}
@@ -13112,7 +13134,7 @@ reasons: attentionReasons(task),
                             : "border-slate-200 bg-white text-slate-700"
                         }`}
                       >
-                        <DrinkIcon className="h-5 w-5" aria-hidden />
+                        <CoffeeDrinkIcon drinkId={drink.id} className="h-5 w-5" color={SIGNAL_COLOURS.Coffee} />
                         <span>{drink.label}</span>
                       </button>
                     );
