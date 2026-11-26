@@ -592,6 +592,8 @@ function normalizeSignalAssumptions(raw: unknown): SignalEstimateAssumptions | n
   if (caffeineThresholdMg !== null && (typeof caffeineThresholdMg !== "number" || !Number.isFinite(caffeineThresholdMg) || caffeineThresholdMg < 1 || caffeineThresholdMg > 1000000)) return null;
   return { effectHours: effectHours as number | null, caffeineThresholdMg: caffeineThresholdMg as number | null };
 }
+// Adult duration estimate published by FocusCurve; independent of the PK curve.
+const VYVANSE_DEFAULT_EFFECT_HOURS = 14;
 const VYVANSE_VISUAL_MODEL = {
   absorptionRatePerHour: 0.664,
   halfLifeHours: 10.5,
@@ -3095,6 +3097,11 @@ function MobileSignalSelection({ recentCoffeeIds, onSaved, loggedToday = [] }: {
   }, [journalKey]);
   const draftDrink = CAFFEINE_DRINK_DEFAULTS.find((drink) => drink.id === draftDrinkId);
   const chosenCoffee = CAFFEINE_DRINK_DEFAULTS.find((drink) => drink.id === coffee?.drinkId);
+  const quickDrinks = Array.from(new Set([
+    ...recentCoffeeIds,
+    ...CAFFEINE_DRINK_DEFAULTS.map((drink) => drink.id),
+  ])).filter((id) => id !== "custom" && CAFFEINE_DRINK_DEFAULTS.some((drink) => drink.id === id))
+    .slice(0, 3).map((id) => CAFFEINE_DRINK_DEFAULTS.find((drink) => drink.id === id)!);
   function chooseDrink(id: CaffeineDrinkId) {
     const drink = CAFFEINE_DRINK_DEFAULTS.find((option) => option.id === id)!;
     setDraftDrinkId(id);
@@ -3170,28 +3177,27 @@ function MobileSignalSelection({ recentCoffeeIds, onSaved, loggedToday = [] }: {
     }
   }
   return <div className="min-w-0">
-    <Modal open={coffeeOpen} title="Choose coffee" ariaLabel="Choose coffee" keyboardSafe softBackdrop onClose={() => setCoffeeOpen(false)} footer={
-      <div className="flex flex-wrap justify-end gap-2">
-        {coffee ? <button type="button" onClick={() => { setCoffee(null); setCoffeeOpen(false); }} className="min-h-11 rounded-xl border border-slate-200 px-3 text-xs">Remove coffee</button> : null}
-        <button type="button" onClick={() => setCoffeeOpen(false)} className="min-h-11 rounded-xl border border-slate-200 px-3 text-xs">Cancel</button>
+    <Modal open={coffeeOpen} title="Choose coffee" ariaLabel="Choose coffee" keyboardSafe softBackdrop compact hideHeader onClose={() => setCoffeeOpen(false)} footer={
+      <div className="grid grid-cols-2 gap-2">
+        <button type="button" onClick={() => setCoffeeOpen(false)} className="min-h-11 rounded-full bg-slate-50 px-3 text-sm text-slate-600">Cancel</button>
         <button type="button" disabled={!draftDrink || !shotsValid || !mgValid} onClick={() => {
           if (!draftDrink || !shotsValid || !mgValid) return;
           setCoffee({ drinkId: draftDrink.id, mg: draftMg, shots: Number(draftShots) });
           setCoffeeOpen(false);
-        }} className="min-h-11 rounded-xl bg-slate-900 px-4 text-sm text-white disabled:opacity-40">Confirm coffee</button>
+        }} className="min-h-11 rounded-full bg-slate-900 px-4 text-sm text-white disabled:opacity-40">Confirm coffee</button>
       </div>
     }>
     <section className="grid gap-3" aria-label="Coffee choices">
-      <div className="text-xs text-slate-500">{libraryOpen ? "All coffees" : "Recent coffees"}</div>
-      {!recentCoffeeIds.length ? <p className="text-xs text-slate-500">No recent coffees.</p> : null}
-      <div className="grid grid-cols-2 gap-2">
-        {(libraryOpen ? CAFFEINE_DRINK_DEFAULTS : CAFFEINE_DRINK_DEFAULTS.filter((drink) => recentCoffeeIds.includes(drink.id)).sort((a, b) => recentCoffeeIds.indexOf(a.id) - recentCoffeeIds.indexOf(b.id))).map((drink) => {
+      {libraryOpen ? <button type="button" onClick={() => setLibraryOpen(false)} className="flex min-h-9 w-fit items-center gap-1 rounded-full px-1 text-xs font-medium text-slate-500"><ChevronLeft className="h-4 w-4" aria-hidden />Back to quick coffees</button> : null}
+      <div className="grid grid-cols-2 gap-3" aria-label={libraryOpen ? "Coffee library" : "Quick coffee presets"}>
+        {(libraryOpen ? CAFFEINE_DRINK_DEFAULTS : quickDrinks).map((drink) => {
           const Icon = CAFFEINE_DRINK_ICONS[drink.id];
-          return <button key={drink.id} type="button" aria-pressed={draftDrinkId === drink.id} onClick={() => chooseDrink(drink.id)} className={`flex min-h-14 min-w-0 items-center gap-2 rounded-xl border px-3 py-2 text-left text-xs ${draftDrinkId === drink.id ? "border-amber-300 bg-amber-50" : "border-transparent bg-slate-50"}`}><span className="shrink-0" style={{ color: SIGNAL_COLOURS.Coffee }}><Icon className="h-5 w-5" aria-hidden /></span><span className="min-w-0"><span className="block">{drink.label}</span><span className="mt-0.5 block text-[10px] text-slate-500">{drink.mg} mg per preset</span></span></button>;
+          return <button key={drink.id} type="button" aria-pressed={draftDrinkId === drink.id} onClick={() => chooseDrink(drink.id)} className={`grid min-w-0 content-center justify-items-center gap-3 rounded-[24px] px-3 py-3 text-center text-xs font-medium text-slate-800 ${libraryOpen ? "min-h-24" : "aspect-square"} ${draftDrinkId === drink.id ? "bg-amber-50 ring-1 ring-inset ring-amber-300" : "bg-slate-50"}`}><span className="shrink-0" style={{ color: SIGNAL_COLOURS.Coffee }}><Icon className={libraryOpen ? "h-7 w-7" : "h-10 w-10"} aria-hidden /></span><span className="max-w-full break-words">{drink.label}</span></button>;
         })}
+        {!libraryOpen ? <button type="button" aria-label="Custom coffees" aria-pressed={Boolean(draftDrink && !quickDrinks.some((drink) => drink.id === draftDrink.id))} onClick={() => setLibraryOpen(true)} className={`grid aspect-square min-w-0 content-center justify-items-center gap-3 rounded-[24px] px-3 py-3 text-center text-xs font-medium text-slate-800 ${draftDrink && !quickDrinks.some((drink) => drink.id === draftDrink.id) ? "bg-amber-50 ring-1 ring-inset ring-amber-300" : "bg-slate-50"}`}><Plus className="h-10 w-10" style={{ color: SIGNAL_COLOURS.Coffee }} aria-hidden /><span>Custom</span></button> : null}
       </div>
-      <button type="button" aria-expanded={libraryOpen} onClick={() => setLibraryOpen((open) => !open)} className="min-h-11 text-left text-xs font-medium text-slate-700">{libraryOpen ? "Recent coffees only" : "Other coffees"}</button>
-      {draftDrink ? <div className="grid gap-2">
+      {!libraryOpen && draftDrink && !quickDrinks.some((drink) => drink.id === draftDrink.id) ? <div className="text-center text-xs text-slate-500">{draftDrink.label}</div> : null}
+      {libraryOpen && draftDrink ? <div className="grid gap-2">
         <div className="text-xs text-slate-600">Number of shots</div>
         <div className="grid grid-cols-4 gap-1.5" role="group" aria-label="Number of shots">
           {[1, 2, 3].map((shots) => <button key={shots} type="button" aria-pressed={!customShots && Number(draftShots) === shots} onClick={() => { setCustomShots(false); setDraftShots(String(shots)); }} className={`min-h-11 rounded-lg border px-1 text-xs font-medium ${!customShots && Number(draftShots) === shots ? "border-slate-900 bg-slate-100" : "border-slate-200 bg-white"}`}>{shots} {shots === 1 ? "shot" : "shots"}</button>)}
@@ -3207,17 +3213,15 @@ function MobileSignalSelection({ recentCoffeeIds, onSaved, loggedToday = [] }: {
         {([{ id: "Vyvanse", label: "Vyvanse" }, { id: "Prozac", label: "Fluoxetine" }, { id: "Creatine", label: "Creatine" }, { id: "Coffee", label: "Coffee" }] as const).map(({ id, label }) => {
           const Icon = SIGNAL_ICONS[id];
           const colour = SIGNAL_COLOURS[id];
-          const pale = signalColourMix(colour, 0.65);
           const active = id === "Coffee" ? Boolean(coffee) : selected.includes(id);
           const logged = loggedToday.includes(id);
           return <button key={id} type="button" disabled={saving || Boolean(batch) || !storageReady} aria-pressed={active} aria-label={`${label}${logged ? ", logged today" : ", not logged today"}`} title={id === "Coffee" && chosenCoffee ? `${chosenCoffee.label}${coffee?.shots ? ` · ${coffee.shots} shots` : ""}` : undefined} onClick={() => {
-            if (id === "Coffee") { openCoffee(); return; }
+            if (id === "Coffee") { if (coffee) setCoffee(null); else openCoffee(); return; }
             setSelected((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id]);
             setMessage("");
-          }} style={{ borderColor: active ? colour : "transparent", backgroundColor: active ? pale : "white", boxShadow: active ? `0 0 0 1px ${colour}` : undefined }} className="relative grid h-[100px] min-w-0 content-center justify-items-center gap-2 rounded-[18px] border bg-white px-1 py-2 text-center text-[11px] font-medium text-slate-950 shadow-[0_5px_18px_rgba(25,40,65,0.045)] disabled:opacity-60 sm:h-28 sm:text-xs">
-            {active ? <Check className="absolute right-2 top-2 h-3 w-3 text-slate-800" aria-hidden /> : null}
-            <span data-logged-today={logged} className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-full border-[5px]" style={{ borderColor: logged ? signalColourMix(colour, -0.2) : colour, backgroundColor: signalColourMix(colour, 0.88), color: logged ? signalColourMix(colour, -0.2) : colour }}>
-              <Icon className="h-[22px] w-[22px]" aria-hidden />
+          }} style={{ backgroundColor: active ? colour : "white", color: active ? "white" : "#0c2037" }} className="relative grid h-[100px] min-w-0 content-center justify-items-center gap-2 rounded-[18px] px-1 py-2 text-center text-[11px] font-medium transition-colors duration-150 disabled:opacity-60 sm:h-28 sm:text-xs">
+            <span data-logged-today={logged} className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-white transition-colors duration-150" style={{ backgroundColor: active ? "transparent" : colour }}>
+              <Icon className="h-[22px] w-[22px]" strokeWidth={2.5} aria-hidden />
             </span>
             <span className="max-w-full whitespace-nowrap leading-tight">{label}</span>
           </button>;
@@ -3329,14 +3333,16 @@ function MedsTrackerGrid({
   renderSelectedDetail?: (date: string) => React.ReactNode;
 }) {
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
-  const weekCount = Math.ceil(dates.length / 7);
+  const firstWeekday = dates.length ? (new Date(`${dates[0]}T00:00:00`).getDay() + 6) % 7 : 0;
+  const weekCount = Math.ceil((dates.length + firstWeekday) / 7);
   const monthLabels = dates.reduce<Array<{ label: string; column: number }>>((labels, date, index) => {
     const monthKey = date.slice(0, 7);
     if (labels.some((label) => label.label === monthKey)) return labels;
-    labels.push({ label: monthKey, column: Math.floor(index / 7) + 1 });
+    labels.push({ label: monthKey, column: Math.floor((index + firstWeekday) / 7) + 2 });
     return labels;
   }, []);
   const selectedDay = selectedDate ? substance.days.get(selectedDate) : null;
+  const staggerMonthLabels = monthLabels.some((month, index) => monthLabels[index + 1] && monthLabels[index + 1].column - month.column < 3);
   const tooltip = (date: string, day?: MedicationTrackerDay) => {
     if (!day) return `${medicationTrackerDateLabel(date)} · No intake`;
     const amount = day.amount !== null ? ` · ${formatMedicationAmount(day.amount)}${day.unit ? ` ${day.unit}` : ""}` : "";
@@ -3348,32 +3354,32 @@ function MedsTrackerGrid({
     <section className="min-w-0 max-w-full border-b border-slate-200/70 pb-4 last:border-b-0 sm:pb-5">
       <div className="mb-2">
         <h2 className="text-sm font-semibold text-slate-950">{substance.label}</h2>
-        {substance.subtitle ? <p className="mt-0.5 text-[11px] text-slate-500">{substance.subtitle}</p> : null}
       </div>
       <div className={`w-full max-w-full pb-1 ${mobile ? "overflow-x-hidden" : "overflow-x-auto overscroll-x-contain"}`}>
-        <div className={mobile ? "w-full max-w-full" : "min-w-max"}>
-          <div
-            className="mb-1 grid h-4 gap-0.5 text-[10px] text-slate-400"
-            style={{ gridTemplateColumns: mobile ? `repeat(${weekCount}, minmax(0, 1fr))` : `repeat(${weekCount}, 11px)` }}
-          >
-            {monthLabels.map(({ label, column }) => (
-              <span key={label} className="whitespace-nowrap" style={{ gridColumnStart: column }}>
+        <div
+          className={`grid gap-0.5 ${mobile ? "w-full max-w-full" : "w-max"}`}
+          style={{
+            gridTemplateColumns: `12px repeat(${weekCount}, ${mobile ? "minmax(0, 1fr)" : "11px"})`,
+            gridTemplateRows: `${staggerMonthLabels ? "28px" : "16px"} repeat(7, ${mobile ? "auto" : "11px"})`,
+          }}
+          aria-label={`${substance.label} intake activity`}
+        >
+            {monthLabels.map(({ label, column }, index) => (
+              <span key={label} className="whitespace-nowrap text-[10px] leading-3 text-slate-400" title={label} style={{ gridRowStart: 1, gridColumn: `${column} / span ${Math.max(1, (monthLabels[index + 1]?.column ?? weekCount + 2) - column)}`, alignSelf: staggerMonthLabels && monthLabels[index + 1] && monthLabels[index + 1].column - column < 3 ? "start" : "end" }}>
                 {new Intl.DateTimeFormat("en", { month: "short" }).format(new Date(`${label}-01T00:00:00`))}
               </span>
             ))}
-          </div>
-          <div
-            className="grid grid-flow-col grid-rows-7 gap-0.5"
-            style={mobile ? { gridTemplateColumns: `repeat(${weekCount}, minmax(0, 1fr))` } : undefined}
-            aria-label={`${substance.label} intake activity`}
-          >
-            {dates.map((date) => {
+            {["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map((weekday, index) => (
+              <span key={weekday} title={weekday} aria-label={weekday} className="flex items-center text-[9px] leading-none text-slate-400" style={{ gridColumnStart: 1, gridRowStart: index + 2 }}>{weekday[0]}</span>
+            ))}
+            {dates.map((date, index) => {
               const day = substance.days.get(date);
               const isToday = date === todayISO();
               const opacity = day ? [0, 0.24, 0.42, 0.65, 0.88][day.intensity] : 1;
               return (
                 <button
                   key={date}
+                  data-date={date}
                   type="button"
                   onClick={() => setSelectedDate(date)}
                   title={tooltip(date, day)}
@@ -3381,18 +3387,17 @@ function MedsTrackerGrid({
                   className={`${mobile ? "aspect-square h-auto w-full max-w-[18px] justify-self-center" : "h-[11px] w-[11px]"} rounded-[3px] border transition-transform hover:scale-125 focus:outline-none focus:ring-1 focus:ring-slate-500 ${
                     day ? "border-transparent" : "border-slate-200/70 bg-slate-100"
                   } ${isToday ? "ring-1 ring-slate-500 ring-offset-1" : ""}`}
-                  style={day ? { backgroundColor: substance.color, opacity } : undefined}
+                  style={{ gridRowStart: (new Date(`${date}T00:00:00`).getDay() + 6) % 7 + 2, gridColumnStart: Math.floor((index + firstWeekday) / 7) + 2, ...(day ? { backgroundColor: substance.color, opacity } : {}) }}
                 />
               );
             })}
-          </div>
         </div>
       </div>
       {selectedDate ? (
         <div className="mt-2 min-h-4 text-[11px] text-slate-500">{tooltip(selectedDate, selectedDay)}</div>
       ) : null}
       {selectedDate && renderSelectedDetail ? renderSelectedDetail(selectedDate) : null}
-      <div className="mt-2 flex items-center justify-start gap-1 text-[9px] font-medium uppercase tracking-[0.08em] text-slate-400 sm:justify-end">
+      <div className="mt-2 flex items-center justify-start gap-1 text-[9px] font-medium uppercase tracking-[0.08em] text-slate-400">
         <span>0</span>
         {[0.18, 0.32, 0.5, 0.7, 0.9].map((opacity) => (
           <span
@@ -3708,7 +3713,28 @@ function estimateSignalWindDown(latestVyvanse: MedicationEntry | undefined, caff
   return high;
 }
 
+function caffeineMetricBar(remainingMg: number | null) {
+  const mg = remainingMg !== null && Number.isFinite(remainingMg) ? Math.max(0, remainingMg) : null;
+  let colour: string = SIGNAL_COLOURS.Coffee;
+  // A display quantity scale only, not a medical risk classification.
+  if (mg !== null && mg > 120) {
+    const stops: [number, string][] = [[120, SIGNAL_COLOURS.Coffee], [180, "#F59E0B"], [240, "#F46332"], [300, "#EF4444"]];
+    const value = Math.min(mg, 300);
+    const index = stops.findIndex((stop, i) => i < stops.length - 1 && value <= stops[i + 1][0]);
+    const [from, to] = [stops[index], stops[index + 1]];
+    const fraction = (value - from[0]) / (to[0] - from[0]);
+    colour = `#${[1, 3, 5].map((channel) => {
+      const start = parseInt(from[1].slice(channel, channel + 2), 16);
+      const end = parseInt(to[1].slice(channel, channel + 2), 16);
+      return Math.round(start + (end - start) * fraction).toString(16).padStart(2, "0");
+    }).join("").toUpperCase()}`;
+  }
+  return { fill: mg === null ? 0 : clamp(mg / 120, 0, 1), colour, displayMg: mg === null ? null : mg < 1 ? 0 : Math.round(mg) };
+}
+
 function deriveMobileSignalMetrics(entries: MedicationEntry[], nowMs: number, assumptions: SignalEstimateAssumptions = EMPTY_SIGNAL_ASSUMPTIONS) {
+  const effectPersonalized = typeof assumptions.effectHours === "number" && Number.isFinite(assumptions.effectHours) && assumptions.effectHours > 0 && assumptions.effectHours <= 168;
+  const effectHours = effectPersonalized ? assumptions.effectHours! : VYVANSE_DEFAULT_EFFECT_HOURS;
   const occurred = entries.filter((entry) => entry.entryType === "input" && Number.isFinite(Date.parse(entry.timestamp)) && Date.parse(entry.timestamp) <= nowMs);
   const loggedToday = new Set<string>();
   for (const entry of occurred) {
@@ -3719,32 +3745,35 @@ function deriveMobileSignalMetrics(entries: MedicationEntry[], nowMs: number, as
     else if (entry.medication?.trim().toLowerCase() === "creatine") loggedToday.add("Creatine");
   }
   const latestVyvanse = occurred.filter((entry) => isVyvanseEntry(entry) && entry.unit?.toLowerCase() === "mg" && Number.isFinite(entry.amount) && entry.amount! > 0 &&
-    nowMs - Date.parse(entry.timestamp) <= Math.max(VYVANSE_VISUAL_MODEL.visibleHours, assumptions.effectHours ?? 0) * 3600000)
+    nowMs - Date.parse(entry.timestamp) <= Math.max(VYVANSE_VISUAL_MODEL.visibleHours, effectHours) * 3600000)
     .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp))[0];
   const peakDelay = VYVANSE_REFERENCE_PEAK_HOURS * 3600000;
   const elapsed = latestVyvanse ? nowMs - Date.parse(latestVyvanse.timestamp) : 0;
   const caffeine = occurred.filter((entry) => isCaffeineEntry(entry) && nowMs - Date.parse(entry.timestamp) <= CAFFEINE_VISUAL_MODEL.visibleHours * 3600000);
   const caffeineKnown = caffeine.every((entry) => entry.unit?.toLowerCase() === "mg" && Number.isFinite(entry.amount) && entry.amount! > 0);
   // Use the model's raw amount fraction, not the chart's peak-normalized percentage.
-  const remainingMg = caffeine.length && caffeineKnown ? caffeine.reduce((sum, entry) => sum + entry.amount! * batemanRelativeLevel(
+  const remainingMg = caffeineKnown ? caffeine.reduce((sum, entry) => sum + entry.amount! * batemanRelativeLevel(
     (nowMs - Date.parse(entry.timestamp)) / 3600000, CAFFEINE_VISUAL_MODEL.absorptionRatePerHour, CAFFEINE_ELIMINATION_RATE
   ), 0) : null;
-  const recordedMg = caffeineKnown ? caffeine.reduce((sum, entry) => sum + entry.amount!, 0) : 0;
-  const effectMs = assumptions.effectHours === null ? null : assumptions.effectHours * 3600000;
-  const minutesUntilWearOff = latestVyvanse && effectMs !== null ? Math.max(0, Math.ceil((effectMs - elapsed) / 60000)) : null;
-  const phase = !latestVyvanse ? "empty" : effectMs !== null && elapsed >= effectMs ? "ended" :
-    elapsed < peakDelay && (effectMs === null || peakDelay <= effectMs) ? "peak" : effectMs === null ? "unset" : "wearOff";
+  const caffeineBar = caffeineMetricBar(remainingMg);
+  const effectMs = effectHours * 3600000;
+  const minutesUntilWearOff = latestVyvanse ? Math.max(0, Math.ceil((effectMs - elapsed) / 60000)) : null;
+  const phase = !latestVyvanse ? "empty" : elapsed >= effectMs ? "ended" : elapsed < peakDelay ? "peak" : "wearOff";
   return {
     loggedToday: [...loggedToday],
     minutesUntilPeak: latestVyvanse ? Math.max(0, Math.ceil((peakDelay - elapsed) / 60000)) : null,
     peakProgress: latestVyvanse ? Math.min(1, elapsed / peakDelay) : 0,
     effectPhase: phase,
     minutesUntilWearOff,
-    effectProgress: latestVyvanse && effectMs !== null ? Math.min(1, elapsed / effectMs) : 0,
-    effectConfigured: effectMs !== null,
+    effectProgress: latestVyvanse ? Math.min(1, elapsed / effectMs) : 0,
+    effectConfigured: true,
+    effectHours,
+    effectPersonalized,
     remainingMg,
     caffeineUnavailable: caffeine.length > 0 && !caffeineKnown,
-    caffeineProgress: remainingMg !== null && recordedMg > 0 ? Math.min(1, remainingMg / recordedMg) : 0,
+    caffeineProgress: caffeineBar.fill,
+    caffeineBarColour: caffeineBar.colour,
+    displayCaffeineMg: caffeineBar.displayMg,
     windDownAt: estimateSignalWindDown(latestVyvanse, caffeine, caffeineKnown, nowMs, assumptions),
     referenceNowMs: nowMs,
   };
@@ -3768,27 +3797,25 @@ function SignalEstimateSettings({ assumptions, onSave }: { assumptions: SignalEs
   </div>;
 }
 
-function MobileSignalMetricCards({ metrics, assumptions, onSave }: { metrics: ReturnType<typeof deriveMobileSignalMetrics>; assumptions: SignalEstimateAssumptions; onSave: (next: SignalEstimateAssumptions) => boolean }) {
-  const [effectSettingsOpen, setEffectSettingsOpen] = useState(false);
+function MobileSignalMetricCards({ metrics }: { metrics: ReturnType<typeof deriveMobileSignalMetrics> }) {
   const minutes = metrics.effectPhase === "peak" ? metrics.minutesUntilPeak : metrics.minutesUntilWearOff;
+  const vyvanseProgress = metrics.effectConfigured ? metrics.effectProgress : metrics.peakProgress;
+  const vyvanseProgressLabel = metrics.effectConfigured ? "Estimated effect window elapsed" : "Estimated progress to peak";
   return <div className="space-y-2">
   <div className="grid grid-cols-2 gap-3" aria-label="Live signal estimates">
-    <section className="min-w-0 rounded-[18px] bg-white p-2.5 shadow-[0_5px_20px_rgba(25,40,65,0.045)]" title="Estimated peak from the model; effect window is your personal assumption, not plasma elimination">
-      <div className="flex items-center gap-2 text-xs font-semibold text-[#102038]"><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: signalColourMix(SIGNAL_COLOURS.Vyvanse, 0.65), color: SIGNAL_COLOURS.Vyvanse }}><PillIcon className="h-4 w-4" aria-hidden /></span>Vyvanse<button type="button" aria-label="Adjust effect window" title="Effect window" onClick={() => setEffectSettingsOpen(true)} className="ml-auto flex h-7 w-7 items-center justify-center rounded-full text-slate-400 hover:bg-slate-50"><Settings className="h-3 w-3" aria-hidden /></button></div>
-      <div className="mt-1.5 min-h-8 text-[25px] font-semibold leading-8 tabular-nums text-[#102038]">{metrics.effectPhase === "ended" ? <span className="block text-[13px] leading-4">Estimated effect ended</span> : metrics.effectPhase === "unset" ? <span className="text-sm">Set estimate</span> : minutes === null ? "—" : <span className="whitespace-nowrap">{Math.floor(minutes / 60)}<span className="text-base font-medium">h </span>{minutes % 60}<span className="text-base font-medium">m</span></span>}</div>
-      <div className="mt-0.5 text-[11px] leading-4 text-[#63768f]">{metrics.effectPhase === "empty" ? "No recent intake" : metrics.effectPhase === "peak" ? "until estimated peak" : metrics.effectPhase === "wearOff" ? "until estimated wear-off" : metrics.effectPhase === "ended" ? "personal effect window" : "effect window not set"}</div>
-      <div className="mt-2 h-1.5 overflow-hidden rounded-full" style={{ backgroundColor: signalColourMix(SIGNAL_COLOURS.Vyvanse, 0.7) }} role="progressbar" aria-label="Estimated effect window elapsed" aria-valuemin={0} aria-valuemax={100} aria-valuenow={metrics.effectConfigured ? Math.round(metrics.effectProgress * 100) : undefined} aria-valuetext={metrics.effectConfigured ? undefined : "Personal effect window not set"}><div className="h-full rounded-full" style={{ width: `${metrics.effectProgress * 100}%`, backgroundColor: SIGNAL_COLOURS.Vyvanse }} /></div>
+    <section className="min-w-0 rounded-[18px] bg-white p-2.5 shadow-[0_5px_20px_rgba(25,40,65,0.045)]" aria-label="Vyvanse estimates" title={`Approximate model-based peak; wear-off uses ${metrics.effectPersonalized ? "your saved personal" : "FocusCurve's published adult"} ${metrics.effectHours}-hour duration estimate. Not plasma elimination, a clinically precise prediction, or FocusCurve's proprietary algorithm.`}>
+      <div className="flex h-7 items-center gap-2 text-xs font-semibold text-[#102038]"><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: signalColourMix(SIGNAL_COLOURS.Vyvanse, 0.65), color: SIGNAL_COLOURS.Vyvanse }}><PillIcon className="h-4 w-4" aria-hidden /></span>Vyvanse</div>
+      <div className="mt-1.5 min-h-8 text-[25px] font-semibold leading-8 tabular-nums text-[#102038]">{metrics.effectPhase === "ended" ? <span className="block text-[13px] leading-4">Estimated worn off</span> : minutes === null ? "—" : <span className="whitespace-nowrap">{Math.floor(minutes / 60)}<span className="text-base font-medium">h </span>{minutes % 60}<span className="text-base font-medium">m</span></span>}</div>
+      <div className="mt-0.5 text-[11px] leading-4 text-[#63768f]">{metrics.effectPhase === "empty" ? "No recent dose" : metrics.effectPhase === "peak" ? "Until peak" : metrics.effectPhase === "wearOff" ? "Until estimated wear-off" : metrics.effectPersonalized ? "Personal window estimate" : `${metrics.effectHours}-hour window estimate`}</div>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full" style={{ backgroundColor: signalColourMix(SIGNAL_COLOURS.Vyvanse, 0.7) }} role="progressbar" aria-label={vyvanseProgressLabel} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(vyvanseProgress * 100)}><div className="h-full rounded-full" style={{ width: `${vyvanseProgress * 100}%`, backgroundColor: SIGNAL_COLOURS.Vyvanse }} /></div>
     </section>
-    <section className="min-w-0 rounded-[18px] bg-white p-2.5 shadow-[0_5px_20px_rgba(25,40,65,0.045)]" title="Model-estimated active caffeine amount, not a measured blood concentration">
-      <div className="flex items-center gap-2 text-xs font-semibold text-[#102038]"><span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: signalColourMix(SIGNAL_COLOURS.Coffee, 0.85), color: SIGNAL_COLOURS.Coffee }}><Coffee className="h-3 w-3" aria-hidden /></span>Caffeine</div>
-      <div className="mt-1.5 min-h-8 whitespace-nowrap text-[25px] font-semibold leading-8 tabular-nums text-[#102038]">{metrics.remainingMg === null ? "—" : <>{Math.round(metrics.remainingMg)}<span className="text-base font-medium"> mg</span></>}</div>
+    <section className="min-w-0 rounded-[18px] bg-white p-2.5 shadow-[0_5px_20px_rgba(25,40,65,0.045)]" title="Estimated caffeine remaining, not a measured blood concentration. Bar colour represents relative quantity, not medical risk.">
+      <div className="flex h-7 items-center gap-2 text-xs font-semibold text-[#102038]"><span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: signalColourMix(SIGNAL_COLOURS.Coffee, 0.85), color: SIGNAL_COLOURS.Coffee }}><Coffee className="h-3 w-3" aria-hidden /></span>Caffeine</div>
+      <div className="mt-1.5 min-h-8 whitespace-nowrap text-[25px] font-semibold leading-8 tabular-nums text-[#102038]">{metrics.displayCaffeineMg === null ? "—" : <>{metrics.displayCaffeineMg}<span className="text-base font-medium"> mg</span></>}</div>
       <div className="mt-0.5 text-[11px] leading-4 text-[#63768f]">{metrics.caffeineUnavailable ? "Amount unavailable" : metrics.remainingMg === null ? "No recent intake" : "estimated remaining"}</div>
-      <div className="mt-2 h-1.5 overflow-hidden rounded-full" style={{ backgroundColor: signalColourMix(SIGNAL_COLOURS.Coffee, 0.8) }} role="progressbar" aria-label="Estimated caffeine fraction remaining" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(metrics.caffeineProgress * 100)}><div className="h-full rounded-full" style={{ width: `${metrics.caffeineProgress * 100}%`, backgroundColor: SIGNAL_COLOURS.Coffee }} /></div>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full" style={{ backgroundColor: signalColourMix(SIGNAL_COLOURS.Coffee, 0.8) }} role="progressbar" aria-label="Estimated caffeine remaining relative to 120 mg" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(metrics.caffeineProgress * 100)} aria-valuetext={metrics.remainingMg === null ? "Amount unavailable" : `${metrics.displayCaffeineMg} mg estimated remaining; full bar at 120 mg`}><div className="h-full rounded-full" style={{ width: `${metrics.caffeineProgress * 100}%`, backgroundColor: metrics.caffeineBarColour }} /></div>
     </section>
   </div>
-  <Modal open={effectSettingsOpen} title="Effect window" ariaLabel="Effect window" onClose={() => setEffectSettingsOpen(false)}>
-    <SignalEstimateSettings assumptions={assumptions} onSave={(next) => { const saved = onSave(next); if (saved) setEffectSettingsOpen(false); return saved; }} />
-  </Modal>
   </div>;
 }
 
@@ -3978,11 +4005,11 @@ function MedsChartCard({
   const area = mobileRendering && points.length ? `${path} L ${points[points.length - 1].x.toFixed(1)} 132 L ${points[0].x.toFixed(1)} 132 Z` : medsAreaPath(points);
 
   return (
-    <section className={`${mobileDashboard ? "rounded-[20px] border-transparent shadow-[0_5px_20px_rgba(25,40,65,0.045)] sm:rounded-[22px] sm:border-slate-200/80 sm:shadow-[0_10px_28px_rgba(15,23,42,0.04)]" : "rounded-[22px] border-slate-200/80 shadow-[0_10px_28px_rgba(15,23,42,0.04)]"} border bg-white px-3 pb-2.5 pt-3 sm:px-4 sm:pb-4`}>
+    <section className={`${mobileDashboard ? "rounded-[20px] border-transparent shadow-[0_5px_20px_rgba(25,40,65,0.045)]" : "rounded-[22px] border-slate-200/80 shadow-[0_10px_28px_rgba(15,23,42,0.04)]"} border bg-white px-3 pb-2.5 pt-3 sm:px-4 sm:pb-4`}>
       <div className="flex items-start justify-between gap-3">
         <div className={`flex min-w-0 gap-3 ${mobileDashboard ? "items-center sm:items-start" : "items-start"}`}>
           <div
-            className={`flex h-9 w-9 shrink-0 items-center justify-center ${mobileDashboard ? "rounded-full sm:rounded-xl" : "rounded-xl"}`}
+            className={`flex h-9 w-9 shrink-0 items-center justify-center ${mobileDashboard ? "rounded-full" : "rounded-xl"}`}
             style={{ backgroundColor: softTone, color: tone }}
           >
             {icon}
@@ -4514,6 +4541,8 @@ function Modal({
   footer,
   ariaLabel,
   softBackdrop = false,
+  compact = false,
+  hideHeader = false,
 }: {
   open: boolean;
   title: string;
@@ -4523,6 +4552,8 @@ function Modal({
   footer?: React.ReactNode;
   ariaLabel?: string;
   softBackdrop?: boolean;
+  compact?: boolean;
+  hideHeader?: boolean;
 }) {
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const [visibleViewport, setVisibleViewport] = useState<{ height: number; top: number } | null>(null);
@@ -4575,13 +4606,13 @@ function Modal({
         onClick={onClose}
         aria-hidden="true"
       />
-      <div ref={dialogRef} role={ariaLabel ? "dialog" : undefined} aria-modal={ariaLabel ? true : undefined} aria-label={ariaLabel} style={visibleViewport ? { maxHeight: Math.max(100, visibleViewport.height - 32) } : undefined} className={`relative flex ${keyboardSafe ? "max-h-[calc(100dvh-2rem)]" : "max-h-[calc(100vh-2rem)]"} w-full max-w-[560px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl`}>
-        <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-5 py-4">
+      <div ref={dialogRef} role={ariaLabel ? "dialog" : undefined} aria-modal={ariaLabel ? true : undefined} aria-label={ariaLabel} style={visibleViewport ? { maxHeight: Math.max(100, visibleViewport.height - 32) } : undefined} className={`relative flex ${keyboardSafe ? "max-h-[calc(100dvh-2rem)]" : "max-h-[calc(100vh-2rem)]"} w-full flex-col overflow-hidden border ${compact ? "max-w-[400px] rounded-[28px] border-white/80 bg-white/95 shadow-lg" : "max-w-[560px] rounded-2xl border-slate-200 bg-white shadow-xl"}`}>
+        {!hideHeader ? <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-5 py-4">
           <div className="text-sm font-semibold text-slate-900">{title}</div>
           {softBackdrop ? <button type="button" aria-label="Close coffee choices" onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-full text-slate-500 hover:bg-slate-100"><X className="h-4 w-4" aria-hidden /></button> : null}
-        </div>
+        </div> : null}
         <div className={`${footer ? "min-h-0 " : ""}overflow-y-auto px-5 py-4`}>{children}</div>
-        {footer ? <div className="shrink-0 border-t border-slate-100 px-5 py-3">{footer}</div> : null}
+        {footer ? <div className={`shrink-0 px-5 py-3 ${compact ? "" : "border-t border-slate-100"}`}>{footer}</div> : null}
       </div>
     </div>
   );
@@ -6254,7 +6285,7 @@ useEffect(() => {
   const recentCoffeeIds = Array.from(new Set(sortedMedicationEntries
     .filter(isCaffeineEntry)
     .map((entry) => medicationMetadataValue(entry, "drinkType"))
-    .filter((id) => CAFFEINE_DRINK_DEFAULTS.some((drink) => drink.id === id))))
+    .filter((id) => id !== "custom" && CAFFEINE_DRINK_DEFAULTS.some((drink) => drink.id === id))))
     .slice(0, 3);
   const medsHistoryItems = useMemo(() => {
     const medicationItems = medicationHistoryEntries.map((entry) => ({
@@ -10410,7 +10441,7 @@ reasons: attentionReasons(task),
 
             {medsView === "today" ? (
               <div className="mt-4 space-y-5">
-                <MobileSignalMetricCards metrics={mobileSignalMetrics} assumptions={signalAssumptions} onSave={saveSignalAssumptions} />
+                <MobileSignalMetricCards metrics={mobileSignalMetrics} />
                 {medsError ? (
                   <div className="rounded-2xl border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700">
                     {medsError}
@@ -10419,9 +10450,9 @@ reasons: attentionReasons(task),
                 <section>
                   <div className="mb-1.5 flex items-center justify-between gap-2">
                     <div>
-                      <div className="flex items-center gap-2 whitespace-nowrap text-xs font-semibold text-[#102038] sm:text-slate-700"><ChartNoAxesColumnIncreasing className="h-4 w-4 text-[#63768f] sm:hidden" aria-hidden />Estimated levels</div>
+                      <div className="flex items-center gap-2 whitespace-nowrap text-xs font-semibold text-[#102038]"><ChartNoAxesColumnIncreasing className="h-4 w-4 text-[#63768f]" aria-hidden />Estimated levels</div>
                     </div>
-                    <div className="grid grid-cols-4 rounded-lg p-0.5 text-[10px] font-semibold text-[#63768f] sm:bg-slate-100 sm:text-slate-600">
+                    <div className="grid grid-cols-4 rounded-lg p-0.5 text-[10px] font-semibold text-[#63768f]">
                       {(Object.keys(MEDS_RANGE_CONFIG) as MedsLevelRange[]).map((range) => (
                         <button
                           key={range}
@@ -10430,7 +10461,7 @@ reasons: attentionReasons(task),
                             setMedsLevelRange(range);
                             setMedsRangeOffset(0);
                           }}
-                          className={`rounded-full px-1.5 py-1 sm:rounded-md ${medsLevelRange === range ? "bg-slate-950 text-white shadow-sm" : ""}`}
+                          className={`rounded-full px-1.5 py-1 ${medsLevelRange === range ? "bg-slate-950 text-white shadow-sm" : ""}`}
                         >
                           {MEDS_RANGE_CONFIG[range].label}
                         </button>
@@ -10627,19 +10658,11 @@ reasons: attentionReasons(task),
                       }, {})
                     ).map(([date, items]) => {
                       const orderedItems = items.slice().sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
-                      const firstTimestamp = orderedItems[0]?.timestamp;
-                      const lastTimestamp = orderedItems[orderedItems.length - 1]?.timestamp;
                       return (
                       <div key={date} className={items.every((item) => item.kind === "alcohol") ? "hidden sm:block" : undefined}>
                         <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
                           <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
                             {formatMedicationDate(items[0]?.timestamp ?? date)}
-                          </div>
-                          <div className="font-mono text-[9px] uppercase tracking-[0.08em] text-slate-400">
-                            {items.length} {items.length === 1 ? "signal" : "signals"}
-                            {firstTimestamp && lastTimestamp
-                              ? ` · ${formatMedicationTime(firstTimestamp)}–${formatMedicationTime(lastTimestamp)}`
-                              : ""}
                           </div>
                         </div>
                         <div className="mt-2 divide-y divide-slate-200/60 border-t border-slate-200/60">
@@ -10729,10 +10752,6 @@ reasons: attentionReasons(task),
               </div>
             ) : (
               <div className="mt-6 min-w-0 max-w-full space-y-5 sm:space-y-6">
-                <div className="min-w-0 border-b border-slate-200/70 pb-3">
-                  <h2 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Signal archive</h2>
-                  <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.1em] text-slate-400">365 day activity</p>
-                </div>
                 {medicationTrackerSubstances.length ? (
                   <div className="min-w-0 max-w-full space-y-4 sm:space-y-5">
                     {medicationTrackerSubstances.map((substance) => (

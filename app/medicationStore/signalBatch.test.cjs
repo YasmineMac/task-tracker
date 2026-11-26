@@ -169,13 +169,13 @@ const presets = ast.statements.find((node) => ts.isVariableStatement(node) && no
 const palette = ast.statements.find((node) => ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) => declaration.name.getText(ast) === "SIGNAL_COLOURS"));
 const icons = ast.statements.find((node) => ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) => declaration.name.getText(ast) === "SIGNAL_ICONS"));
 
-function harness({ save = async () => true, storage = new Map(), onSaved = () => {}, loggedToday = [] } = {}) {
+function harness({ save = async () => true, storage = new Map(), onSaved = () => {}, loggedToday = [], recentCoffeeIds = ["iced_latte", "espresso", "matcha_latte"] } = {}) {
   const slots = [];
   let cursor = 0;
   let effects = [];
   const context = {
     React: require("react"), Date, Intl, Error, ...batchApi,
-    SYNC_CODE: "TEST-SCOPE", PillIcon: "pill", Plus: "plus", Check: "check", Dumbbell: "dumbbell", Coffee: "coffee", Zap: "zap", Clock3: "clock", Delete: "backspace-icon", Field: "field", Modal: "modal",
+    SYNC_CODE: "TEST-SCOPE", PillIcon: "pill", Plus: "plus", ChevronLeft: "back", Check: "check", Dumbbell: "dumbbell", Coffee: "coffee", Zap: "zap", Clock3: "clock", Delete: "backspace-icon", Field: "field", Modal: "modal",
     CAFFEINE_DRINK_ICONS: new Proxy({}, { get: () => "coffee" }),
     saveMedicationEntry: save,
     localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) },
@@ -199,7 +199,7 @@ function harness({ save = async () => true, storage = new Map(), onSaved = () =>
   let date = "2026-11-19", time = "14:20";
   function render() {
     cursor = 0; effects = [];
-    const tree = context[component](component === "MobileSignalSelection" ? { recentCoffeeIds: ["iced_latte", "espresso", "matcha_latte"], onSaved, loggedToday } : { date, time, onChange(d, t) { date = d; time = t; } });
+    const tree = context[component](component === "MobileSignalSelection" ? { recentCoffeeIds, onSaved, loggedToday } : { date, time, onChange(d, t) { date = d; time = t; } });
     effects.forEach((effect) => effect());
     return tree;
   }
@@ -294,7 +294,7 @@ test("Madrid retrospective dates and DST boundaries remain timezone-safe", () =>
 
 test("coffee UI derives mg from shot choices without exposing an mg input", () => {
   const ui = harness();
-  ui.click("Coffee"); ui.click("Iced latte");
+  ui.click("Coffee"); ui.click("Custom"); ui.click("Iced latte");
   ui.click("3 shots");
   assert.equal(ui.nodes(ui.render()).filter((item) => item.type === "input").length, 0);
   assert(!ui.text(ui.render()).includes("Caffeine (mg)"));
@@ -480,12 +480,57 @@ test("four rounded choices toggle independently and logging actions immediately 
   assert(ui.button("Vyvanse").props["aria-pressed"]);
 });
 
-test("recent coffee choices retain ordering and Other coffees exposes the complete library", () => {
+test("recent coffee choices retain ordering and Custom exposes the complete library", () => {
   const ui = harness(); ui.click("Coffee");
   const recent = ui.nodes(ui.render()).filter((node) => node.type === "button" && node.props["aria-pressed"] !== undefined).map(ui.text);
-  assert.deepEqual(recent.slice(0, 3), ["Iced latte120 mg per preset", "Espresso65 mg per preset", "Matcha latte70 mg per preset"]);
-  ui.click("Other coffees");
+  assert.deepEqual(recent.slice(0, 3), ["Iced latte", "Espresso", "Matcha latte"]);
+  ui.click("Custom");
   for (const label of ["Americano", "Iced Americano", "Cappuccino", "Cortado", "Homemade coffee", "Custom"]) assert(ui.button(label));
+});
+
+test("compact coffee chooser has three dynamic recent tiles and a fourth Custom tile", () => {
+  for (const recentCoffeeIds of [["cortado", "homemade_coffee", "flat_white"], ["matcha_latte", "iced_americano", "espresso"], [], ["custom", "invalid", "cortado", "cortado"]]) {
+    const ui = harness({ recentCoffeeIds }); ui.click("Coffee");
+    const popup = ui.nodes(ui.render()).find((node) => node.type === "modal" && node.props.title === "Choose coffee");
+    assert(popup.props.compact && popup.props.hideHeader && popup.props.softBackdrop);
+    const grid = ui.nodes(ui.render()).find((node) => node.props?.["aria-label"] === "Quick coffee presets");
+    const tiles = ui.nodes(grid).filter((node) => node.type === "button");
+    assert.equal(tiles.length, 4);
+    assert.equal(ui.text(tiles[3]), "Custom");
+    assert.equal(new Set(tiles.slice(0, 3).map(ui.text)).size, 3);
+    assert(tiles.every((node) => node.props.className.includes("aspect-square")));
+    assert(!ui.text(grid).includes("mg"));
+    assert(!ui.text(ui.render()).includes("Recent coffees"));
+    assert(!ui.text(ui.render()).includes("Other coffees"));
+    assert(ui.button("Confirm coffee").props.disabled);
+    if (recentCoffeeIds[0] === "cortado") assert.deepEqual(tiles.map(ui.text), ["Cortado", "Homemade coffee", "Flat white", "Custom"]);
+    if (recentCoffeeIds[0] === "matcha_latte") assert.deepEqual(tiles.map(ui.text), ["Matcha latte", "Iced Americano", "Espresso", "Custom"]);
+  }
+});
+
+test("full coffee library returns to quick tiles without losing drink or custom shot quantity", async () => {
+  const writes = [];
+  const ui = harness({ save: async (entry) => { writes.push(entry); return true; } });
+  ui.click("Coffee"); ui.click("Custom"); ui.click("Flat white");
+  ui.nodes(ui.render()).find((node) => node.props?.["aria-label"] === "Custom shot count").props.onClick();
+  ui.nodes(ui.render()).find((node) => node.type === "input" && node.props?.["aria-label"] === "Number of shots").props.onChange({ target: { value: "4" } });
+  ui.click("Back to quick coffees");
+  assert.equal(writes.length, 0);
+  assert(!ui.button("Confirm coffee").props.disabled);
+  ui.click("Custom");
+  assert.equal(ui.nodes(ui.render()).find((node) => node.type === "input" && node.props?.["aria-label"] === "Number of shots").props.value, "4");
+  ui.click("Back to quick coffees"); ui.click("Confirm coffee");
+  assert.equal(writes.length, 0);
+  ui.click("Log now"); await tick();
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].metadata.drinkType, "flat_white");
+  assert.equal(writes[0].amount, 520);
+  assert.equal(writes[0].metadata.shots, 4);
+});
+
+test("coffee chooser preserves the existing Cortado, Homemade, Flat white and Custom icons", () => {
+  const mapping = ast.statements.find((node) => ts.isVariableStatement(node) && node.declarationList.declarations.some((item) => item.name.getText(ast) === "CAFFEINE_DRINK_ICONS")).getText(ast);
+  for (const [id, Icon] of [["cortado", "GlassWater"], ["homemade_coffee", "House"], ["flat_white", "Coffee"], ["custom", "Plus"]]) assert(mapping.includes(`${id}: ${Icon}`));
 });
 
 test("coffee popup keeps the Dashboard selectable beneath it and closing cannot save", async () => {
@@ -532,7 +577,8 @@ test("metric cards omit wind-down and preserve saved effect settings without a h
   assert(!cards.includes("Estimated wind-down"));
   assert(!cards.includes("Not enough data"));
   assert(!settings.includes("Personal estimate assumptions"));
-  assert(cards.includes("Adjust effect window"));
+  assert(!cards.includes("Adjust effect window"));
+  assert(!cards.includes("Set estimate"));
   assert(settings.includes("...assumptions, effectHours:"));
   assert(!cards.includes("sm:hidden"));
 });
@@ -541,7 +587,7 @@ test("one, two and three shots derive caffeine using the selected preset and per
   for (const shots of [1, 2, 3]) {
     const db = transport();
     const ui = harness({ save: db.save });
-    ui.click("Coffee"); ui.click("Iced latte"); ui.click(`${shots} ${shots === 1 ? "shot" : "shots"}`);
+    ui.click("Coffee"); ui.click("Custom"); ui.click("Iced latte"); ui.click(`${shots} ${shots === 1 ? "shot" : "shots"}`);
     ui.click("Confirm coffee"); ui.click("Log now"); await tick();
     const loaded = await db.load();
     assert.equal(loaded.entries.length, 1);
@@ -555,16 +601,18 @@ test("one, two and three shots derive caffeine using the selected preset and per
 test("Custom shot selector supports editable counts and rejects invalid counts", async () => {
   const writes = [];
   const ui = harness({ save: async (entry) => { writes.push(entry); return true; } });
-  ui.click("Coffee"); ui.click("Espresso"); ui.click("Custom");
+  ui.click("Coffee"); ui.click("Custom"); ui.click("Espresso");
+  const customCount = () => ui.nodes(ui.render()).find((node) => node.props?.["aria-label"] === "Custom shot count").props.onClick();
+  customCount();
   function input() { return ui.nodes(ui.render()).find((node) => node.type === "input" && node.props?.["aria-label"] === "Number of shots"); }
   for (const value of ["0", "1.5", "-1", ""]) {
     input().props.onChange({ target: { value } });
     assert(ui.button("Confirm coffee").props.disabled);
   }
   input().props.onChange({ target: { value: "4" } });
-  ui.click("Confirm coffee"); ui.click("Coffee");
-  assert(ui.button("Custom").props["aria-pressed"]);
-  assert.equal(input().props.value, "4");
+  ui.click("Confirm coffee"); ui.click("Coffee"); ui.click("Coffee");
+  ui.click("Custom"); ui.click("Espresso"); customCount();
+  input().props.onChange({ target: { value: "4" } });
   ui.click("Confirm coffee"); ui.click("Log now"); await tick();
   assert.equal(writes[0].amount, 260);
   assert.equal(writes[0].metadata.shots, 4);
@@ -573,7 +621,7 @@ test("Custom shot selector supports editable counts and rejects invalid counts",
 test("switching from espresso to a serving-based drink removes shot controls and stale multipliers", async () => {
   const writes = [];
   const ui = harness({ save: async (entry) => { writes.push(entry); return true; } });
-  ui.click("Coffee"); ui.click("Espresso"); ui.click("3 shots"); ui.click("Other coffees"); ui.click("Homemade coffee");
+  ui.click("Coffee"); ui.click("Custom"); ui.click("Espresso"); ui.click("3 shots"); ui.click("Homemade coffee");
   assert(!ui.nodes(ui.render()).some((node) => node.props?.["aria-label"] === "Espresso shots"));
   assert.equal(ui.nodes(ui.render()).filter((node) => node.type === "input").length, 0);
   ui.click("Confirm coffee"); ui.click("Log now"); await tick();
@@ -586,7 +634,7 @@ for (const [label, preset] of [["Homemade coffee", 95], ["Matcha latte", 70], ["
     test(`${label} saves ${count} shots using the full preset baseline`, async () => {
       const writes = [];
       const ui = harness({ save: async (entry) => { writes.push(entry); return true; } });
-      ui.click("Coffee"); ui.click("Other coffees"); ui.click(label);
+      ui.click("Coffee"); ui.click("Custom"); ui.click(label);
       ui.click(`${count} ${count === 1 ? "shot" : "shots"}`);
       ui.click("Confirm coffee"); ui.click("Log now"); await tick();
       assert.equal(writes[0].amount, preset * count);
@@ -647,8 +695,8 @@ test("mobile history hides alcohol without affecting desktop data or filters", (
 });
 
 function metricModel() {
-  const functions = ["deriveMobileSignalMetrics", "estimateSignalWindDown", "normalizeSignalAssumptions", "localDateISO", "isVyvanseEntry", "isProzacEntry", "isCaffeineEntry", "medicationMetadataValue", "eliminationRateFromHalfLife", "batemanRelativeLevel", "batemanPeakTimeHours", "medsSmoothCurvePath", "medsCurvePath", "clamp"];
-  const constants = ["EMPTY_SIGNAL_ASSUMPTIONS", "VYVANSE_VISUAL_MODEL", "CAFFEINE_VISUAL_MODEL", "VYVANSE_ELIMINATION_RATE", "VYVANSE_REFERENCE_PEAK_HOURS", "CAFFEINE_ELIMINATION_RATE", "CAFFEINE_REFERENCE_PEAK_HOURS"];
+  const functions = ["deriveMobileSignalMetrics", "caffeineMetricBar", "estimateSignalWindDown", "normalizeSignalAssumptions", "localDateISO", "isVyvanseEntry", "isProzacEntry", "isCaffeineEntry", "medicationMetadataValue", "eliminationRateFromHalfLife", "batemanRelativeLevel", "batemanPeakTimeHours", "medsSmoothCurvePath", "medsCurvePath", "clamp"];
+  const constants = ["SIGNAL_COLOURS", "EMPTY_SIGNAL_ASSUMPTIONS", "VYVANSE_DEFAULT_EFFECT_HOURS", "VYVANSE_VISUAL_MODEL", "CAFFEINE_VISUAL_MODEL", "VYVANSE_ELIMINATION_RATE", "VYVANSE_REFERENCE_PEAK_HOURS", "CAFFEINE_ELIMINATION_RATE", "CAFFEINE_REFERENCE_PEAK_HOURS"];
   const statements = ast.statements.filter((node) => ts.isFunctionDeclaration(node) ? functions.includes(node.name?.text) : ts.isVariableStatement(node) && node.declarationList.declarations.some((item) => constants.includes(item.name.getText(ast))));
   const context = { Date, Number, Math, Set };
   vm.createContext(context);
@@ -688,13 +736,13 @@ test("live metrics use recorded data and raw caffeine fractions, not normalized 
 
 test("metrics distinguish missing doses from unknown mg and exclude future/old intakes", () => {
   const model = metricModel(); const now = Date.parse("2026-11-22T12:00:00Z");
-  assert.equal(model.deriveMobileSignalMetrics([], now).remainingMg, null);
+  assert.equal(model.deriveMobileSignalMetrics([], now).remainingMg, 0);
   assert.equal(model.deriveMobileSignalMetrics([], now).minutesUntilPeak, null);
   const unknown = { entryType: "input", medication: "Coffee", amount: 1, unit: "cup", timestamp: new Date(now - 3600000).toISOString() };
   assert(model.deriveMobileSignalMetrics([unknown], now).caffeineUnavailable);
   assert.equal(model.deriveMobileSignalMetrics([{ ...unknown, unit: "mg", amount: null }], now).remainingMg, null);
-  assert.equal(model.deriveMobileSignalMetrics([{ ...unknown, timestamp: new Date(now + 3600000).toISOString() }], now).remainingMg, null);
-  assert.equal(model.deriveMobileSignalMetrics([{ ...unknown, timestamp: new Date(now - 40 * 3600000).toISOString() }], now).remainingMg, null);
+  assert.equal(model.deriveMobileSignalMetrics([{ ...unknown, timestamp: new Date(now + 3600000).toISOString() }], now).remainingMg, 0);
+  assert.equal(model.deriveMobileSignalMetrics([{ ...unknown, timestamp: new Date(now - 40 * 3600000).toISOString() }], now).remainingMg, 0);
 });
 
 test("today markers use local dates, preserve Prozac aliases, and refresh from new records", () => {
@@ -819,20 +867,74 @@ test("dot coordinates, radii and colours stay unchanged; Signals dots have no wh
   assert.equal(mobile.props.cx, 45); assert.equal(mobile.props.cy, 67); assert.equal(mobile.props.r, "5.5");
 });
 
-test("canonical colours are exact, with darker logged tones and independent selection outlines", () => {
+test("canonical colours stay bright for logged-today rings, with independent selection outlines", () => {
   const expected = { Vyvanse: "#99E1FF", Fluoxetine: "#C29EFF", Creatine: "#2ACEC6", Coffee: "#FCB100" };
   const ui = harness();
   for (const [name, colour] of Object.entries(expected)) {
     const ring = ui.nodes(ui.button(name)).find((node) => node.props?.["data-logged-today"] !== undefined);
-    assert.equal(ring.props.style.color, colour);
+    assert.equal(ring.props.style.backgroundColor, colour);
+    assert.equal(ui.button(name).props.style.backgroundColor, "white");
   }
   const logged = harness({ loggedToday: ["Vyvanse"] });
   const ring = () => logged.nodes(logged.button("Vyvanse")).find((node) => node.props?.["data-logged-today"] !== undefined);
-  const loggedTone = ring().props.style.color;
-  assert.notEqual(loggedTone, expected.Vyvanse);
+  const loggedTone = ring().props.style.backgroundColor;
+  assert.equal(loggedTone, expected.Vyvanse);
+  assert.equal(ring().props.style.borderColor, undefined);
+  assert.equal(ring().props.style.boxShadow, undefined);
   logged.click("Vyvanse");
-  assert.equal(logged.button("Vyvanse").props.style.borderColor, expected.Vyvanse);
-  assert.equal(ring().props.style.color, loggedTone);
+  assert.equal(logged.button("Vyvanse").props.style.backgroundColor, expected.Vyvanse);
+  assert.equal(ring().props.style.backgroundColor, "transparent");
+  assert.equal(logged.button("Vyvanse").props.style.color, "white");
+  logged.click("Creatine");
+  assert.equal(logged.button("Vyvanse").props["aria-pressed"], true);
+  assert.equal(logged.button("Creatine").props["aria-pressed"], true);
+  logged.click("Vyvanse");
+  assert.equal(logged.button("Vyvanse").props.style.backgroundColor, "white");
+  for (const width of [375, 393, 1280]) assert((width - 32 - 24) / 4 > 70);
+});
+
+test("Tracker weekday labels align with actual dates across month, year and DST boundaries", () => {
+  const component = ast.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "MedsTrackerGrid");
+  const context = { React: require("react"), Date, Intl, useState: () => [null, () => {}], todayISO: () => "2026-11-23", medicationTrackerDateLabel: (date) => date, formatMedicationAmount: String };
+  vm.createContext(context);
+  vm.runInContext(ts.transpileModule(component.getText(ast), { compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2020 } }).outputText, context);
+  function nodes(tree, output = []) {
+    if (tree && typeof tree === "object") { output.push(tree); [].concat(tree.props?.children || []).flat(Infinity).forEach((child) => nodes(child, output)); }
+    return output;
+  }
+  for (const start of ["2026-02-23", "2026-03-23", "2026-12-28", "2026-04-01"]) {
+    const dates = Array.from({ length: 15 }, (_, i) => new Date(Date.parse(`${start}T00:00:00Z`) + i * 86400000).toISOString().slice(0, 10));
+    for (const mobile of [true, false]) {
+      const tree = context.MedsTrackerGrid({ dates, mobile, substance: { label: "Vyvanse", color: "#99E1FF", subtitle: "7D HIDDEN SUMMARY", days: new Map() } });
+      const all = nodes(tree);
+      const weekdays = all.filter((node) => node.type === "span" && ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].includes(node.props["aria-label"]));
+      assert.deepEqual(weekdays.map((node) => node.props.children), ["M", "T", "W", "T", "F", "S", "S"]);
+      assert.deepEqual(weekdays.map((node) => node.props.style.gridRowStart), [2, 3, 4, 5, 6, 7, 8]);
+      const cells = all.filter((node) => node.type === "button");
+      const offset = (new Date(`${start}T00:00:00Z`).getUTCDay() + 6) % 7;
+      assert.equal(cells.length, dates.length);
+      cells.forEach((cell, index) => {
+        const weekday = (new Date(`${dates[index]}T00:00:00Z`).getUTCDay() + 6) % 7;
+        assert.equal(cell.props["data-date"], dates[index]);
+        assert.equal(cell.props.style.gridRowStart, weekday + 2);
+        assert.equal(cell.props.style.gridColumnStart, Math.floor((index + offset) / 7) + 2);
+      });
+      for (const label of all.filter((node) => node.type === "span" && /^\d{4}-\d{2}$/.test(node.props.title ?? ""))) {
+        const firstIndex = dates.findIndex((date) => date.startsWith(label.props.title));
+        assert.equal(label.props.style.gridColumn.split(" / ")[0], String(cells[firstIndex].props.style.gridColumnStart));
+        assert(Number(label.props.style.gridColumn.split("span ")[1]) >= 1);
+      }
+      assert(!JSON.stringify(tree).includes("7D HIDDEN SUMMARY"));
+    }
+  }
+});
+
+test("History omits only per-day summaries and Tracker omits archive headings", () => {
+  assert(!uiSource.includes("Signal archive"));
+  assert(!uiSource.includes("365 day activity"));
+  assert(!uiSource.includes('items.length === 1 ? "signal" : "signals"'));
+  assert(uiSource.includes("formatMedicationDate(items[0]?.timestamp ?? date)"));
+  assert(uiSource.includes("onClick={() => openMedicationEntryEditor(entry)}"));
 });
 
 test("Vyvanse transitions peak → personal wear-off → ended, with whole-window progress", () => {
@@ -854,15 +956,162 @@ test("Vyvanse transitions peak → personal wear-off → ended, with whole-windo
   assert.equal(ended.effectProgress, 1);
 });
 
-test("unset personal assumptions never borrow elimination half-life as subjective duration", () => {
+test("unset personal duration uses the 14-hour adult estimate, not elimination half-life", () => {
   const model = metricModel(), now = Date.parse("2026-11-23T12:00:00Z");
   const entry = { entryType: "input", medication: "Vyvanse", amount: 30, unit: "mg", timestamp: new Date(now - 6 * 3600000).toISOString() };
   const metric = model.deriveMobileSignalMetrics([entry], now);
-  assert.equal(metric.effectPhase, "unset");
-  assert.equal(metric.effectConfigured, false);
-  assert.equal(metric.minutesUntilWearOff, null);
+  assert.equal(metric.effectPhase, "wearOff");
+  assert.equal(metric.effectConfigured, true);
+  assert.equal(metric.effectPersonalized, false);
+  assert.equal(metric.effectHours, 14);
+  assert.equal(metric.minutesUntilWearOff, 480);
+  assert.equal(metric.effectProgress, 6 / 14);
   assert.equal(metric.windDownAt, null);
   assert.equal(model.deriveMobileSignalMetrics([], now, { effectHours: 12, caffeineThresholdMg: 20 }).windDownAt, null);
+});
+
+test("default Vyvanse peak, wear-off and progress use logged ingestion time without changing peak maths", () => {
+  const model = metricModel(), doseMs = Date.parse("2026-11-23T08:00:00Z");
+  const dose = { entryType: "input", medication: "Vyvanse", amount: 30, unit: "mg", timestamp: new Date(doseMs).toISOString() };
+  const peakHours = model.batemanPeakTimeHours(0.664, Math.log(2) / 10.5);
+  for (const [hours, phase, remaining] of [[0, "peak", 840], [1, "peak", 780], [6, "wearOff", 480], [13, "wearOff", 60], [14, "ended", 0], [20, "ended", 0]]) {
+    const metrics = model.deriveMobileSignalMetrics([dose], doseMs + hours * 3600000);
+    assert.equal(metrics.effectPhase, phase);
+    assert.equal(metrics.minutesUntilWearOff, remaining);
+    assert.equal(metrics.effectProgress, Math.min(1, hours / 14));
+    assert.equal(metrics.minutesUntilPeak, Math.max(0, Math.ceil((peakHours - hours) * 60)));
+  }
+  const empty = model.deriveMobileSignalMetrics([], doseMs);
+  assert.equal(empty.effectPhase, "empty");
+  assert.equal(empty.effectProgress, 0);
+  assert.equal(empty.minutesUntilWearOff, null);
+  const future = model.deriveMobileSignalMetrics([dose], doseMs - 60000);
+  assert.equal(future.effectPhase, "empty");
+  assert.equal(future.effectProgress, 0);
+  const latest = { ...dose, timestamp: new Date(doseMs + 5 * 3600000).toISOString() };
+  const multiple = model.deriveMobileSignalMetrics([dose, latest], doseMs + 6 * 3600000);
+  assert.equal(multiple.effectPhase, "peak");
+  assert.equal(multiple.effectProgress, 1 / 14);
+  assert.equal(multiple.minutesUntilWearOff, 780);
+});
+
+test("valid personal Vyvanse durations override the default without rewriting stored settings", () => {
+  const model = metricModel(), now = Date.parse("2026-11-23T12:00:00Z");
+  const dose = { entryType: "input", medication: "Vyvanse", amount: 30, unit: "mg", timestamp: new Date(now - 6 * 3600000).toISOString() };
+  for (const effectHours of [8, 12, 14.5, 16]) {
+    const assumptions = { effectHours, caffeineThresholdMg: null }, before = JSON.stringify(assumptions);
+    const metrics = model.deriveMobileSignalMetrics([dose], now, assumptions);
+    assert.equal(metrics.effectPersonalized, true);
+    assert.equal(metrics.effectHours, effectHours);
+    assert.equal(metrics.minutesUntilWearOff, (effectHours - 6) * 60);
+    assert.equal(metrics.effectProgress, 6 / effectHours);
+    assert.equal(JSON.stringify(assumptions), before);
+  }
+  for (const effectHours of [null, undefined, 0, -1, NaN, Infinity, 169, "12"]) {
+    const metrics = model.deriveMobileSignalMetrics([dose], now, { effectHours, caffeineThresholdMg: null });
+    assert.equal(metrics.effectHours, 14);
+    assert.equal(metrics.effectPersonalized, false);
+    assert.equal(metrics.minutesUntilWearOff, 480);
+  }
+  const saved = { effectHours: null, caffeineThresholdMg: 20 };
+  model.deriveMobileSignalMetrics([dose], now, saved);
+  assert.equal(saved.effectHours, null);
+});
+
+test("Vyvanse selects the latest occurred valid dose, never a future or invalid dose", () => {
+  const model = metricModel(), now = Date.parse("2026-11-23T12:00:00Z");
+  const dose = (hoursAgo, amount = 30) => ({ entryType: "input", medication: "Vyvanse", unit: "mg", amount, timestamp: new Date(now - hoursAgo * 3600000).toISOString() });
+  const assumptions = { effectHours: 12, caffeineThresholdMg: null };
+  const older = dose(8), recent = dose(1);
+  const metrics = model.deriveMobileSignalMetrics([dose(-1), older, dose(0, -10), recent, { ...dose(0), timestamp: "invalid" }], now, assumptions);
+  assert.equal(metrics.effectPhase, "peak");
+  assert.equal(metrics.effectProgress, 1 / 12);
+  assert.equal(metrics.minutesUntilWearOff, 660);
+  const noDose = model.deriveMobileSignalMetrics([dose(-1)], now, assumptions);
+  assert.equal(noDose.effectPhase, "empty");
+  assert.equal(noDose.minutesUntilPeak, null);
+  assert.equal(noDose.effectProgress, 0);
+  const ended = model.deriveMobileSignalMetrics([dose(14)], now, assumptions);
+  assert.equal(ended.effectPhase, "ended");
+  assert.equal(ended.minutesUntilWearOff, 0);
+});
+
+test("caffeine capacity is fixed at 120 mg and display colours follow quantity anchors", () => {
+  const model = metricModel();
+  for (const [mg, fill, colour] of [[0, 0, "#FCB100"], [60, 0.5, "#FCB100"], [120, 1, "#FCB100"], [180, 1, "#F59E0B"], [240, 1, "#F46332"], [300, 1, "#EF4444"]]) {
+    const bar = model.caffeineMetricBar(mg);
+    assert.equal(bar.fill, fill);
+    assert.equal(bar.displayMg, mg);
+    assert.equal(bar.colour, colour);
+  }
+  assert.equal(model.caffeineMetricBar(600).colour, "#EF4444");
+  assert.equal(model.caffeineMetricBar(600).displayMg, 600);
+  assert.equal(model.caffeineMetricBar(null).displayMg, null);
+  assert.equal(model.caffeineMetricBar(0.9).displayMg, 0);
+  assert(model.caffeineMetricBar(0.9).fill > 0);
+});
+
+test("caffeine bar colour interpolates continuously and reversibly between anchors", () => {
+  const model = metricModel();
+  const channels = (colour) => [1, 3, 5].map((index) => parseInt(colour.slice(index, index + 2), 16));
+  for (const mg of [150, 210, 270]) {
+    const a = channels(model.caffeineMetricBar(mg - 30).colour), b = channels(model.caffeineMetricBar(mg + 30).colour);
+    const middle = channels(model.caffeineMetricBar(mg).colour);
+    middle.forEach((channel, index) => assert(Math.abs(channel - (a[index] + b[index]) / 2) <= 0.5));
+  }
+  for (const boundary of [120, 180, 240, 300]) {
+    const before = channels(model.caffeineMetricBar(boundary - 0.001).colour);
+    const after = channels(model.caffeineMetricBar(boundary + 0.001).colour);
+    before.forEach((channel, index) => assert(Math.abs(channel - after[index]) <= 1));
+  }
+  const rising = [60, 120, 180, 240, 300].map((mg) => model.caffeineMetricBar(mg).colour);
+  const falling = [300, 240, 180, 120, 60].map((mg) => model.caffeineMetricBar(mg).colour).reverse();
+  assert.deepEqual(rising, falling);
+});
+
+test("caffeine retains residual amounts when a new intake is logged and uses actual persisted mg", () => {
+  const model = metricModel(), now = Date.parse("2026-11-23T12:00:00Z");
+  const intake = (hoursAgo, mg) => ({ entryType: "input", medication: "Coffee", unit: "mg", amount: mg, timestamp: new Date(now - hoursAgo * 3600000).toISOString(), metadata: { shots: 999 } });
+  const older = intake(6, 95), recent = intake(1, 145), justLogged = intake(0, 60);
+  const before = model.deriveMobileSignalMetrics([older], now);
+  const withNew = model.deriveMobileSignalMetrics([older, justLogged], now);
+  assert.equal(withNew.remainingMg, before.remainingMg);
+  const total = model.deriveMobileSignalMetrics([older, recent, justLogged], now);
+  const expected = 95 * model.batemanRelativeLevel(6, 4, Math.log(2) / 5) + 145 * model.batemanRelativeLevel(1, 4, Math.log(2) / 5);
+  assert(Math.abs(total.remainingMg - expected) < 1e-10);
+  assert.equal(total.caffeineProgress, Math.min(1, expected / 120));
+  const declining = model.deriveMobileSignalMetrics([older, recent], now + 5 * 3600000);
+  assert(declining.remainingMg < total.remainingMg);
+  assert(declining.caffeineProgress < total.caffeineProgress);
+  const tiny = model.deriveMobileSignalMetrics([intake(2, 0.5)], now);
+  assert(tiny.remainingMg > 0 && tiny.remainingMg < 1);
+  assert.equal(tiny.displayCaffeineMg, 0);
+});
+
+test("metric cards show one Vyvanse countdown, no settings, and quantity-only caffeine styling", () => {
+  const model = metricModel(), now = Date.parse("2026-11-23T12:00:00Z");
+  const functions = ast.statements.filter((node) => ts.isFunctionDeclaration(node) && ["MobileSignalMetricCards", "signalColourMix"].includes(node.name?.text));
+  const context = { React: require("react"), PillIcon: "pill", Coffee: "coffee" };
+  vm.createContext(context);
+  vm.runInContext(ts.transpileModule([palette, ...functions].map((node) => node.getText(ast)).join("\n"), { compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2020 } }).outputText, context);
+  function nodes(tree, output = []) { if (tree && typeof tree === "object") { output.push(tree); [].concat(tree.props?.children || []).flat(Infinity).forEach((child) => nodes(child, output)); } return output; }
+  function text(tree) { return typeof tree === "string" || typeof tree === "number" ? String(tree) : [].concat(tree?.props?.children || []).flat(Infinity).map(text).join(""); }
+  for (const [hoursAgo, label] of [[1, "Until peak"], [6, "Until estimated wear-off"], [12, "Estimated worn off"]]) {
+    const dose = { entryType: "input", medication: "Vyvanse", amount: 30, unit: "mg", timestamp: new Date(now - hoursAgo * 3600000).toISOString() };
+    const metrics = model.deriveMobileSignalMetrics([dose], now, { effectHours: 12, caffeineThresholdMg: null });
+    const tree = context.MobileSignalMetricCards({ metrics });
+    assert(text(tree).includes(label));
+    assert(!text(tree).includes("Set estimate"));
+    assert.equal(nodes(tree).filter((node) => node.type === "button").length, 0);
+    assert.equal(nodes(tree).filter((node) => node.type === "span" && node.props.className === "whitespace-nowrap").length, hoursAgo === 12 ? 0 : 1);
+  }
+  const caffeine = { entryType: "input", medication: "Coffee", amount: 500, unit: "mg", timestamp: new Date(now - 3600000).toISOString() };
+  const metrics = model.deriveMobileSignalMetrics([caffeine], now);
+  const tree = context.MobileSignalMetricCards({ metrics });
+  const bar = nodes(tree).find((node) => node.props?.role === "progressbar" && node.props["aria-label"].includes("120 mg"));
+  assert.equal(bar.props.children.props.style.width, "100%");
+  assert.equal(bar.props.children.props.style.backgroundColor, metrics.caffeineBarColour);
+  assert(nodes(tree).some((node) => node.type === "span" && node.props.style?.color === "#FCB100"));
 });
 
 test("wind-down respects both recorded substances, the personal threshold and sensitivity changes", () => {
